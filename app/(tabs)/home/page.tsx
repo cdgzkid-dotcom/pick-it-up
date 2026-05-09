@@ -26,12 +26,16 @@ export default async function HomePage() {
   const sportOptions = [
     ...FAVORITE_SPORTS,
     ...SUPPORTED_SPORTS.filter((s) => !FAVORITE_SPORTS.includes(s)),
-  ].map((s) => ({
-    value: s,
-    label: s.toUpperCase(),
-    star: FAVORITE_SPORTS.includes(s),
-    today: today.has(s.toLowerCase()),
-  }));
+  ].map((s) => {
+    const hasGames = today.has(s.toLowerCase());
+    return {
+      value: s,
+      label: s.toUpperCase(),
+      star: FAVORITE_SPORTS.includes(s),
+      today: hasGames,
+      disabled: !hasGames,
+    };
+  });
 
   const initialSelected = FAVORITE_SPORTS.filter((s) => today.has(s.toLowerCase()));
 

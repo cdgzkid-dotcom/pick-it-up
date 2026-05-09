@@ -11,15 +11,41 @@ import {
   tierFromConfidence,
   unitSize,
 } from '@/lib/units';
-import type { Tier } from '@/lib/types';
+import type { Game, Tier } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+const MAX_GAMES_PER_REQUEST = 6;
+
 const RequestSchema = z.object({
   sports: z.array(z.string()).min(1),
 });
+
+function competitiveness(g: Game): number {
+  const h = g.odds.moneyline?.home;
+  if (!h || !Number.isFinite(h)) return Number.POSITIVE_INFINITY;
+  return Math.abs(0.5 - 1 / h);
+}
+
+function selectTopGames(games: Game[], requestedSports: string[], max: number): Game[] {
+  const bySport: Record<string, Game[]> = {};
+  for (const g of games) (bySport[g.sport] ??= []).push(g);
+  for (const s of Object.keys(bySport)) {
+    bySport[s].sort((a, b) => competitiveness(a) - competitiveness(b));
+  }
+  const order = requestedSports.filter((s) => (bySport[s]?.length ?? 0) > 0);
+  const result: Game[] = [];
+  while (result.length < max && order.some((s) => bySport[s].length > 0)) {
+    for (const s of order) {
+      if (result.length >= max) break;
+      const next = bySport[s].shift();
+      if (next) result.push(next);
+    }
+  }
+  return result;
+}
 
 const ClaudeLegSchema = z.object({
   pick: z.string(),
@@ -90,15 +116,37 @@ export async function POST(req: Request) {
     );
   }
 
-  const games = await fetchGames(parsed.data.sports);
+  const t0 = Date.now();
+  console.log(`[generate-picks] start sports=${parsed.data.sports.join(',')}`);
+
+  let games: Game[];
+  try {
+    games = await fetchGames(parsed.data.sports);
+  } catch (err) {
+    console.error('[generate-picks] ESPN fetch failed', err);
+    return NextResponse.json(
+      { error: 'No se pudo conectar con ESPN', detail: (err as Error).message },
+      { status: 502 },
+    );
+  }
+  console.log(`[generate-picks] ESPN fetched ${games.length} games in ${Date.now() - t0}ms`);
+
   if (games.length === 0) {
     return NextResponse.json({
-      summary: { analyzed: 0, with_edge: 0, discarded: 0 },
+      summary: { analyzed: 0, with_edge: 0, discarded: 0, total_available: 0 },
       inserted: 0,
       picks: [],
       message: 'No hay juegos con momios disponibles en los deportes seleccionados',
     });
   }
+
+  const totalAvailable = games.length;
+  const games_to_analyze = selectTopGames(games, parsed.data.sports, MAX_GAMES_PER_REQUEST);
+  console.log(
+    `[generate-picks] analyzing ${games_to_analyze.length} of ${totalAvailable}: ${games_to_analyze
+      .map((g) => `${g.away_team_abbr ?? g.away_team}@${g.home_team_abbr ?? g.home_team}`)
+      .join(', ')}`,
+  );
 
   const supabase = supabaseAdmin();
   const { data: settingsRow, error: settingsErr } = await supabase
@@ -107,6 +155,7 @@ export async function POST(req: Request) {
     .eq('id', 1)
     .single();
   if (settingsErr) {
+    console.error('[generate-picks] settings missing', settingsErr);
     return NextResponse.json({ error: 'Settings missing', detail: settingsErr.message }, { status: 500 });
   }
   const bankroll = Number(settingsRow.bankroll_current);
@@ -114,13 +163,16 @@ export async function POST(req: Request) {
   const unit = unitSize(bankroll, unitPct);
 
   let raw: z.infer<typeof ClaudeResponseSchema>;
+  const tClaude = Date.now();
   try {
     const claudeOutput = await callClaudeJson(
       PICK_GENERATION_SYSTEM,
-      buildPickGenerationUserPrompt(games),
+      buildPickGenerationUserPrompt(games_to_analyze),
     );
+    console.log(`[generate-picks] Claude responded in ${Date.now() - tClaude}ms`);
     const validated = ClaudeResponseSchema.safeParse(claudeOutput);
     if (!validated.success) {
+      console.error('[generate-picks] Claude JSON malformed', validated.error.flatten());
       return NextResponse.json(
         {
           error: 'Claude returned malformed JSON',
@@ -132,6 +184,7 @@ export async function POST(req: Request) {
     }
     raw = validated.data;
   } catch (err) {
+    console.error('[generate-picks] Claude request failed', err);
     return NextResponse.json(
       { error: 'Claude request failed', detail: (err as Error).message },
       { status: 502 },
@@ -255,6 +308,7 @@ export async function POST(req: Request) {
       .insert(rowsToInsert)
       .select();
     if (error) {
+      console.error('[generate-picks] DB insert failed', error);
       return NextResponse.json(
         { error: 'DB insert failed', detail: error.message },
         { status: 500 },
@@ -263,11 +317,16 @@ export async function POST(req: Request) {
     inserted = data ?? [];
   }
 
+  console.log(
+    `[generate-picks] done in ${Date.now() - t0}ms inserted=${inserted.length} (${enriched.length} singles + ${enrichedParlays.length} parlays)`,
+  );
+
   return NextResponse.json({
     summary: {
-      analyzed: raw.summary?.analyzed ?? games.length,
+      analyzed: games_to_analyze.length,
+      total_available: totalAvailable,
       with_edge: enriched.length,
-      discarded: (raw.summary?.discarded ?? Math.max(0, games.length - enriched.length)),
+      discarded: Math.max(0, games_to_analyze.length - enriched.length),
       parlays: enrichedParlays.length,
     },
     inserted: inserted.length,

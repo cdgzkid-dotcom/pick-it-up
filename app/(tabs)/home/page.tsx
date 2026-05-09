@@ -3,17 +3,19 @@ import BankrollEditor from '@/components/BankrollEditor';
 import SportSelector from '@/components/SportSelector';
 import BetResolver from '@/components/BetResolver';
 import { computeStats } from '@/lib/stats';
-import { SUPPORTED_SPORTS, FAVORITE_SPORTS, sportsWithGamesToday } from '@/lib/mockGames';
+import { ESPN_SPORTS, FAVORITE_SPORTS, gameCountsBySport } from '@/lib/espn';
 import type { Bet, Settings } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export default async function HomePage() {
   const supabase = supabaseAdmin();
 
-  const [settingsRes, betsRes] = await Promise.all([
+  const [settingsRes, betsRes, counts] = await Promise.all([
     supabase.from('settings').select('*').eq('id', 1).single(),
     supabase.from('bets').select('*').order('created_at', { ascending: false }),
+    gameCountsBySport(),
   ]);
 
   const settings = settingsRes.data as Settings | null;
@@ -21,23 +23,22 @@ export default async function HomePage() {
   const pending = bets.filter((b) => b.result === 'pending');
 
   const stats = computeStats(bets);
-  const today = new Set(sportsWithGamesToday().map((s) => s.toLowerCase()));
 
   const sportOptions = [
     ...FAVORITE_SPORTS,
-    ...SUPPORTED_SPORTS.filter((s) => !FAVORITE_SPORTS.includes(s)),
+    ...ESPN_SPORTS.filter((s) => !FAVORITE_SPORTS.includes(s)),
   ].map((s) => {
-    const hasGames = today.has(s.toLowerCase());
+    const n = counts[s] ?? 0;
     return {
       value: s,
-      label: s.toUpperCase(),
+      label: n > 0 ? `${s.toUpperCase()} ${n}` : `${s.toUpperCase()} · sin juegos`,
       star: FAVORITE_SPORTS.includes(s),
-      today: hasGames,
-      disabled: !hasGames,
+      today: n > 0,
+      disabled: n === 0,
     };
   });
 
-  const initialSelected = FAVORITE_SPORTS.filter((s) => today.has(s.toLowerCase()));
+  const initialSelected = FAVORITE_SPORTS.filter((s) => (counts[s] ?? 0) > 0);
 
   return (
     <div className="space-y-6">
@@ -98,6 +99,7 @@ export default async function HomePage() {
           <div><span className="text-orange">🎲 PARLAY</span> · 0.5 unit</div>
           <div><span className="text-red">❌ NO BET</span> &lt;55% confianza</div>
           <div className="pt-1">Momio &lt;1.40 → baja un tier (no paga lo suficiente)</div>
+          <div className="pt-1 text-[10px]">Datos de juegos: ESPN API · momios: DraftKings/FanDuel/etc.</div>
         </div>
       </details>
     </div>

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
 import { callClaudeJson } from '@/lib/claude';
 import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from '@/lib/prompts';
-import { gamesForSports } from '@/lib/mockGames';
+import { fetchGames } from '@/lib/espn';
 import { adjustedEdgeScore, edgeOf, impliedProbability } from '@/lib/edge';
 import {
   recommendedAmount,
@@ -88,12 +88,13 @@ export async function POST(req: Request) {
     );
   }
 
-  const games = gamesForSports(parsed.data.sports);
+  const games = await fetchGames(parsed.data.sports);
   if (games.length === 0) {
     return NextResponse.json({
       summary: { analyzed: 0, with_edge: 0, discarded: 0 },
       inserted: 0,
       picks: [],
+      message: 'No hay juegos con momios disponibles en los deportes seleccionados',
     });
   }
 

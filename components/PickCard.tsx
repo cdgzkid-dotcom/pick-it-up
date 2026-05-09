@@ -2,6 +2,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
+import { TeamLogo, SportLogo } from './Logo';
 import { tierLabel } from '@/lib/units';
 import type { Pick, Tier } from '@/lib/types';
 
@@ -45,6 +46,8 @@ export default function PickCard({ pick, rank }: Props) {
         game: pick.game,
         home_team: pick.home_team,
         away_team: pick.away_team,
+        home_team_abbr: pick.home_team_abbr ?? null,
+        away_team_abbr: pick.away_team_abbr ?? null,
         pick: pick.pick,
         bet_type: pick.bet_type,
         odds_decimal: odds,
@@ -83,10 +86,13 @@ export default function PickCard({ pick, rank }: Props) {
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
+          <SportLogo sport={pick.sport} size={18} />
           <span className="px-1.5 py-0.5 bg-line rounded text-[10px] text-muted">
             {pick.sport}
           </span>
-          <span className={`text-xs font-bold ${tierColor}`}>{tierLabel(tier)}</span>
+          <span className={`text-xs font-bold ${tierColor}`}>
+            {tierLabel(tier, pick.confidence)}
+          </span>
         </div>
         {pick.early_payout_eligible && (
           <span className="px-1.5 py-0.5 bg-blue/20 text-blue rounded text-[10px] font-bold">
@@ -95,8 +101,24 @@ export default function PickCard({ pick, rank }: Props) {
         )}
       </div>
 
+      {!pick.is_parlay && (pick.home_team_abbr || pick.away_team_abbr || pick.home_team) && (
+        <div className="flex items-center gap-3 py-1">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <TeamLogo sport={pick.sport} abbr={pick.away_team_abbr} size={32} />
+            <span className="text-xs truncate">{pick.away_team}</span>
+          </div>
+          <span className="text-muted text-[10px]">@</span>
+          <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
+            <span className="text-xs truncate text-right">{pick.home_team}</span>
+            <TeamLogo sport={pick.sport} abbr={pick.home_team_abbr} size={32} />
+          </div>
+        </div>
+      )}
+
       <div>
-        <div className="text-[11px] text-muted uppercase tracking-wider">{pick.game}</div>
+        {pick.is_parlay && (
+          <div className="text-[11px] text-muted uppercase tracking-wider">{pick.game}</div>
+        )}
         <div className="text-base font-bold mt-0.5">{pick.pick}</div>
         {pick.pick_detail && (
           <div className="text-xs text-muted mt-0.5">{pick.pick_detail}</div>

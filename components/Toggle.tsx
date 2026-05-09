@@ -1,4 +1,5 @@
 'use client';
+import Image from 'next/image';
 
 export interface ToggleOption {
   value: string;
@@ -6,6 +7,7 @@ export interface ToggleOption {
   star?: boolean;
   today?: boolean;
   disabled?: boolean;
+  iconSrc?: string;
 }
 
 interface Props {
@@ -44,12 +46,22 @@ export default function Toggle({ options, value, onChange }: Props) {
             disabled={disabled}
             aria-pressed={active}
             onClick={() => !disabled && toggle(o.value)}
-            className={`tap px-3 py-2 rounded-md border text-xs tracking-wider transition-colors ${cls}`}
+            className={`tap inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-xs tracking-wider transition-colors ${cls}`}
           >
-            {o.star && <span className="mr-1">⭐</span>}
+            {o.iconSrc && (
+              <Image
+                src={o.iconSrc}
+                alt=""
+                width={20}
+                height={20}
+                unoptimized
+                className={disabled ? 'opacity-40' : ''}
+              />
+            )}
+            {o.star && <span>⭐</span>}
             <span>{o.label}</span>
             {o.today && !disabled && !active && (
-              <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-green align-middle" />
+              <span className="ml-0.5 inline-block w-1.5 h-1.5 rounded-full bg-green align-middle" />
             )}
           </button>
         );

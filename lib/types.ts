@@ -11,6 +11,8 @@ export interface Pick {
   league?: string | null;
   home_team: string;
   away_team: string;
+  home_team_abbr?: string | null;
+  away_team_abbr?: string | null;
   pick: string;
   pick_detail?: string | null;
   bet_type: BetType | string;
@@ -43,6 +45,8 @@ export interface Bet {
   game: string;
   home_team?: string | null;
   away_team?: string | null;
+  home_team_abbr?: string | null;
+  away_team_abbr?: string | null;
   pick: string;
   bet_type: string;
   odds_decimal: number;
@@ -75,6 +79,8 @@ export interface Game {
   league?: string;
   home_team: string;
   away_team: string;
+  home_team_abbr?: string;
+  away_team_abbr?: string;
   game_label: string;
   start_time?: string;
   odds: {

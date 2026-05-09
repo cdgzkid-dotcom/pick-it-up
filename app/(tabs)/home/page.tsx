@@ -4,6 +4,7 @@ import SportSelector from '@/components/SportSelector';
 import BetResolver from '@/components/BetResolver';
 import { computeStats } from '@/lib/stats';
 import { ESPN_SPORTS, FAVORITE_SPORTS, gameCountsBySport } from '@/lib/espn';
+import { sportLeagueLogoUrl } from '@/components/Logo';
 import type { Bet, Settings } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +36,7 @@ export default async function HomePage() {
       star: FAVORITE_SPORTS.includes(s),
       today: n > 0,
       disabled: n === 0,
+      iconSrc: sportLeagueLogoUrl(s) ?? undefined,
     };
   });
 
@@ -93,11 +95,11 @@ export default async function HomePage() {
       <details className="text-xs">
         <summary className="text-muted cursor-pointer">▶ Leyenda de tiers</summary>
         <div className="mt-2 space-y-1 text-muted pl-3 border-l border-line">
-          <div><span className="text-blue">🔒 LOCK</span> 85-100% confianza · 2 units</div>
-          <div><span className="text-green">✅ STRONG</span> 70-84% · 1.5 units</div>
-          <div><span className="text-yellow">⚠️ VALUE</span> 55-69% · 1 unit</div>
-          <div><span className="text-orange">🎲 PARLAY</span> · 0.5 unit</div>
-          <div><span className="text-red">❌ NO BET</span> &lt;55% confianza</div>
+          <div><span className="text-blue font-bold">🔒 LOCK 85-100%</span> · 2 units</div>
+          <div><span className="text-green font-bold">✅ STRONG 70-84%</span> · 1.5 units</div>
+          <div><span className="text-yellow font-bold">⚠️ VALUE 55-69%</span> · 1 unit</div>
+          <div><span className="text-orange font-bold">🎯 PARLAY</span> · 0.5 unit</div>
+          <div><span className="text-red font-bold">❌ NO BET</span> &lt;55% confianza</div>
           <div className="pt-1">Momio &lt;1.40 → baja un tier (no paga lo suficiente)</div>
           <div className="pt-1 text-[10px]">Datos de juegos: ESPN API · momios: DraftKings/FanDuel/etc.</div>
         </div>

@@ -40,15 +40,31 @@ export const recommendedAmount = (
 export const potentialWin = (amount: number, oddsDecimal: number): number =>
   Math.round(amount * (oddsDecimal - 1));
 
-export const tierLabel = (tier: Tier): string => {
-  switch (tier) {
-    case 'lock':
-      return '🔒 LOCK';
-    case 'strong':
-      return '✅ STRONG';
-    case 'value':
-      return '⚠️ VALUE';
-    case 'parlay':
-      return '🎲 PARLAY';
-  }
+const TIER_RANGE: Record<Tier, string> = {
+  lock: '85-100%',
+  strong: '70-84%',
+  value: '55-69%',
+  parlay: '',
+};
+
+const TIER_EMOJI: Record<Tier, string> = {
+  lock: '🔒',
+  strong: '✅',
+  value: '⚠️',
+  parlay: '🎯',
+};
+
+const TIER_NAME: Record<Tier, string> = {
+  lock: 'LOCK',
+  strong: 'STRONG',
+  value: 'VALUE',
+  parlay: 'PARLAY',
+};
+
+export const tierLabel = (tier: Tier, confidence?: number | null): string => {
+  const base = `${TIER_EMOJI[tier]} ${TIER_NAME[tier]}`;
+  const range = TIER_RANGE[tier];
+  if (tier === 'parlay') return base;
+  const conf = confidence != null ? ` · ${Math.round(confidence)}%` : '';
+  return `${base} ${range}${conf}`;
 };

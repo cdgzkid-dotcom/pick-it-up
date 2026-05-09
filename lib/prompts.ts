@@ -40,6 +40,8 @@ Devuelve un JSON con esta estructura EXACTA:
       "game": "<formato 'Visitante @ Local' o 'Visitante vs Local'>",
       "home_team": "<nombre completo: Oklahoma City Thunder>",
       "away_team": "<nombre completo>",
+      "home_team_abbr": "<copia EXACTA de home_team_abbr del input, ej: 'okc'>",
+      "away_team_abbr": "<copia EXACTA de away_team_abbr del input, ej: 'lal'>",
       "pick": "<lo que apuestas, ej: 'Thunder ML' o 'Over 224.5'>",
       "pick_detail": "<descripción larga humana>",
       "bet_type": "ML|Spread|O-U|Prop",

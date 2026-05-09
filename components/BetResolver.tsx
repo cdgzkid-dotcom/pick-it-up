@@ -1,7 +1,9 @@
 'use client';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Bet } from '@/lib/types';
+import { TeamLogo } from './Logo';
+import { tierLabel } from '@/lib/units';
+import type { Bet, Tier } from '@/lib/types';
 
 interface Props {
   bet: Bet;
@@ -48,13 +50,36 @@ export default function BetResolver({ bet }: Props) {
   return (
     <div className="bg-card border border-line rounded-lg p-3 space-y-2">
       <div className="flex justify-between items-start gap-2">
-        <div className="min-w-0">
-          <div className="text-[10px] text-muted">
-            {bet.sport} · {bet.game}
+        <div className="min-w-0 flex items-start gap-2">
+          {(bet.home_team_abbr || bet.away_team_abbr) && (
+            <div className="flex -space-x-2 shrink-0 pt-0.5">
+              <TeamLogo
+                sport={bet.sport}
+                abbr={bet.away_team_abbr}
+                size={24}
+                className="rounded-full ring-2 ring-card bg-card"
+              />
+              <TeamLogo
+                sport={bet.sport}
+                abbr={bet.home_team_abbr}
+                size={24}
+                className="rounded-full ring-2 ring-card bg-card"
+              />
+            </div>
+          )}
+          <div className="min-w-0">
+            <div className="text-[10px] text-muted truncate">
+              {bet.sport} · {bet.game}
+            </div>
+            <div className="font-bold text-sm truncate">{bet.pick}</div>
+            {bet.tier && (
+              <div className="text-[10px] text-muted mt-0.5">
+                {tierLabel(bet.tier as Tier)}
+              </div>
+            )}
           </div>
-          <div className="font-bold text-sm truncate">{bet.pick}</div>
         </div>
-        <div className="text-right text-xs">
+        <div className="text-right text-xs shrink-0">
           <div>
             <span className="text-muted">$</span>
             <span className="text-green font-bold">{amount}</span>

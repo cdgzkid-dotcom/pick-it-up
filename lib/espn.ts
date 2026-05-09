@@ -59,9 +59,11 @@ export const FAVORITE_SPORTS: string[] = ['NBA', 'MLB', 'NHL', 'Liga MX', 'Premi
 const CACHE_SECONDS = 300;
 
 interface EspnTeam {
+  id?: string;
   displayName: string;
   shortDisplayName?: string;
   abbreviation?: string;
+  logo?: string;
 }
 
 interface EspnRecord {
@@ -239,6 +241,8 @@ async function eventToGame(sport: string, ev: EspnEvent): Promise<Game | null> {
     league: cfg.league,
     home_team: home.team.displayName,
     away_team: away.team.displayName,
+    home_team_abbr: home.team.abbreviation?.toLowerCase(),
+    away_team_abbr: away.team.abbreviation?.toLowerCase(),
     game_label:
       ev.shortName && ev.shortName.length < 80
         ? ev.shortName

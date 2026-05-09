@@ -11,6 +11,8 @@ const CreateBetSchema = z.object({
   game: z.string(),
   home_team: z.string().optional().nullable(),
   away_team: z.string().optional().nullable(),
+  home_team_abbr: z.string().optional().nullable(),
+  away_team_abbr: z.string().optional().nullable(),
   pick: z.string(),
   bet_type: z.string(),
   odds_decimal: z.coerce.number().positive(),

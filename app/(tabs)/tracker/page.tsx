@@ -1,7 +1,9 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import BetResolver from '@/components/BetResolver';
 import ManualBetForm from '@/components/ManualBetForm';
-import type { Bet } from '@/lib/types';
+import { TeamLogo } from '@/components/Logo';
+import { tierLabel } from '@/lib/units';
+import type { Bet, Tier } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -79,12 +81,29 @@ function HistoryRow({ bet }: { bet: Bet }) {
   const pl = Number(bet.payout ?? 0) - Number(bet.amount);
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 bg-card border border-line rounded text-xs">
-      <span className={`text-base ${color}`}>{symbol}</span>
+    <div className="flex items-center gap-2 px-3 py-2 bg-card border border-line rounded text-xs">
+      <span className={`text-base ${color} w-4`}>{symbol}</span>
+      {(bet.home_team_abbr || bet.away_team_abbr) && (
+        <div className="flex -space-x-1.5 shrink-0">
+          <TeamLogo
+            sport={bet.sport}
+            abbr={bet.away_team_abbr}
+            size={20}
+            className="rounded-full ring-1 ring-card bg-card"
+          />
+          <TeamLogo
+            sport={bet.sport}
+            abbr={bet.home_team_abbr}
+            size={20}
+            className="rounded-full ring-1 ring-card bg-card"
+          />
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <div className="truncate">{bet.pick}</div>
-        <div className="text-[10px] text-muted">
+        <div className="text-[10px] text-muted truncate">
           {bet.sport} · {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
+          {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
         </div>
       </div>
       <div className={`text-right font-bold ${pl >= 0 ? 'text-green' : 'text-red'}`}>

@@ -32,6 +32,8 @@ const ClaudePickSchema = z.object({
   game: z.string(),
   home_team: z.string(),
   away_team: z.string(),
+  home_team_abbr: z.string().optional().nullable(),
+  away_team_abbr: z.string().optional().nullable(),
   pick: z.string(),
   pick_detail: z.string().optional().nullable(),
   bet_type: z.string(),
@@ -136,6 +138,13 @@ export async function POST(req: Request) {
     );
   }
 
+  const teamAbbrByName = new Map<string, string>();
+  for (const g of games) {
+    if (g.home_team_abbr) teamAbbrByName.set(g.home_team.toLowerCase(), g.home_team_abbr);
+    if (g.away_team_abbr) teamAbbrByName.set(g.away_team.toLowerCase(), g.away_team_abbr);
+  }
+  const lookupAbbr = (name: string) => teamAbbrByName.get(name.toLowerCase()) ?? null;
+
   const enriched = raw.picks
     .map((p) => {
       const implied = impliedProbability(p.odds_decimal);
@@ -145,8 +154,12 @@ export async function POST(req: Request) {
       const adjustedTier = tierForOdds(tier, p.odds_decimal);
       const recommended = recommendedAmount(adjustedTier, unit, p.odds_decimal);
       const score = adjustedEdgeScore(p.real_probability, p.odds_decimal);
+      const homeAbbr = (p.home_team_abbr ?? lookupAbbr(p.home_team))?.toLowerCase() ?? null;
+      const awayAbbr = (p.away_team_abbr ?? lookupAbbr(p.away_team))?.toLowerCase() ?? null;
       return {
         ...p,
+        home_team_abbr: homeAbbr,
+        away_team_abbr: awayAbbr,
         implied_probability: implied,
         edge: e,
         tier: adjustedTier,
@@ -177,6 +190,8 @@ export async function POST(req: Request) {
       game: p.game,
       home_team: p.home_team,
       away_team: p.away_team,
+      home_team_abbr: p.home_team_abbr,
+      away_team_abbr: p.away_team_abbr,
       pick: p.pick,
       pick_detail: p.pick_detail ?? null,
       bet_type: p.bet_type,
@@ -206,6 +221,8 @@ export async function POST(req: Request) {
       game: par.pick,
       home_team: '',
       away_team: '',
+      home_team_abbr: null,
+      away_team_abbr: null,
       pick: par.pick,
       pick_detail: null,
       bet_type: 'Parlay',

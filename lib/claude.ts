@@ -12,11 +12,17 @@ function client(): Anthropic {
   return _client;
 }
 
+export interface ClaudeJsonOptions {
+  maxTokens?: number;
+  retry?: boolean;
+}
+
 export async function callClaudeJson<T = unknown>(
   systemPrompt: string,
   userPrompt: string,
-  maxTokens = 8192,
+  options: ClaudeJsonOptions = {},
 ): Promise<T> {
+  const { maxTokens = 8192, retry = true } = options;
   const c = client();
 
   const send = async (extraSystem = ''): Promise<string> => {
@@ -42,13 +48,14 @@ export async function callClaudeJson<T = unknown>(
     return JSON.parse(txt.slice(start, end + 1)) as T;
   };
 
-  let raw = await send();
+  const raw = await send();
   try {
     return tryParse(raw);
   } catch (firstErr) {
-    raw = await send(
+    if (!retry) throw firstErr;
+    const raw2 = await send(
       `Tu respuesta anterior no fue JSON válido (${(firstErr as Error).message}). Devuelve SOLO el objeto JSON, sin texto, sin markdown, sin explicaciones.`,
     );
-    return tryParse(raw);
+    return tryParse(raw2);
   }
 }

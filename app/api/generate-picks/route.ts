@@ -17,8 +17,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const BATCH_SIZE = 4;
-const MAX_GAMES_PER_REQUEST = 20; // up to 5 parallel Claude batches
+const BATCH_SIZE = 3;
+const MAX_GAMES_PER_REQUEST = 15; // up to 5 parallel Claude batches
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -197,6 +197,7 @@ export async function POST(req: Request) {
         const claudeOutput = await callClaudeJson(
           PICK_GENERATION_SYSTEM,
           buildPickGenerationUserPrompt(b),
+          { retry: false },
         );
         const validated = ClaudeResponseSchema.safeParse(claudeOutput);
         if (!validated.success) {

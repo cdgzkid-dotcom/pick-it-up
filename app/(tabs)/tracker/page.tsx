@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import BetResolver from '@/components/BetResolver';
 import ManualBetForm from '@/components/ManualBetForm';
+import ResetPendingButton from '@/components/ResetPendingButton';
 import ResultsRefresher from '@/components/ResultsRefresher';
 import { TeamLogo } from '@/components/Logo';
 import { tierLabel } from '@/lib/units';
@@ -49,6 +50,7 @@ export default async function TrackerPage() {
             ))}
           </div>
         )}
+        <ResetPendingButton count={pending.length} />
       </section>
 
       <section className="space-y-2">

@@ -7,13 +7,13 @@ interface Props {
   hasPendingPicks?: boolean;
 }
 
-const TIMEOUT_MS = 45_000;
+const TIMEOUT_MS = 58_000;
 
 const PHASES = [
   { ms: 0, text: 'Buscando juegos del día…' },
   { ms: 800, text: 'Jalando momios…' },
   { ms: 1800, text: 'Descargando lesiones…' },
-  { ms: 3000, text: 'Claude analizando hasta 8 juegos…' },
+  { ms: 3000, text: 'Claude analizando juegos…' },
   { ms: 25000, text: 'Calculando edge…' },
 ];
 

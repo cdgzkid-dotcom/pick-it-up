@@ -17,8 +17,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const BATCH_SIZE = 5;
-const MAX_GAMES_PER_REQUEST = 25; // up to 5 parallel Claude batches
+const BATCH_SIZE = 4;
+const MAX_GAMES_PER_REQUEST = 20; // up to 5 parallel Claude batches
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
 import { TeamLogo, SportLogo } from './Logo';
 import { tierLabel } from '@/lib/units';
-import type { Pick, Tier } from '@/lib/types';
+import type { KeyStat, Pick, Tier } from '@/lib/types';
 
 interface Props {
   pick: Pick;
@@ -12,9 +12,9 @@ interface Props {
 }
 
 export default function PickCard({ pick, rank }: Props) {
-  const [open, setOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [showOdds, setShowOdds] = useState(false);
-  const [isPending, start] = useTransition();
+  const [, start] = useTransition();
   const router = useRouter();
   const [err, setErr] = useState<string | null>(null);
   const initialDone =
@@ -34,11 +34,21 @@ export default function PickCard({ pick, rank }: Props) {
   const realProb = Number(pick.real_probability ?? 0);
   const impliedProb = Number(pick.implied_probability ?? 1 / Number(pick.odds_decimal));
   const odds = Number(pick.odds_decimal);
-  const amount = Number(pick.recommended_amount ?? 0);
-  const win = Math.round(amount * (odds - 1));
+  const recommended = Math.max(1, Number(pick.recommended_amount ?? 0));
 
-  const apuesta = async () => {
+  const [showForm, setShowForm] = useState(false);
+  const [amountStr, setAmountStr] = useState(String(recommended));
+  const [submitting, setSubmitting] = useState(false);
+  const amountNum = Math.max(0, Number(amountStr) || 0);
+  const win = Math.round(amountNum * (odds - 1));
+
+  const confirmar = async () => {
     setErr(null);
+    if (amountNum <= 0) {
+      setErr('Monto inválido');
+      return;
+    }
+    setSubmitting(true);
     const r = await fetch('/api/bets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -50,13 +60,15 @@ export default function PickCard({ pick, rank }: Props) {
         away_team: pick.away_team,
         home_team_abbr: pick.home_team_abbr ?? null,
         away_team_abbr: pick.away_team_abbr ?? null,
+        espn_event_id: pick.espn_event_id ?? null,
         pick: pick.pick,
         bet_type: pick.bet_type,
         odds_decimal: odds,
-        amount,
+        amount: amountNum,
         tier,
       }),
     });
+    setSubmitting(false);
     if (!r.ok) {
       if (r.status === 409) {
         setDone('APOSTADO ✓');
@@ -64,10 +76,11 @@ export default function PickCard({ pick, rank }: Props) {
         return;
       }
       const j = await r.json().catch(() => null);
-      setErr(j?.error ?? 'Error al apostar');
+      setErr(j?.error ?? `Error (${r.status})`);
       return;
     }
     setDone('APOSTADO ✓');
+    setShowForm(false);
     start(() => router.refresh());
   };
 
@@ -85,16 +98,29 @@ export default function PickCard({ pick, rank }: Props) {
     const isBet = done.includes('APOSTADO');
     return (
       <div
-        className={`bg-card border rounded-lg p-3 flex items-center gap-3 text-sm ${
-          isBet ? 'border-green/40 text-green' : 'border-line text-muted opacity-60'
+        className={`bg-card border rounded-lg p-3 flex items-center gap-2 text-sm ${
+          isBet ? 'border-green/60' : 'border-line opacity-60'
         }`}
       >
         <span className="text-xs text-muted">#{rank}</span>
-        <span className="px-1.5 py-0.5 bg-line rounded text-[10px] text-muted">{pick.sport}</span>
-        <span className="flex-1 truncate">{pick.pick}</span>
-        <span className="text-xs font-bold">{done}</span>
+        <SportLogo sport={pick.sport} size={16} />
+        <span className="flex-1 truncate text-fg">{pick.pick}</span>
+        <span className={`text-xs font-bold ${isBet ? 'text-green' : 'text-muted'}`}>
+          {done}
+        </span>
       </div>
     );
+  }
+
+  // Normalize key_stats: support both array of {label,value,flag} and legacy record
+  let keyStatsItems: KeyStat[] = [];
+  if (Array.isArray(pick.key_stats)) {
+    keyStatsItems = pick.key_stats as KeyStat[];
+  } else if (pick.key_stats && typeof pick.key_stats === 'object') {
+    keyStatsItems = Object.entries(pick.key_stats as Record<string, unknown>).map(([label, value]) => ({
+      label,
+      value: String(value),
+    }));
   }
 
   return (
@@ -149,10 +175,8 @@ export default function PickCard({ pick, rank }: Props) {
           <span className="font-bold text-blue">{odds.toFixed(2)}</span>
         </div>
         <div className="text-right">
-          <span className="text-muted text-xs">apostar </span>
-          <span className="font-bold text-green">${amount}</span>
-          <span className="text-muted text-xs"> · ganas </span>
-          <span className="font-bold text-yellow">${win}</span>
+          <span className="text-muted text-xs">recomendado </span>
+          <span className="font-bold text-green">${recommended}</span>
         </div>
       </div>
 
@@ -160,30 +184,43 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="text-[11px] text-muted">🏥 {pick.injuries}</div>
       )}
 
-      <details className="text-xs" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-        <summary className="text-muted cursor-pointer">
-          {open ? '▼' : '▶'} análisis
-        </summary>
-        <div className="mt-2 space-y-2 pl-3 border-l border-line">
-          {pick.analysis && <p className="text-fg/90">{pick.analysis}</p>}
-          {pick.risk_factors && (
-            <p className="text-red/80">
-              <span className="text-muted">riesgo: </span>
-              {pick.risk_factors}
-            </p>
-          )}
-          {pick.key_stats && Object.keys(pick.key_stats).length > 0 && (
-            <div className="text-muted">
-              {Object.entries(pick.key_stats).map(([k, v]) => (
-                <div key={k}>
-                  <span className="text-muted">{k}: </span>
-                  <span className="text-fg">{String(v)}</span>
-                </div>
-              ))}
-            </div>
-          )}
+      {keyStatsItems.length > 0 && (
+        <div className="grid grid-cols-2 gap-1.5">
+          {keyStatsItems.slice(0, 6).map((s, i) => {
+            const flagColor =
+              s.flag === 'green' ? 'text-green' : s.flag === 'yellow' ? 'text-yellow' : s.flag === 'red' ? 'text-red' : 'text-fg';
+            return (
+              <div
+                key={`${s.label}-${i}`}
+                className="bg-bg/50 border border-line rounded px-2 py-1.5 text-[10px]"
+              >
+                <div className="text-muted truncate">{s.label}</div>
+                <div className={`font-bold ${flagColor} truncate`}>{s.value}</div>
+              </div>
+            );
+          })}
         </div>
-      </details>
+      )}
+
+      {pick.analysis && (
+        <details
+          className="text-xs"
+          onToggle={(e) => setAnalysisOpen((e.target as HTMLDetailsElement).open)}
+        >
+          <summary className="text-muted cursor-pointer">
+            {analysisOpen ? '▼' : '▶'} análisis completo
+          </summary>
+          <div className="mt-2 space-y-2 pl-3 border-l border-line">
+            <p className="text-fg/90 leading-relaxed">{pick.analysis}</p>
+            {pick.risk_factors && (
+              <p className="text-red/80">
+                <span className="text-muted">riesgo: </span>
+                {pick.risk_factors}
+              </p>
+            )}
+          </div>
+        </details>
+      )}
 
       {pick.odds_comparison && Object.keys(pick.odds_comparison).length > 0 && (
         <details
@@ -206,22 +243,82 @@ export default function PickCard({ pick, rank }: Props) {
 
       {err && <div className="text-red text-xs">{err}</div>}
 
-      <div className="flex gap-2 pt-1">
-        <button
-          onClick={apuesta}
-          disabled={isPending}
-          className="tap flex-1 py-3 bg-green text-bg rounded font-bold text-sm"
-        >
-          APOSTAR ${amount}
-        </button>
-        <button
-          onClick={skip}
-          disabled={isPending}
-          className="tap px-4 py-3 border border-line text-muted rounded font-bold text-sm"
-        >
-          SKIP
-        </button>
-      </div>
+      {!showForm ? (
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={() => {
+              setShowForm(true);
+              setAmountStr(String(recommended));
+            }}
+            className="tap flex-1 py-3 bg-green text-bg rounded font-bold text-sm"
+          >
+            APOSTAR
+          </button>
+          <button
+            onClick={skip}
+            className="tap px-4 py-3 border border-line text-muted rounded font-bold text-sm"
+          >
+            SKIP
+          </button>
+        </div>
+      ) : (
+        <div className="bg-bg/50 border border-line rounded-lg p-3 space-y-3">
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wider">
+              Monto a apostar
+            </label>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-2xl text-green font-bold">$</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={amountStr}
+                onChange={(e) => setAmountStr(e.target.value)}
+                autoFocus
+                className="bg-transparent text-2xl font-bold text-fg outline-none flex-1 min-w-0"
+              />
+            </div>
+            <div className="flex gap-1 mt-2">
+              {[recommended, recommended * 2, Math.round(recommended / 2), 100, 200, 500].map((v, i) => (
+                <button
+                  key={i}
+                  onClick={() => setAmountStr(String(v))}
+                  className="tap px-2 py-1 border border-line rounded text-[10px] text-muted hover:text-fg"
+                >
+                  ${v}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted">Ganancia potencial</span>
+            <span className="text-yellow font-bold">+${win}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted">Total a recibir si gana</span>
+            <span className="text-fg font-bold">${amountNum + win}</span>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={confirmar}
+              disabled={submitting || amountNum <= 0}
+              className="tap flex-1 py-3 bg-green text-bg rounded font-bold text-sm disabled:opacity-50"
+            >
+              {submitting ? 'APOSTANDO…' : `CONFIRMAR $${amountNum}`}
+            </button>
+            <button
+              onClick={() => {
+                setShowForm(false);
+                setErr(null);
+              }}
+              disabled={submitting}
+              className="tap px-4 py-3 border border-line text-muted rounded font-bold text-sm"
+            >
+              CANCELAR
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

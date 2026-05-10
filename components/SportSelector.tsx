@@ -6,9 +6,10 @@ import GenPicksButton from './GenPicksButton';
 interface Props {
   options: ToggleOption[];
   initial: string[];
+  hasPendingPicks?: boolean;
 }
 
-export default function SportSelector({ options, initial }: Props) {
+export default function SportSelector({ options, initial, hasPendingPicks }: Props) {
   const [selected, setSelected] = useState<string[]>(initial);
   const enabled = options.filter((o) => !o.disabled).length;
   const withGames = options.filter((o) => o.today).map((o) => o.value);
@@ -29,7 +30,7 @@ export default function SportSelector({ options, initial }: Props) {
         )}
       </div>
       <Toggle options={options} value={selected} onChange={setSelected} />
-      <GenPicksButton selectedSports={selected} />
+      <GenPicksButton selectedSports={selected} hasPendingPicks={hasPendingPicks} />
     </div>
   );
 }

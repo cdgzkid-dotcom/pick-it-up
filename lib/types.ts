@@ -3,9 +3,16 @@ export type BetType = 'ML' | 'Spread' | 'O-U' | 'Prop' | 'Parlay';
 export type BetResult = 'pending' | 'win' | 'loss' | 'cashout' | 'early_payout';
 export type PickStatus = 'pending' | 'bet' | 'skipped';
 
+export interface KeyStat {
+  label: string;
+  value: string;
+  flag?: 'green' | 'yellow' | 'red' | null;
+}
+
 export interface Pick {
   id: string;
   created_at: string;
+  updated_at?: string;
   sport: string;
   game: string;
   league?: string | null;
@@ -13,6 +20,7 @@ export interface Pick {
   away_team: string;
   home_team_abbr?: string | null;
   away_team_abbr?: string | null;
+  espn_event_id?: string | null;
   pick: string;
   pick_detail?: string | null;
   bet_type: BetType | string;
@@ -29,7 +37,7 @@ export interface Pick {
   analysis?: string | null;
   risk_factors?: string | null;
   injuries?: string | null;
-  key_stats?: Record<string, unknown> | null;
+  key_stats?: KeyStat[] | Record<string, unknown> | null;
   early_payout_eligible: boolean;
   early_payout_threshold?: string | null;
   status: PickStatus;
@@ -47,6 +55,7 @@ export interface Bet {
   away_team?: string | null;
   home_team_abbr?: string | null;
   away_team_abbr?: string | null;
+  espn_event_id?: string | null;
   pick: string;
   bet_type: string;
   odds_decimal: number;
@@ -81,6 +90,7 @@ export interface Game {
   away_team: string;
   home_team_abbr?: string;
   away_team_abbr?: string;
+  espn_event_id?: string;
   game_label: string;
   start_time?: string;
   odds: {

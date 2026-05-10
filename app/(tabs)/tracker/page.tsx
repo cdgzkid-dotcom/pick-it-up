@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import BetResolver from '@/components/BetResolver';
 import ManualBetForm from '@/components/ManualBetForm';
+import ResultsRefresher from '@/components/ResultsRefresher';
 import { TeamLogo } from '@/components/Logo';
 import { tierLabel } from '@/lib/units';
 import type { Bet, Tier } from '@/lib/types';
@@ -27,6 +28,11 @@ export default async function TrackerPage() {
       <header>
         <h1 className="text-xl font-bold">TRACKER</h1>
       </header>
+
+      {/* Auto-check on mount */}
+      <ResultsRefresher />
+      {/* Manual button */}
+      <ResultsRefresher manual />
 
       <section className="space-y-2">
         <div className="text-[10px] text-muted uppercase tracking-wider">

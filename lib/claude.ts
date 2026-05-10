@@ -15,7 +15,7 @@ function client(): Anthropic {
 export async function callClaudeJson<T = unknown>(
   systemPrompt: string,
   userPrompt: string,
-  maxTokens = 4096,
+  maxTokens = 8192,
 ): Promise<T> {
   const c = client();
 

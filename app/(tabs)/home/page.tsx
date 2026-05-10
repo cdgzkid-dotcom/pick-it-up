@@ -2,6 +2,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import BankrollEditor from '@/components/BankrollEditor';
 import SportSelector from '@/components/SportSelector';
 import BetResolver from '@/components/BetResolver';
+import ResultsRefresher from '@/components/ResultsRefresher';
 import { computeStats } from '@/lib/stats';
 import { ESPN_SPORTS, FAVORITE_SPORTS, gameCountsBySport } from '@/lib/espn';
 import { sportLeagueLogoUrl } from '@/components/Logo';
@@ -13,15 +14,20 @@ export const revalidate = 0;
 export default async function HomePage() {
   const supabase = supabaseAdmin();
 
-  const [settingsRes, betsRes, counts] = await Promise.all([
+  const [settingsRes, betsRes, counts, pendingCountRes] = await Promise.all([
     supabase.from('settings').select('*').eq('id', 1).single(),
     supabase.from('bets').select('*').order('created_at', { ascending: false }),
     gameCountsBySport(),
+    supabase
+      .from('picks')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
   ]);
 
   const settings = settingsRes.data as Settings | null;
   const bets = (betsRes.data as Bet[]) ?? [];
   const pending = bets.filter((b) => b.result === 'pending');
+  const hasPendingPicks = (pendingCountRes.count ?? 0) > 0;
 
   const stats = computeStats(bets);
 
@@ -44,6 +50,7 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-6">
+      <ResultsRefresher />
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-bold tracking-tight">PICK IT UP</h1>
         <span className="text-[10px] text-muted">Draftea · MX</span>
@@ -77,7 +84,11 @@ export default async function HomePage() {
         />
       </div>
 
-      <SportSelector options={sportOptions} initial={initialSelected} />
+      <SportSelector
+        options={sportOptions}
+        initial={initialSelected}
+        hasPendingPicks={hasPendingPicks}
+      />
 
       {pending.length > 0 && (
         <section className="space-y-2">
@@ -99,9 +110,8 @@ export default async function HomePage() {
           <div><span className="text-green font-bold">✅ STRONG 70-84%</span> · 1.5 units</div>
           <div><span className="text-yellow font-bold">⚠️ VALUE 55-69%</span> · 1 unit</div>
           <div><span className="text-orange font-bold">🎯 PARLAY</span> · 0.5 unit</div>
-          <div><span className="text-red font-bold">❌ NO BET</span> &lt;55% confianza</div>
-          <div className="pt-1">Momio &lt;1.40 → baja un tier (no paga lo suficiente)</div>
-          <div className="pt-1 text-[10px]">Datos de juegos: ESPN API · momios: DraftKings/FanDuel/etc.</div>
+          <div className="pt-1">Momio &lt;1.40 → baja un tier</div>
+          <div className="pt-1 text-[10px]">Datos: ESPN · momios: DraftKings/FanDuel/etc.</div>
         </div>
       </details>
     </div>

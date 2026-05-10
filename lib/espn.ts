@@ -243,6 +243,7 @@ async function eventToGame(sport: string, ev: EspnEvent): Promise<Game | null> {
     away_team: away.team.displayName,
     home_team_abbr: home.team.abbreviation?.toLowerCase(),
     away_team_abbr: away.team.abbreviation?.toLowerCase(),
+    espn_event_id: ev.id,
     game_label: `${away.team.displayName} @ ${home.team.displayName}`,
     start_time: ev.date,
     odds,
@@ -281,4 +282,62 @@ export async function gameCountsBySport(): Promise<Record<string, number>> {
     }),
   );
   return Object.fromEntries(entries);
+}
+
+export interface EventStatus {
+  completed: boolean;
+  state: 'pre' | 'in' | 'post' | string;
+  home_score?: number;
+  away_score?: number;
+  home_team?: string;
+  away_team?: string;
+}
+
+export async function fetchEventStatus(sport: string, eventId: string): Promise<EventStatus | null> {
+  const cfg = SPORTS[sport];
+  if (!cfg) return null;
+
+  const data = await fetchJson<{
+    competitions?: Array<{
+      competitors?: Array<{
+        homeAway?: 'home' | 'away';
+        score?: { value?: number; displayValue?: string } | string;
+        team?: { displayName?: string };
+      }>;
+      status?: { type?: { state?: string; completed?: boolean } };
+    }>;
+    status?: { type?: { state?: string; completed?: boolean } };
+  }>(
+    `https://sports.core.api.espn.com/v2/sports/${cfg.coreSport}/leagues/${cfg.coreLeague}/events/${eventId}`,
+  );
+  if (!data) return null;
+
+  const comp = data.competitions?.[0];
+  const compStatus = comp?.status?.type ?? data.status?.type;
+  const state = compStatus?.state ?? 'unknown';
+  const completed = compStatus?.completed === true || state === 'post';
+
+  let home_score: number | undefined;
+  let away_score: number | undefined;
+  let home_team: string | undefined;
+  let away_team: string | undefined;
+
+  for (const c of comp?.competitors ?? []) {
+    const score =
+      typeof c.score === 'object' && c.score
+        ? Number((c.score.value ?? c.score.displayValue) as number | string)
+        : c.score != null
+        ? Number(c.score)
+        : NaN;
+    const teamName = c.team?.displayName;
+    if (c.homeAway === 'home') {
+      if (Number.isFinite(score)) home_score = score;
+      home_team = teamName;
+    } else if (c.homeAway === 'away') {
+      if (Number.isFinite(score)) away_score = score;
+      away_team = teamName;
+    }
+  }
+
+  return { completed, state, home_score, away_score, home_team, away_team };
 }

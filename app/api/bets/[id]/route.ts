@@ -43,25 +43,23 @@ export async function PATCH(
   const amount = Number(bet.amount);
   const odds = Number(bet.odds_decimal);
   let payout = 0;
-  let bankrollDelta = 0;
-  const logType: 'win' | 'loss' | 'cashout' | 'early_payout' = parsed.data.result;
+  // Bankroll was already debited on bet creation. On resolve we credit
+  // back what the user receives.
+  let credit = 0;
 
-  if (parsed.data.result === 'win') {
+  if (parsed.data.result === 'win' || parsed.data.result === 'early_payout') {
     payout = amount + potentialWin(amount, odds);
-    bankrollDelta = potentialWin(amount, odds);
-  } else if (parsed.data.result === 'early_payout') {
-    payout = amount + potentialWin(amount, odds);
-    bankrollDelta = potentialWin(amount, odds);
+    credit = payout;
   } else if (parsed.data.result === 'loss') {
     payout = 0;
-    bankrollDelta = -amount;
+    credit = 0;
   } else if (parsed.data.result === 'cashout') {
     const ca = Number(parsed.data.cashout_amount ?? 0);
     if (ca <= 0) {
       return NextResponse.json({ error: 'cashout_amount required and > 0' }, { status: 400 });
     }
     payout = ca;
-    bankrollDelta = ca - amount;
+    credit = ca;
   }
 
   const { data: settings, error: setErr } = await supabase
@@ -72,7 +70,7 @@ export async function PATCH(
   if (setErr) {
     return NextResponse.json({ error: 'Settings missing' }, { status: 500 });
   }
-  const newBankroll = Number(settings.bankroll_current) + bankrollDelta;
+  const newBankroll = Number(settings.bankroll_current) + credit;
 
   const { error: updErr } = await supabase
     .from('bets')
@@ -86,14 +84,24 @@ export async function PATCH(
     return NextResponse.json({ error: 'Update failed', detail: updErr.message }, { status: 500 });
   }
 
-  await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+  if (credit !== 0) {
+    await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+  }
 
-  await supabase.from('bankroll_log').insert([{
-    type: logType,
-    amount: bankrollDelta,
-    balance_after: newBankroll,
-    note: `${parsed.data.result.toUpperCase()} on ${bet.pick} (${bet.game})`,
-  }]);
+  await supabase.from('bankroll_log').insert([
+    {
+      type: parsed.data.result,
+      amount: credit,
+      balance_after: newBankroll,
+      note: `${parsed.data.result.toUpperCase()} on ${bet.pick} (${bet.game})`,
+    },
+  ]);
 
-  return NextResponse.json({ ok: true, payout, bankroll_current: newBankroll });
+  return NextResponse.json({
+    ok: true,
+    result: parsed.data.result,
+    payout,
+    pl: payout - amount,
+    bankroll_current: newBankroll,
+  });
 }

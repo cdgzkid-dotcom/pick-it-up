@@ -63,7 +63,13 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     if (merged.length > 0) g.injuries = merged;
   }
 
+  // AUDIT: per-sport game count
+  const bySport: Record<string, number> = {};
+  for (const g of games) bySport[g.sport] = (bySport[g.sport] ?? 0) + 1;
+  console.log(`[AUDIT][cron] ESPN games found by sport: ${JSON.stringify(bySport)} (total ${games.length})`);
+
   const inWindow = games.filter((g) => withinWindow(g.start_time));
+  console.log(`[AUDIT][cron] in-window games: ${inWindow.length} (filtered out ${games.length - inWindow.length} outside window)`);
   if (inWindow.length === 0) {
     return { generated: 0, eventIds: [], message: 'no_games_in_window' };
   }
@@ -76,6 +82,9 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     .in('espn_event_id', eventIds);
   const alreadyDone = new Set((existingPicks ?? []).map((p) => p.espn_event_id));
   const fresh: Game[] = inWindow.filter((g) => g.espn_event_id && !alreadyDone.has(g.espn_event_id));
+
+  console.log(`[AUDIT][cron] already-have-picks events: ${alreadyDone.size}, fresh events to analyze: ${fresh.length}`);
+  console.log(`[AUDIT][cron] fresh games: ${fresh.map((g) => `${g.sport}/${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(', ')}`);
 
   if (fresh.length === 0) {
     return { generated: 0, eventIds: [], message: 'all_already_generated' };

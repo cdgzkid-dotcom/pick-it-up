@@ -217,12 +217,24 @@ export async function analyzeGames(
           );
           const validated = ClaudeResponseSchema.safeParse(claudeOutput);
           if (!validated.success) {
-            console.error(`[pickGen] batch ${i} validation failed`, validated.error.flatten());
+            console.error(`[AUDIT][batch ${i}] VALIDATION FAILED`, JSON.stringify(validated.error.flatten()));
+            console.error(`[AUDIT][batch ${i}] raw output sample:`, JSON.stringify(claudeOutput).slice(0, 1500));
             return { picks: [], parlays: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
           }
+          // AUDIT: log every pick Claude returned for this batch with raw fields
           console.log(
-            `[pickGen] batch ${i} (${b.length} games) ${Date.now() - tStart}ms — ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays`,
+            `[AUDIT][batch ${i}] input games=${b.length} (${b.map((g) => `${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(',')}) → claude returned ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays in ${Date.now() - tStart}ms`,
           );
+          for (const p of validated.data.picks) {
+            console.log(
+              `[AUDIT][batch ${i}] pick raw: ${p.pick} (${p.sport}) tier=${p.tier ?? '∅'} conf=${p.confidence} real=${(p.real_probability * 100).toFixed(1)}% odds=${p.odds_decimal} claude_edge=${p.edge ?? '∅'} trap=${p.trap_warning ? 'YES' : 'no'}`,
+            );
+          }
+          for (const par of validated.data.parlays) {
+            console.log(
+              `[AUDIT][batch ${i}] parlay raw: ${par.legs.map((l) => l.pick).join('+')} odds=${par.combined_odds} prob=${(par.combined_probability * 100).toFixed(1)}% conf=${par.confidence ?? '∅'}`,
+            );
+          }
           return { picks: validated.data.picks, parlays: validated.data.parlays, dropped: 0, idx: i, ms: Date.now() - tStart };
         } catch (err) {
           console.error(`[pickGen] batch ${i} failed`, err);
@@ -257,57 +269,79 @@ export async function analyzeGames(
     if (g.away_team_abbr) teamAbbrByName.set(g.away_team.toLowerCase(), g.away_team_abbr);
   }
 
-  const enrichedSingles = raw.picks
-    .map((p) => {
-      const odds = p.odds_decimal;
-      const implied = impliedProbability(odds);
-      const e = edgeOf(p.real_probability, odds);
-      // Tier ALWAYS server-side from confidence — Claude's tier is ignored.
-      const baseTier: Tier = tierFromConfidence(p.confidence);
-      // tierForOdds demotes one tier when odds < 1.40 (momio culero).
-      // Trap warning does NOT demote the tier (would confuse a single ML
-      // pick into looking like a parlay) — it switches Kelly to quarter
-      // mode (more conservative sizing) and the UI/Telegram add a "TRAMPA
-      // DETECTADA" marker on top of the original tier.
-      const adjustedTier = tierForOdds(baseTier, odds);
-      const hasTrap = !!p.trap_warning;
-      const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
-      const score = adjustedEdgeScore(p.real_probability, odds);
-      const homeAbbr =
-        p.home_team_abbr?.toLowerCase() ??
-        teamAbbrByName.get(p.home_team.toLowerCase()) ??
-        null;
-      const awayAbbr =
-        p.away_team_abbr?.toLowerCase() ??
-        teamAbbrByName.get(p.away_team.toLowerCase()) ??
-        null;
-      const matchedGame = gameByMatchup.get(
-        `${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`,
+  console.log(
+    `[AUDIT] total raw from claude: ${raw.picks.length} picks + ${raw.parlays.length} parlays (across ${batches.length} batches)`,
+  );
+
+  const mapped = raw.picks.map((p) => {
+    const odds = p.odds_decimal;
+    const implied = impliedProbability(odds);
+    const e = edgeOf(p.real_probability, odds);
+    const baseTier: Tier = tierFromConfidence(p.confidence);
+    const adjustedTier = tierForOdds(baseTier, odds);
+    const hasTrap = !!p.trap_warning;
+    const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
+    const score = adjustedEdgeScore(p.real_probability, odds);
+    const homeAbbr =
+      p.home_team_abbr?.toLowerCase() ??
+      teamAbbrByName.get(p.home_team.toLowerCase()) ??
+      null;
+    const awayAbbr =
+      p.away_team_abbr?.toLowerCase() ??
+      teamAbbrByName.get(p.away_team.toLowerCase()) ??
+      null;
+    const matchedGame = gameByMatchup.get(
+      `${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`,
+    );
+    return {
+      ...p,
+      home_team_abbr: homeAbbr,
+      away_team_abbr: awayAbbr,
+      espn_event_id: matchedGame?.espn_event_id ?? null,
+      game_start_time: matchedGame?.start_time ?? null,
+      implied_probability: implied,
+      edge: e,
+      tier: adjustedTier,
+      recommended_amount: k.amount,
+      kelly_fraction: k.fraction,
+      _score: score,
+    };
+  });
+
+  // AUDIT: per-pick filter result (which filter rejected it, if any)
+  const reasons: Record<string, number> = {
+    pass: 0,
+    fail_edge: 0,
+    fail_confidence: 0,
+    fail_kelly_zero: 0,
+    fail_culero_low_edge: 0,
+  };
+  const enrichedSingles = mapped
+    .filter((p) => {
+      const reasons_for_this: string[] = [];
+      if (!(p.edge > 0)) reasons_for_this.push('edge<=0');
+      if (!(p.confidence >= 55)) reasons_for_this.push(`conf<55 (${p.confidence})`);
+      if (!(p.recommended_amount > 0)) reasons_for_this.push('kelly=0');
+      if (p.odds_decimal < 1.4 && p.edge < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
+      if (reasons_for_this.length > 0) {
+        console.log(
+          `[AUDIT] DISCARD ${p.pick} (${p.sport}) — reasons: ${reasons_for_this.join('; ')} | conf=${p.confidence} odds=${p.odds_decimal} real=${(p.real_probability * 100).toFixed(1)}% computed_edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount}`,
+        );
+        if (!(p.edge > 0)) reasons.fail_edge++;
+        else if (!(p.confidence >= 55)) reasons.fail_confidence++;
+        else if (!(p.recommended_amount > 0)) reasons.fail_kelly_zero++;
+        else reasons.fail_culero_low_edge++;
+        return false;
+      }
+      console.log(
+        `[AUDIT] KEEP ${p.pick} (${p.sport}) — tier=${p.tier} conf=${p.confidence} odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount} (${(p.kelly_fraction * 100).toFixed(1)}%)`,
       );
-      return {
-        ...p,
-        home_team_abbr: homeAbbr,
-        away_team_abbr: awayAbbr,
-        espn_event_id: matchedGame?.espn_event_id ?? null,
-        game_start_time: matchedGame?.start_time ?? null,
-        implied_probability: implied,
-        edge: e,
-        tier: adjustedTier,
-        recommended_amount: k.amount,
-        kelly_fraction: k.fraction,
-        _score: score,
-      };
+      reasons.pass++;
+      return true;
     })
-    // Server-side filters (don't trust Claude's self-policing):
-    //   - edge must be positive
-    //   - confidence >= 55 (anything below is no-bet territory)
-    //   - Kelly returned a positive amount (no edge → 0 → discard)
-    //   - momio culero + low edge: discard
-    .filter((p) => p.edge > 0)
-    .filter((p) => p.confidence >= 55)
-    .filter((p) => p.recommended_amount > 0)
-    .filter((p) => !(p.odds_decimal < 1.4 && p.edge < 0.05))
     .sort((a, b) => b._score - a._score);
+
+  console.log(`[AUDIT] filter summary: ${JSON.stringify(reasons)}`);
 
   const enrichedParlays = raw.parlays.map((par) => {
     const odds = par.combined_odds;

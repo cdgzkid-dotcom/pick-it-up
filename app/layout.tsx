@@ -19,13 +19,27 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: '#08080d',
   viewportFit: 'cover',
 };
 
+const themeBootstrap = `(function(){try{var h=new Date().getHours();if(h>=6&&h<19){document.documentElement.classList.add('light');}}catch(e){}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="es" className={mono.variable}>
+    <html lang="es" className={mono.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+        <meta
+          name="theme-color"
+          media="(prefers-color-scheme: light)"
+          content="#f5f5f5"
+        />
+        <meta
+          name="theme-color"
+          media="(prefers-color-scheme: dark)"
+          content="#08080d"
+        />
+      </head>
       <body className="font-mono bg-bg text-fg min-h-screen">{children}</body>
     </html>
   );

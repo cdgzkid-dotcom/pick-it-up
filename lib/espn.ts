@@ -243,10 +243,7 @@ async function eventToGame(sport: string, ev: EspnEvent): Promise<Game | null> {
     away_team: away.team.displayName,
     home_team_abbr: home.team.abbreviation?.toLowerCase(),
     away_team_abbr: away.team.abbreviation?.toLowerCase(),
-    game_label:
-      ev.shortName && ev.shortName.length < 80
-        ? ev.shortName
-        : `${away.team.displayName} @ ${home.team.displayName}`,
+    game_label: `${away.team.displayName} @ ${home.team.displayName}`,
     start_time: ev.date,
     odds,
     odds_comparison: Object.keys(oddsComparison).length > 0 ? oddsComparison : undefined,

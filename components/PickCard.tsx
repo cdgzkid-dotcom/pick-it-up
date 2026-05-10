@@ -17,7 +17,9 @@ export default function PickCard({ pick, rank }: Props) {
   const [isPending, start] = useTransition();
   const router = useRouter();
   const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const initialDone =
+    pick.status === 'bet' ? 'APOSTADO ✓' : pick.status === 'skipped' ? 'SKIPPED' : null;
+  const [done, setDone] = useState<string | null>(initialDone);
 
   const tier = (pick.tier ?? 'value') as Tier;
   const tierColor =
@@ -56,7 +58,13 @@ export default function PickCard({ pick, rank }: Props) {
       }),
     });
     if (!r.ok) {
-      setErr('Error al apostar');
+      if (r.status === 409) {
+        setDone('APOSTADO ✓');
+        start(() => router.refresh());
+        return;
+      }
+      const j = await r.json().catch(() => null);
+      setErr(j?.error ?? 'Error al apostar');
       return;
     }
     setDone('APOSTADO ✓');
@@ -74,9 +82,17 @@ export default function PickCard({ pick, rank }: Props) {
   };
 
   if (done) {
+    const isBet = done.includes('APOSTADO');
     return (
-      <div className="bg-card border border-line rounded-lg p-4 text-center text-muted">
-        #{rank} · {done}
+      <div
+        className={`bg-card border rounded-lg p-3 flex items-center gap-3 text-sm ${
+          isBet ? 'border-green/40 text-green' : 'border-line text-muted opacity-60'
+        }`}
+      >
+        <span className="text-xs text-muted">#{rank}</span>
+        <span className="px-1.5 py-0.5 bg-line rounded text-[10px] text-muted">{pick.sport}</span>
+        <span className="flex-1 truncate">{pick.pick}</span>
+        <span className="text-xs font-bold">{done}</span>
       </div>
     );
   }

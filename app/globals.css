@@ -3,14 +3,29 @@
 @tailwind utilities;
 
 :root {
+  --bg: 8 8 13;
+  --fg: 230 230 234;
+  --card: 16 16 26;
+  --line: 26 26 35;
+  --muted: 122 122 134;
   color-scheme: dark;
 }
 
+:root.light {
+  --bg: 245 245 245;
+  --fg: 26 26 26;
+  --card: 255 255 255;
+  --line: 220 220 226;
+  --muted: 107 107 117;
+  color-scheme: light;
+}
+
 html, body {
-  background: #08080d;
-  color: #e6e6ea;
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
+  transition: background-color 200ms ease, color 200ms ease;
 }
 
 body {

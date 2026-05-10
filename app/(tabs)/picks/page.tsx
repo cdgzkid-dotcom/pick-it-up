@@ -12,7 +12,7 @@ export default async function PicksPage() {
     .from('picks')
     .select('*')
     .gte('created_at', since)
-    .eq('status', 'pending')
+    .in('status', ['pending', 'bet'])
     .order('edge', { ascending: false });
 
   if (error) {
@@ -24,8 +24,9 @@ export default async function PicksPage() {
   }
 
   const picks = (data as Pick[]) ?? [];
-  const singles = picks.filter((p) => !p.is_parlay);
-  const parlays = picks.filter((p) => p.is_parlay);
+  const pendingSingles = picks.filter((p) => !p.is_parlay && p.status === 'pending');
+  const pendingParlays = picks.filter((p) => p.is_parlay && p.status === 'pending');
+  const alreadyBet = picks.filter((p) => p.status === 'bet');
 
   if (picks.length === 0) {
     return (
@@ -46,27 +47,46 @@ export default async function PicksPage() {
     <div className="space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-bold">PICKS</h1>
-        <span className="text-xs text-muted">{picks.length} con edge</span>
+        <span className="text-xs text-muted">
+          {pendingSingles.length + pendingParlays.length} pendientes
+          {alreadyBet.length > 0 ? ` · ${alreadyBet.length} apostados` : ''}
+        </span>
       </header>
 
-      <div className="bg-card border border-line rounded p-3 text-xs text-muted">
-        Rankeados por edge ajustado · momios en decimal · cross-sport
-      </div>
+      {pendingSingles.length > 0 && (
+        <>
+          <div className="bg-card border border-line rounded p-3 text-xs text-muted">
+            Rankeados por edge ajustado · momios decimal · cross-sport
+          </div>
+          <div className="space-y-3">
+            {pendingSingles.map((p, i) => (
+              <PickCard key={p.id} pick={p} rank={i + 1} />
+            ))}
+          </div>
+        </>
+      )}
 
-      <div className="space-y-3">
-        {singles.map((p, i) => (
-          <PickCard key={p.id} pick={p} rank={i + 1} />
-        ))}
-      </div>
-
-      {parlays.length > 0 && (
-        <section className="space-y-3 pt-4">
+      {pendingParlays.length > 0 && (
+        <section className="space-y-3 pt-2">
           <div className="text-[10px] text-muted uppercase tracking-wider">
             Parlays sugeridos
           </div>
-          {parlays.map((p, i) => (
-            <PickCard key={p.id} pick={p} rank={singles.length + i + 1} />
+          {pendingParlays.map((p, i) => (
+            <PickCard key={p.id} pick={p} rank={pendingSingles.length + i + 1} />
           ))}
+        </section>
+      )}
+
+      {alreadyBet.length > 0 && (
+        <section className="space-y-2 pt-4">
+          <div className="text-[10px] text-muted uppercase tracking-wider">
+            Ya apostados ({alreadyBet.length})
+          </div>
+          <div className="space-y-2">
+            {alreadyBet.map((p, i) => (
+              <PickCard key={p.id} pick={p} rank={i + 1} />
+            ))}
+          </div>
         </section>
       )}
     </div>

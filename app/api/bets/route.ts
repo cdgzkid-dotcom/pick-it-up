@@ -40,12 +40,32 @@ export async function POST(req: Request) {
   const supabase = supabaseAdmin();
   const { pick_id, ...fields } = parsed.data;
 
+  if (pick_id) {
+    const { data: existing } = await supabase
+      .from('bets')
+      .select('id')
+      .eq('pick_id', pick_id)
+      .maybeSingle();
+    if (existing) {
+      return NextResponse.json(
+        { error: 'Ya apostaste en este pick', existing_bet_id: existing.id },
+        { status: 409 },
+      );
+    }
+  }
+
   const { data: bet, error } = await supabase
     .from('bets')
     .insert([{ ...fields, pick_id: pick_id ?? null, result: 'pending' }])
     .select()
     .single();
   if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json(
+        { error: 'Ya apostaste en este pick' },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: 'Insert failed', detail: error.message }, { status: 500 });
   }
 

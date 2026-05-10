@@ -18,13 +18,14 @@ export default function StatsChart({ data }: Props) {
       </div>
       <ResponsiveContainer width="100%" height="85%">
         <LineChart data={data}>
-          <XAxis dataKey="x" stroke="#7a7a86" fontSize={10} />
-          <YAxis stroke="#7a7a86" fontSize={10} />
+          <XAxis dataKey="x" stroke="rgb(var(--muted))" fontSize={10} />
+          <YAxis stroke="rgb(var(--muted))" fontSize={10} />
           <Tooltip
             contentStyle={{
-              background: '#10101a',
-              border: '1px solid #1a1a23',
+              background: 'rgb(var(--card))',
+              border: '1px solid rgb(var(--line))',
               borderRadius: 4,
+              color: 'rgb(var(--fg))',
               fontFamily: 'JetBrains Mono, monospace',
               fontSize: 12,
             }}

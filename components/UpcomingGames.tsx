@@ -76,31 +76,35 @@ export default function UpcomingGames({ games }: Props) {
               <div className="text-[10px] text-muted">{diffShort(earliest, now)}</div>
             </div>
             <div className="space-y-1">
-              {gs.map((g) => (
-                <div key={g.espn_event_id} className="flex items-center gap-2 text-[11px]">
-                  <SportLogo sport={g.sport} size={14} className="shrink-0" />
-                  {(g.away_team_abbr || g.home_team_abbr) ? (
-                    <div className="flex -space-x-1 shrink-0">
-                      <TeamLogo
-                        sport={g.sport}
-                        abbr={g.away_team_abbr}
-                        size={18}
-                        className="rounded-full ring-1 ring-card bg-card"
-                      />
-                      <TeamLogo
-                        sport={g.sport}
-                        abbr={g.home_team_abbr}
-                        size={18}
-                        className="rounded-full ring-1 ring-card bg-card"
-                      />
-                    </div>
-                  ) : (
-                    <span className="text-muted w-10">{g.sport}</span>
-                  )}
-                  <span className="flex-1 truncate">{g.game_label}</span>
-                  {g.has_picks && <span className="text-green text-[10px]">✓ pick</span>}
-                </div>
-              ))}
+              {gs.map((g) => {
+                const hasLogos = g.away_team_abbr || g.home_team_abbr;
+                // game_label is "Away Team @ Home Team" — split for scoreboard
+                const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
+                return (
+                  <div
+                    key={g.espn_event_id}
+                    className="grid grid-cols-[14px_auto_1fr_auto_1fr_auto_auto] items-center gap-1.5 text-[11px]"
+                  >
+                    <SportLogo sport={g.sport} size={14} className="shrink-0" />
+                    {hasLogos ? (
+                      <>
+                        <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={18} className="shrink-0" />
+                        <span className="truncate">{awayName ?? ''}</span>
+                        <span className="text-muted text-[9px] px-0.5">@</span>
+                        <span className="truncate text-right">{homeName ?? ''}</span>
+                        <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={18} className="shrink-0" />
+                      </>
+                    ) : (
+                      <span className="col-span-5 truncate">{g.game_label}</span>
+                    )}
+                    {g.has_picks ? (
+                      <span className="text-green text-[10px]">✓</span>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <div className="mt-2 text-[10px]">
               {allPicked ? (

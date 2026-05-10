@@ -145,16 +145,22 @@ export default function PickCard({ pick, rank }: Props) {
       </div>
 
       {!pick.is_parlay && (pick.home_team_abbr || pick.away_team_abbr || pick.home_team) && (
-        <div className="flex items-center gap-3 py-1">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <TeamLogo sport={pick.sport} abbr={pick.away_team_abbr} size={32} />
-            <span className="text-xs truncate">{pick.away_team}</span>
-          </div>
-          <span className="text-muted text-[10px]">@</span>
-          <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
-            <span className="text-xs truncate text-right">{pick.home_team}</span>
-            <TeamLogo sport={pick.sport} abbr={pick.home_team_abbr} size={32} />
-          </div>
+        <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 py-2">
+          <TeamLogo
+            sport={pick.sport}
+            abbr={pick.away_team_abbr}
+            size={32}
+            className="shrink-0"
+          />
+          <span className="text-xs leading-tight">{pick.away_team}</span>
+          <span className="text-muted text-[11px] px-1">@</span>
+          <span className="text-xs leading-tight text-right">{pick.home_team}</span>
+          <TeamLogo
+            sport={pick.sport}
+            abbr={pick.home_team_abbr}
+            size={32}
+            className="shrink-0"
+          />
         </div>
       )}
 

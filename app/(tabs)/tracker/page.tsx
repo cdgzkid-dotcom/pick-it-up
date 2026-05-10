@@ -89,33 +89,28 @@ function HistoryRow({ bet }: { bet: Bet }) {
   const pl = Number(bet.payout ?? 0) - Number(bet.amount);
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-card border border-line rounded text-xs">
-      <span className={`text-base ${color} w-4`}>{symbol}</span>
-      {(bet.home_team_abbr || bet.away_team_abbr) && (
-        <div className="flex -space-x-1.5 shrink-0">
-          <TeamLogo
-            sport={bet.sport}
-            abbr={bet.away_team_abbr}
-            size={20}
-            className="rounded-full ring-1 ring-card bg-card"
-          />
-          <TeamLogo
-            sport={bet.sport}
-            abbr={bet.home_team_abbr}
-            size={20}
-            className="rounded-full ring-1 ring-card bg-card"
-          />
+    <div className="px-3 py-2 bg-card border border-line rounded text-xs space-y-1">
+      {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
+        <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-1.5 text-[11px]">
+          <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={20} className="shrink-0" />
+          <span className="truncate">{bet.away_team ?? ''}</span>
+          <span className="text-muted text-[9px]">@</span>
+          <span className="truncate text-right">{bet.home_team ?? ''}</span>
+          <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={20} className="shrink-0" />
         </div>
       )}
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{bet.pick}</div>
-        <div className="text-[10px] text-muted truncate">
-          {bet.sport} · {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
-          {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
+      <div className="flex items-center gap-2">
+        <span className={`text-base ${color} w-4`}>{symbol}</span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate">{bet.pick}</div>
+          <div className="text-[10px] text-muted truncate">
+            {bet.sport} · {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
+            {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
+          </div>
         </div>
-      </div>
-      <div className={`text-right font-bold ${pl >= 0 ? 'text-green' : 'text-red'}`}>
-        {pl >= 0 ? '+' : ''}${Math.round(pl)}
+        <div className={`text-right font-bold ${pl >= 0 ? 'text-green' : 'text-red'}`}>
+          {pl >= 0 ? '+' : ''}${Math.round(pl)}
+        </div>
       </div>
     </div>
   );

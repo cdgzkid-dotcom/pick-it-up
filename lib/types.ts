@@ -1,6 +1,6 @@
 export type Tier = 'lock' | 'strong' | 'value' | 'parlay';
 export type BetType = 'ML' | 'Spread' | 'O-U' | 'Prop' | 'Parlay';
-export type BetResult = 'pending' | 'win' | 'loss' | 'cashout' | 'early_payout';
+export type BetResult = 'pending' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout';
 export type PickStatus = 'pending' | 'bet' | 'skipped';
 
 export interface KeyStat {
@@ -84,7 +84,7 @@ export interface Bet {
 export interface BankrollLog {
   id: string;
   created_at: string;
-  type: 'deposit' | 'withdraw' | 'win' | 'loss' | 'cashout' | 'early_payout';
+  type: 'deposit' | 'withdraw' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout' | 'stake';
   amount: number;
   balance_after: number;
   note?: string | null;

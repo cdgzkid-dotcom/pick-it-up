@@ -20,8 +20,13 @@ export default function BetResolver({ bet }: Props) {
   const odds = Number(bet.odds_decimal);
   const win = Math.round(amount * (odds - 1));
 
+  // Stale bet: game_start_time > 4 hours ago and still pending
+  const gameStart = bet.game_start_time ? new Date(bet.game_start_time).getTime() : 0;
+  const hoursAgo = gameStart > 0 ? (Date.now() - gameStart) / 3_600_000 : 0;
+  const isStale = hoursAgo > 4;
+
   const resolve = async (
-    result: 'win' | 'loss' | 'cashout' | 'early_payout',
+    result: 'win' | 'loss' | 'push' | 'cashout' | 'early_payout',
     cashout_amount?: number,
   ) => {
     setErr(null);
@@ -94,6 +99,12 @@ export default function BetResolver({ bet }: Props) {
         </div>
       </div>
 
+      {isStale && (
+        <div className="text-[11px] text-yellow bg-yellow/10 border border-yellow/40 rounded px-2 py-1.5 font-bold">
+          ⚠️ Juego terminó — marca el resultado
+        </div>
+      )}
+
       {showCashout ? (
         <div className="flex gap-2">
           <input
@@ -120,7 +131,7 @@ export default function BetResolver({ bet }: Props) {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-4 gap-1">
+        <div className="grid grid-cols-5 gap-1">
           <button
             onClick={() => resolve('win')}
             disabled={isPending}
@@ -136,11 +147,18 @@ export default function BetResolver({ bet }: Props) {
             LOSS
           </button>
           <button
+            onClick={() => resolve('push')}
+            disabled={isPending}
+            className="tap py-2 bg-blue/20 text-blue border border-blue/40 rounded text-[10px] font-bold"
+          >
+            PUSH
+          </button>
+          <button
             onClick={() => setShowCashout(true)}
             disabled={isPending}
             className="tap py-2 bg-yellow/20 text-yellow border border-yellow/40 rounded text-[10px] font-bold"
           >
-            CASH OUT
+            CASH$
           </button>
           <button
             onClick={() => resolve('early_payout')}

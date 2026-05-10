@@ -13,7 +13,8 @@ import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
 import { buildNhlGameContext } from './nhlStats';
 import { buildNbaGameContext } from './nbaStats';
-import { fetchMultiOdds, findOddsForGame, bestMoneylineByBook, sharpAnalysis } from './oddsApi';
+import { fetchMultiOdds, fetchPlayerProps, findOddsForGame, bestMoneylineByBook, sharpAnalysis } from './oddsApi';
+import type { PropLine } from './oddsApi';
 import type { Game, Tier } from './types';
 
 const BATCH_SIZE = 2;
@@ -209,6 +210,7 @@ export async function analyzeGames(
   // so a single API outage degrades to ESPN-only data, never breaks the run.
   const today = new Date().toISOString().slice(0, 10);
   const oddsBySport: Record<string, Awaited<ReturnType<typeof fetchMultiOdds>>> = {};
+  const propsBySport: Record<string, PropLine[] | null> = {};
   const sportsInPlay = Array.from(new Set(enriched.map((g) => g.sport)));
   await Promise.all(
     sportsInPlay.map(async (s) => {
@@ -216,6 +218,11 @@ export async function analyzeGames(
         oddsBySport[s] = await fetchMultiOdds(s);
       } catch (e) {
         console.warn(`[pickGen] odds fetch ${s} failed`, e);
+      }
+      try {
+        propsBySport[s] = await fetchPlayerProps(s);
+      } catch (e) {
+        console.warn(`[pickGen] props fetch ${s} failed`, e);
       }
     }),
   );
@@ -301,6 +308,33 @@ export async function analyzeGames(
           console.log(
             `[DATA][ODDS] ${g.game_label} ${rows.length} books, best home=${best.home?.decimal} (${best.home?.source}) best away=${best.away?.decimal} (${best.away?.source})`,
           );
+        }
+      }
+
+      // Player props — attach to real_data when available so Claude can
+      // suggest prop bets with actual odds from Odds API.
+      const props = propsBySport[g.sport];
+      if (props && props.length > 0) {
+        // Filter to props relevant to this game's teams (pitcher name matching)
+        const rd = g.real_data as Record<string, unknown>;
+        const homePitcher = (rd.homePitcher as { name?: string } | undefined)?.name?.toLowerCase();
+        const awayPitcher = (rd.awayPitcher as { name?: string } | undefined)?.name?.toLowerCase();
+        const relevant = props.filter((p) => {
+          const pn = p.player.toLowerCase();
+          if (homePitcher && pn.includes(homePitcher.split(' ').pop() ?? '')) return true;
+          if (awayPitcher && pn.includes(awayPitcher.split(' ').pop() ?? '')) return true;
+          return false;
+        });
+        if (relevant.length > 0) {
+          rd.player_props = relevant.map((p) => ({
+            player: p.player,
+            market: p.market,
+            line: p.over_line,
+            over_odds: p.over_odds,
+            under_odds: p.under_odds,
+            books: p.books.slice(0, 4),
+          }));
+          console.log(`[DATA][PROPS] ${g.game_label} ${relevant.length} player props attached`);
         }
       }
     }),

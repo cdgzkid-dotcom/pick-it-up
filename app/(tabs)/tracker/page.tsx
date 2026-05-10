@@ -9,6 +9,35 @@ import type { Bet, Tier } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+function dateLabel(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  const betDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (betDay.getTime() === today.getTime()) return 'HOY';
+  if (betDay.getTime() === yesterday.getTime()) return 'AYER';
+  return d.toLocaleDateString('es-MX', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'America/Mexico_City',
+  });
+}
+
+function groupByDate<T extends { created_at: string }>(items: T[]): Array<{ label: string; items: T[] }> {
+  const map = new Map<string, T[]>();
+  const order: string[] = [];
+  for (const item of items) {
+    const label = dateLabel(item.created_at);
+    if (!map.has(label)) {
+      map.set(label, []);
+      order.push(label);
+    }
+    map.get(label)!.push(item);
+  }
+  return order.map((label) => ({ label, items: map.get(label)! }));
+}
+
 export default async function TrackerPage() {
   const supabase = supabaseAdmin();
   const { data, error } = await supabase
@@ -23,6 +52,9 @@ export default async function TrackerPage() {
   const bets = (data as Bet[]) ?? [];
   const pending = bets.filter((b) => b.result === 'pending');
   const settled = bets.filter((b) => b.result !== 'pending');
+
+  const pendingGroups = groupByDate(pending);
+  const settledGroups = groupByDate(settled);
 
   return (
     <div className="space-y-6">
@@ -44,11 +76,16 @@ export default async function TrackerPage() {
             Sin apuestas activas
           </div>
         ) : (
-          <div className="space-y-2">
-            {pending.map((b) => (
-              <BetResolver key={b.id} bet={b} />
-            ))}
-          </div>
+          pendingGroups.map((group) => (
+            <div key={group.label} className="space-y-2">
+              <div className="text-[10px] text-muted font-bold uppercase tracking-wider pt-1">
+                {group.label}
+              </div>
+              {group.items.map((b) => (
+                <BetResolver key={b.id} bet={b} />
+              ))}
+            </div>
+          ))
         )}
         <ResetPendingButton count={pending.length} />
       </section>
@@ -69,11 +106,16 @@ export default async function TrackerPage() {
             Vacío
           </div>
         ) : (
-          <div className="space-y-1">
-            {settled.map((b) => (
-              <HistoryRow key={b.id} bet={b} />
-            ))}
-          </div>
+          settledGroups.map((group) => (
+            <div key={group.label} className="space-y-1">
+              <div className="text-[10px] text-muted font-bold uppercase tracking-wider pt-2">
+                {group.label}
+              </div>
+              {group.items.map((b) => (
+                <HistoryRow key={b.id} bet={b} />
+              ))}
+            </div>
+          ))
         )}
       </section>
     </div>
@@ -84,8 +126,9 @@ function HistoryRow({ bet }: { bet: Bet }) {
   const won = bet.result === 'win' || bet.result === 'early_payout';
   const lost = bet.result === 'loss';
   const cashout = bet.result === 'cashout';
-  const color = won ? 'text-green' : lost ? 'text-red' : 'text-yellow';
-  const symbol = won ? '✓' : lost ? '✕' : cashout ? '$' : '?';
+  const push = bet.result === 'push';
+  const color = won ? 'text-green' : lost ? 'text-red' : push ? 'text-blue' : 'text-yellow';
+  const symbol = won ? '✓' : lost ? '✕' : push ? '↩' : cashout ? '$' : '?';
   const pl = Number(bet.payout ?? 0) - Number(bet.amount);
 
   return (
@@ -121,10 +164,11 @@ function HistoryRow({ bet }: { bet: Bet }) {
           <div className="text-[10px] text-muted">
             {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
             {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
+            {push ? ' · PUSH' : ''}
           </div>
         </div>
-        <div className={`text-right font-bold ${pl >= 0 ? 'text-green' : 'text-red'}`}>
-          {pl >= 0 ? '+' : ''}${Math.round(pl)}
+        <div className={`text-right font-bold ${pl > 0 ? 'text-green' : pl < 0 ? 'text-red' : 'text-blue'}`}>
+          {pl > 0 ? '+' : pl === 0 ? '' : ''}${Math.round(pl)}
         </div>
       </div>
     </div>

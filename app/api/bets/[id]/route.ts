@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const ResolveSchema = z.object({
-  result: z.enum(['win', 'loss', 'cashout', 'early_payout']),
+  result: z.enum(['win', 'loss', 'push', 'cashout', 'early_payout']),
   cashout_amount: z.coerce.number().optional().nullable(),
 });
 
@@ -53,6 +53,9 @@ export async function PATCH(
   } else if (parsed.data.result === 'loss') {
     payout = 0;
     credit = 0;
+  } else if (parsed.data.result === 'push') {
+    payout = amount; // refund stake
+    credit = amount;
   } else if (parsed.data.result === 'cashout') {
     const ca = Number(parsed.data.cashout_amount ?? 0);
     if (ca <= 0) {

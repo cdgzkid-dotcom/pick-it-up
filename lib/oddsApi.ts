@@ -127,6 +127,79 @@ export function bestMoneylineByBook(rows: MultiOddsRow[]): { home?: BestOdds; aw
   return { home: best_home, away: best_away };
 }
 
+// ── Player props ────────────────────────────────────────────────────────────
+// The Odds API serves props via the same /odds endpoint with different market
+// keys. Free tier may not include them — we attempt and silently return null.
+
+export interface PropLine {
+  player: string;
+  market: string;
+  over_line?: number;
+  over_odds?: number;
+  under_odds?: number;
+  books: Array<{ source: string; over_odds?: number; under_odds?: number; line?: number }>;
+}
+
+const MLB_PROP_MARKETS = [
+  'pitcher_strikeouts',
+  'batter_home_runs',
+  'batter_hits',
+  'batter_total_bases',
+];
+
+export async function fetchPlayerProps(sport: string): Promise<PropLine[] | null> {
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) return null;
+  const sportKey = SPORT_KEYS[sport];
+  if (!sportKey || sport !== 'MLB') return null;
+
+  return cached(`props:${sportKey}`, 5, async () => {
+    try {
+      const markets = MLB_PROP_MARKETS.join(',');
+      const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds?apiKey=${apiKey}&regions=us&markets=${markets}&oddsFormat=decimal`;
+      const r = await fetch(url, { next: { revalidate: 300 } });
+      if (!r.ok) {
+        console.warn(`[odds/props] ${sport} ${r.status}`);
+        return null;
+      }
+      const events = (await r.json()) as OddsApiEvent[];
+      if (!events || events.length === 0) return null;
+
+      const lines: PropLine[] = [];
+      for (const ev of events) {
+        for (const bm of ev.bookmakers) {
+          for (const m of bm.markets) {
+            if (!MLB_PROP_MARKETS.includes(m.key)) continue;
+            const byPlayer = new Map<string, { over?: { price: number; point?: number }; under?: { price: number; point?: number } }>();
+            for (const o of m.outcomes) {
+              const existing = byPlayer.get(o.name) ?? {};
+              const desc = ((o as Record<string, unknown>).description as string | undefined)?.toLowerCase();
+              if (desc === 'over') existing.over = { price: o.price, point: o.point };
+              else if (desc === 'under') existing.under = { price: o.price, point: o.point };
+              byPlayer.set(o.name, existing);
+            }
+            byPlayer.forEach((sides, player) => {
+              let line = lines.find((l) => l.player === player && l.market === m.key);
+              if (!line) {
+                line = { player, market: m.key, over_line: sides.over?.point, over_odds: sides.over?.price, under_odds: sides.under?.price, books: [] };
+                lines.push(line);
+              }
+              line.books.push({ source: bm.title, over_odds: sides.over?.price, under_odds: sides.under?.price, line: sides.over?.point ?? sides.under?.point });
+            });
+          }
+        }
+      }
+      if (lines.length > 0) {
+        console.log(`[odds/props] ${sport} found ${lines.length} prop lines`);
+      }
+      return lines.length > 0 ? lines : null;
+    } catch (e) {
+      console.warn(`[odds/props] ${sport} failed`, e);
+      return null;
+    }
+  });
+}
+
 /**
  * Sharp money analysis — uses Pinnacle as the "true price" benchmark.
  * Pinnacle has the highest limits + lowest margin in the industry, so its

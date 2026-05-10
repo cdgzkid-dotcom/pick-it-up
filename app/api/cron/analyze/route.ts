@@ -23,16 +23,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-// Regular-season window: wider than before (was 25-50) because GH Actions
-// cron skipped 3 of 4 scheduled runs today. With the wider window plus
-// cron now every 10 min, we have multiple chances to catch every game.
+// Regular-season window: 20-45 min before game start. Cron every 10 min
+// gives multiple chances to catch each game. We want the FRESHEST data
+// (lineups, odds) — not 2.5 hours early when everything can still change.
 const WINDOW_MIN_MINUTES = 20;
-const WINDOW_MAX_MINUTES = 75;
-// Playoffs: NBA/NHL/MLB/NFL postseason games ALWAYS get a slot even if
-// they're hours away. The dedup guard (status, telegram_notified_at)
-// prevents re-analyzing the same event.
-const PLAYOFF_WINDOW_MIN_MINUTES = 0;
-const PLAYOFF_WINDOW_MAX_MINUTES = 180;
+const WINDOW_MAX_MINUTES = 45;
+// Playoffs: same freshness principle — 20-60 min before, never earlier.
+// The dedup guard prevents re-analyzing the same event.
+const PLAYOFF_WINDOW_MIN_MINUTES = 20;
+const PLAYOFF_WINDOW_MAX_MINUTES = 60;
 
 /**
  * Date-based heuristic for whether `sport` is currently in postseason.
@@ -305,6 +304,29 @@ interface ResolutionForTg {
   is_parlay: boolean;
 }
 
+function cronPickedSide(
+  pickText: string,
+  homeAbbr?: string | null,
+  awayAbbr?: string | null,
+  homeName?: string | null,
+  awayName?: string | null,
+): 'home' | 'away' | null {
+  const p = pickText.toLowerCase();
+  const checkAbbr = (a?: string | null) => a && p.includes(a.toLowerCase());
+  if (checkAbbr(homeAbbr)) return 'home';
+  if (checkAbbr(awayAbbr)) return 'away';
+  const lastWord = (s?: string | null) => {
+    if (!s) return null;
+    const w = s.toLowerCase().split(/\s+/).filter(Boolean);
+    return w.length > 0 ? w[w.length - 1] : null;
+  };
+  const hw = lastWord(homeName);
+  const aw = lastWord(awayName);
+  if (hw && hw.length >= 4 && p.includes(hw)) return 'home';
+  if (aw && aw.length >= 4 && p.includes(aw)) return 'away';
+  return null;
+}
+
 async function runResultsCheck(): Promise<{ resolved: number; notified: number }> {
   const supabase = supabaseAdmin();
 
@@ -320,37 +342,61 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
 
   for (const bet of bets) {
     if (!bet.espn_event_id) continue;
-    if (bet.bet_type !== 'ML') continue;
+    const betType = String(bet.bet_type).toLowerCase();
+    const isML = betType === 'ml' || betType === 'moneyline';
+    const isSpread = betType === 'spread' || betType === 'runline' || betType === 'run line';
+    const isTotal = betType === 'total' || betType === 'over' || betType === 'under' || betType.startsWith('o/u');
+    if (!isML && !isSpread && !isTotal) continue;
 
     const status = await fetchEventStatus(bet.sport, bet.espn_event_id);
     if (!status || !status.completed) continue;
     if (status.home_score == null || status.away_score == null) continue;
 
-    const homeWon = status.home_score > status.away_score;
-    const awayWon = status.away_score > status.home_score;
-    if (status.home_score === status.away_score) continue;
+    const homeScore = status.home_score;
+    const awayScore = status.away_score;
+    let won: boolean | null = null;
+    let isPush = false;
 
-    const p = bet.pick.toLowerCase();
-    const checkAbbr = (a?: string | null) => a && p.includes(a.toLowerCase());
-    let side: 'home' | 'away' | null = null;
-    if (checkAbbr(bet.home_team_abbr)) side = 'home';
-    else if (checkAbbr(bet.away_team_abbr)) side = 'away';
-    if (!side) {
-      const lastWord = (s?: string | null) => {
-        if (!s) return null;
-        const w = s.toLowerCase().split(/\s+/).filter(Boolean);
-        return w.length > 0 ? w[w.length - 1] : null;
-      };
-      const hw = lastWord(bet.home_team);
-      const aw = lastWord(bet.away_team);
-      if (hw && hw.length >= 4 && p.includes(hw)) side = 'home';
-      else if (aw && aw.length >= 4 && p.includes(aw)) side = 'away';
+    if (isML) {
+      if (homeScore === awayScore) continue;
+      const side = cronPickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      if (!side) continue;
+      won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+    } else if (isSpread) {
+      const lineMatch = bet.pick.match(/([+-]?\d+(\.\d+)?)/);
+      const line = lineMatch ? parseFloat(lineMatch[1]) : NaN;
+      if (!Number.isFinite(line)) continue;
+      const side = cronPickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      if (!side) continue;
+      const adjusted = side === 'home' ? homeScore + line - awayScore : awayScore + line - homeScore;
+      if (adjusted === 0) isPush = true;
+      else won = adjusted > 0;
+    } else if (isTotal) {
+      const lineMatch = bet.pick.match(/(\d+(\.\d+)?)/);
+      const line = lineMatch ? parseFloat(lineMatch[0]) : NaN;
+      if (!Number.isFinite(line)) continue;
+      const isOver = /\bover\b/i.test(bet.pick);
+      const isUnder = /\bunder\b/i.test(bet.pick);
+      if (!isOver && !isUnder) continue;
+      const total = homeScore + awayScore;
+      if (total === line) isPush = true;
+      else won = isOver ? total > line : total < line;
     }
-    if (!side) continue;
 
-    const won = (side === 'home' && homeWon) || (side === 'away' && awayWon);
     const amount = Number(bet.amount);
     const odds = Number(bet.odds_decimal);
+
+    if (isPush) {
+      const { data: settings } = await supabase.from('settings').select('bankroll_current').eq('id', 1).single();
+      const newBankroll = Number(settings?.bankroll_current ?? 0) + amount;
+      await supabase.from('bets').update({ result: 'push', payout: amount, result_notified_at: null }).eq('id', bet.id);
+      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick} (${status.away_score}-${status.home_score})` }]);
+      continue;
+    }
+
+    if (won === null) continue;
+
     const payout = won ? amount + potentialWin(amount, odds) : 0;
 
     const { data: settings } = await supabase

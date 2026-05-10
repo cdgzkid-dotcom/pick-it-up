@@ -116,12 +116,34 @@ function oneLineSummary(analysis?: string | null): string {
   }
 
   if (sentences.length === 0) {
-    // Couldn't find a complete sentence. Return whole stripped (no truncation).
-    return stripped;
+    // No complete sentence found — analysis may be truncated or lack proper
+    // punctuation. Remove trailing unclosed parenthetical content so we never
+    // return something like "(27-13, ." or end with an open paren.
+    let cleaned = stripped;
+    let depth = 0;
+    let lastUnmatched = -1;
+    for (let i = 0; i < cleaned.length; i++) {
+      if (cleaned[i] === '(') {
+        if (depth === 0) lastUnmatched = i;
+        depth++;
+      } else if (cleaned[i] === ')') {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) lastUnmatched = -1;
+      }
+    }
+    if (lastUnmatched > 0) {
+      cleaned = cleaned.slice(0, lastUnmatched).trim();
+    }
+    // Remove trailing commas, dashes, colons, semicolons, and stray dots
+    cleaned = cleaned.replace(/[,\-–—:;\s]+\.?\s*$/, '').trim();
+    // Add period if doesn't end with sentence punctuation
+    if (cleaned.length > 0 && !/[.!?]$/.test(cleaned)) {
+      cleaned += '.';
+    }
+    return cleaned || stripped;
   }
 
-  const out = sentences.join(' ');
-  return out;
+  return sentences.join(' ');
 }
 
 function formatTimeMx(iso?: string | null): string {

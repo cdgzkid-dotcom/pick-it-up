@@ -112,4 +112,17 @@ export interface Game {
   odds_comparison?: Record<string, Record<string, number>>;
   notable_stats?: Record<string, unknown>;
   injuries?: Array<{ player: string; position?: string; status: string; detail?: string }>;
+  /**
+   * Real-time stats pulled from sport-specific APIs (MLB Stats, NHL API, NBA
+   * stats) before sending to Claude. Free-form per sport — Claude reads the
+   * structure as JSON in the prompt.
+   */
+  real_data?: Record<string, unknown>;
+  multi_odds?: Array<{
+    source: string;
+    home_ml?: number;
+    away_ml?: number;
+    spread?: unknown;
+    total?: unknown;
+  }>;
 }

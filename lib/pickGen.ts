@@ -10,6 +10,10 @@ import { adjustedEdgeScore, edgeOf, impliedProbability } from './edge';
 import { kellyAmount, tierForOdds, tierFromConfidence } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
+import { buildMlbGameContext } from './mlbStats';
+import { buildNhlGameContext } from './nhlStats';
+import { buildNbaGameContext } from './nbaStats';
+import { fetchMultiOdds, findOddsForGame, bestMoneylineByBook } from './oddsApi';
 import type { Game, Tier } from './types';
 
 const BATCH_SIZE = 2;
@@ -196,6 +200,99 @@ export async function analyzeGames(
           /* ignore */
         }
       }),
+    );
+  }
+
+  // ── Phase 3: real-data enrichment per sport ──────────────────────────────
+  // Pull live stats from sport-specific APIs (MLB Stats, NHL API, NBA stats)
+  // PLUS multi-book odds from The Odds API. Each fetch has its own try/catch
+  // so a single API outage degrades to ESPN-only data, never breaks the run.
+  const today = new Date().toISOString().slice(0, 10);
+  const oddsBySport: Record<string, Awaited<ReturnType<typeof fetchMultiOdds>>> = {};
+  const sportsInPlay = Array.from(new Set(enriched.map((g) => g.sport)));
+  await Promise.all(
+    sportsInPlay.map(async (s) => {
+      try {
+        oddsBySport[s] = await fetchMultiOdds(s);
+      } catch (e) {
+        console.warn(`[pickGen] odds fetch ${s} failed`, e);
+      }
+    }),
+  );
+
+  await Promise.all(
+    enriched.map(async (g) => {
+      g.real_data = g.real_data ?? {};
+      try {
+        if (g.sport === 'MLB') {
+          const ctx = await buildMlbGameContext(
+            g.home_team,
+            g.away_team,
+            g.home_team_abbr,
+            g.away_team_abbr,
+            today,
+          );
+          g.real_data = ctx as unknown as Record<string, unknown>;
+          console.log(
+            `[DATA][MLB] ${g.away_team} @ ${g.home_team} pitchers=${ctx.awayPitcher?.name ?? '?'} (ERA ${ctx.awayPitcher?.era ?? '?'}) vs ${ctx.homePitcher?.name ?? '?'} (ERA ${ctx.homePitcher?.era ?? '?'}) standings=${ctx.awayStanding?.wins}-${ctx.awayStanding?.losses} vs ${ctx.homeStanding?.wins}-${ctx.homeStanding?.losses}`,
+          );
+        } else if (g.sport === 'NHL') {
+          const ctx = await buildNhlGameContext(g.home_team_abbr, g.away_team_abbr);
+          g.real_data = ctx as unknown as Record<string, unknown>;
+          console.log(
+            `[DATA][NHL] ${g.away_team_abbr}@${g.home_team_abbr} ${ctx.awayStanding?.record} vs ${ctx.homeStanding?.record} GF/GP ${ctx.awaySummary?.goalsForPerGame?.toFixed(2)} vs ${ctx.homeSummary?.goalsForPerGame?.toFixed(2)}`,
+          );
+        } else if (g.sport === 'NBA') {
+          const ctx = await buildNbaGameContext(g.home_team, g.away_team);
+          g.real_data = ctx as unknown as Record<string, unknown>;
+          if (ctx.home || ctx.away) {
+            console.log(
+              `[DATA][NBA] ${g.away_team} @ ${g.home_team} OffRtg ${ctx.away?.offRtg?.toFixed(1) ?? '?'} vs ${ctx.home?.offRtg?.toFixed(1) ?? '?'}`,
+            );
+          } else {
+            console.log(`[DATA][NBA] ${g.away_team} @ ${g.home_team} stats.nba.com unavailable, falling back to ESPN context`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[pickGen] real-data enrichment failed for ${g.sport} ${g.game_label}`, e);
+      }
+
+      // Multi-book odds (Odds API). Best-line per side included for Claude.
+      const events = oddsBySport[g.sport];
+      if (events) {
+        const rows = findOddsForGame(events, g.home_team, g.away_team);
+        if (rows.length > 0) {
+          g.multi_odds = rows.map((r) => ({
+            source: r.source,
+            home_ml: r.home_ml,
+            away_ml: r.away_ml,
+            spread: r.spread,
+            total: r.total,
+          }));
+          const best = bestMoneylineByBook(rows);
+          (g.real_data as Record<string, unknown>).best_ml = best;
+          console.log(
+            `[DATA][ODDS] ${g.game_label} ${rows.length} books, best home=${best.home?.decimal} (${best.home?.source}) best away=${best.away?.decimal} (${best.away?.source})`,
+          );
+        }
+      }
+    }),
+  );
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // TZ DEBUG: print raw start_time + UTC parse + CDMX conversion for each
+  // game so we can settle the Yankees-game offset bug in production logs.
+  for (const g of enriched) {
+    if (!g.start_time) continue;
+    const d = new Date(g.start_time);
+    const cdmx = d.toLocaleTimeString('es-MX', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Mexico_City',
+    });
+    console.log(
+      `[TZ] ${g.game_label} raw=${g.start_time} utc=${d.toISOString()} cdmx=${cdmx}`,
     );
   }
 

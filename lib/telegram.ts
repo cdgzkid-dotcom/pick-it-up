@@ -67,17 +67,28 @@ const TIER_EMOJI: Record<string, string> = {
   parlay: '🎯',
 };
 
-function tierLabelShort(tier?: string | null): string {
+const TIER_NAME: Record<string, string> = {
+  lock: 'LOCK',
+  strong: 'STRONG',
+  value: 'VALUE',
+  parlay: 'PARLAY',
+};
+
+function tierBadge(tier?: string | null, confidence?: number | null): string {
   if (!tier) return '';
   const e = TIER_EMOJI[tier] ?? '';
-  return `${e} ${tier.toUpperCase()}`;
+  const name = TIER_NAME[tier] ?? tier.toUpperCase();
+  const conf = confidence != null ? ` ${Math.round(confidence)}%` : '';
+  return `${e} ${name}${conf}`.trim();
 }
 
 function oneLineSummary(analysis?: string | null): string {
   if (!analysis) return '';
+  // Take the first sentence; remove markdown chars; cap at 200 to avoid wraps
   const first = analysis.split(/[\n\.]/).map((s) => s.trim()).find((s) => s.length > 0);
   if (!first) return '';
-  return first.length > 110 ? first.slice(0, 107) + '…' : first;
+  const clean = first.replace(/[*_]/g, '');
+  return clean.length > 200 ? clean.slice(0, 197) + '…' : clean;
 }
 
 function formatTimeMx(iso?: string | null): string {
@@ -104,61 +115,53 @@ export function formatPicksMessage(
 ): string {
   const lines: string[] = [];
   const total = picks.length + parlays.length;
-  lines.push(`🎯 *PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
+
+  // ─── HEADER ─────────────────────────────────────────────────────────────
+  lines.push(`*PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
   if (ctx.bankrollCurrent != null) {
-    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
+    lines.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
   }
   lines.push('');
 
+  // ─── PICKS ──────────────────────────────────────────────────────────────
   picks.forEach((p, i) => {
-    const conf = p.confidence != null ? ` ${Math.round(p.confidence)}%` : '';
-    const realProb =
-      p.real_probability != null
-        ? ` · Prob ganar: ${Math.round(p.real_probability * 100)}%`
-        : '';
-    const edge = p.edge != null ? ` · Edge: ${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : '';
+    const trap = p.trap_warning ? ' · TRAMPA' : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
-    const kelly = p.kelly_fraction != null ? ` (Kelly ${(p.kelly_fraction * 100).toFixed(1)}%)` : '';
-    const trapInline = p.trap_warning ? ' · ⚠️ TRAMPA DETECTADA' : '';
-    lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf}${realProb}${trapInline} · *${p.pick}*`);
-    lines.push(`   📊 Momio: ${p.odds_decimal.toFixed(2)}${edge}`);
-    if (stake > 0) lines.push(`   💰 Meter: $${stake}${kelly} → Ganas: $${win}`);
-    if (p.trap_warning) lines.push(`   ⚠️ ${p.trap_warning}`);
+    const edgePct = p.edge != null ? `${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : null;
+    const realPct = p.real_probability != null ? `${Math.round(p.real_probability * 100)}%` : null;
+
+    lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
+    lines.push(`${p.pick} @ ${p.odds_decimal.toFixed(2)}`);
+    if (edgePct && realPct) lines.push(`Edge: ${edgePct} · Prob: ${realPct}`);
+    if (stake > 0) lines.push(`Apostar: $${stake} → Ganas: $${win}`);
     const summary = oneLineSummary(p.analysis);
-    if (summary) lines.push(`   📋 ${summary}`);
+    if (summary) lines.push(summary);
     lines.push('');
   });
 
+  // ─── PARLAYS ────────────────────────────────────────────────────────────
   parlays.forEach((par) => {
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
-    const kelly = par.kelly_fraction != null ? ` (Kelly ${(par.kelly_fraction * 100).toFixed(1)}%)` : '';
-    lines.push(`🎯 *PARLAY*: ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
-    if (stake > 0) lines.push(`   💰 Meter: $${stake}${kelly} → Ganas: $${win}`);
+    lines.push(`*Parlay:* ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    if (stake > 0) lines.push(`Apostar: $${stake} → Ganas: $${win}`);
     lines.push('');
   });
 
+  // ─── FOOTER ─────────────────────────────────────────────────────────────
   if (gameStartTime) {
-    lines.push(`⏰ Juego empieza a las ${formatTimeMx(gameStartTime)}`);
+    lines.push(`Juegos a las ${formatTimeMx(gameStartTime)} CDMX`);
   }
 
-  // Footer with running totals
   const footerBits: string[] = [];
-  if (ctx.bankrollCurrent != null) {
-    footerBits.push(`💰 Bankroll actual: $${Math.round(ctx.bankrollCurrent)} MXN`);
-  }
-  if (ctx.record && ctx.roi != null) {
-    footerBits.push(
-      `📈 Record total: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`,
-    );
-  }
-  if (footerBits.length > 0) {
-    lines.push('');
-    for (const f of footerBits) lines.push(f);
-  }
+  if (ctx.bankrollCurrent != null) footerBits.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)}`);
+  if (ctx.record) footerBits.push(`Record: ${ctx.record.wins}W-${ctx.record.losses}L`);
+  if (ctx.roi != null) footerBits.push(`ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
+  if (footerBits.length > 0) lines.push(footerBits.join(' · '));
 
-  lines.push(`🔗 ${APP_URL}/picks`);
+  lines.push(`${APP_URL.replace(/^https?:\/\//, '')}/picks`);
+
   return lines.join('\n');
 }
 
@@ -170,13 +173,13 @@ interface MCSummary {
 }
 
 export function formatMonteCarloLines(mc: MCSummary): string[] {
-  const lines: string[] = [];
-  lines.push('📊 *Simulación 10K escenarios*');
-  lines.push(`✅ Prob de profit: ${Math.round(mc.profit_probability * 100)}%`);
-  lines.push(`💰 Ganancia esperada: ${mc.expected_value >= 0 ? '+' : ''}$${Math.round(mc.expected_value)}`);
-  lines.push(`📉 Peor caso (5%): $${Math.round(mc.worst_case_5p)}`);
-  lines.push(`📈 Mejor caso (95%): +$${Math.round(mc.best_case_95p)}`);
-  return lines;
+  const profitPct = Math.round(mc.profit_probability * 100);
+  const ev = mc.expected_value >= 0 ? `+$${Math.round(mc.expected_value)}` : `-$${Math.abs(Math.round(mc.expected_value))}`;
+  // Compact 2-line format: probability + expected value, then range
+  return [
+    `Simulación 10K: ${profitPct}% prob profit · Esperada ${ev}`,
+    `Rango: ${mc.worst_case_5p < 0 ? '-' : '+'}$${Math.abs(Math.round(mc.worst_case_5p))} a +$${Math.round(mc.best_case_95p)}`,
+  ];
 }
 
 interface ResolutionForMessage {
@@ -199,23 +202,27 @@ export function formatResultsMessage(
   ctx: ResultsContext = {},
 ): string {
   const lines: string[] = [];
-  lines.push('📊 *RESULTADOS*');
+  lines.push('*RESULTADOS*');
   lines.push('');
+
   for (const r of resolutions) {
     const emoji = r.is_parlay ? '🎯' : r.result === 'win' ? '✅' : '❌';
-    const verb = r.result === 'win' ? 'GANÓ' : 'PERDIÓ';
+    const verb = r.result === 'win' ? 'Ganaste' : 'Perdiste';
     const sign = r.pl >= 0 ? '+' : '-';
-    lines.push(`${emoji} ${r.pick} — ${verb} ${sign}$${Math.abs(Math.round(r.pl))}`);
+    lines.push(`${emoji} ${r.pick} → ${verb} ${sign}$${Math.abs(Math.round(r.pl))}`);
   }
   lines.push('');
+
+  if (ctx.todayPl != null) {
+    lines.push(`Hoy: ${ctx.todayPl >= 0 ? '+' : '-'}$${Math.abs(Math.round(ctx.todayPl))}`);
+  }
   if (ctx.bankrollCurrent != null) {
     const before = ctx.bankrollBefore != null ? ` (era $${Math.round(ctx.bankrollBefore)})` : '';
-    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN${before}`);
+    lines.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)}${before}`);
   }
   if (ctx.record && ctx.roi != null) {
-    lines.push(
-      `📈 Record: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`,
-    );
+    lines.push(`Record: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
   }
+
   return lines.join('\n');
 }

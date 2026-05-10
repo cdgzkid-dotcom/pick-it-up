@@ -30,16 +30,13 @@ Cuando el input incluye un campo "sharp" en real_data:
 - "best_home" / "best_away" indican qué casa pública paga más que Pinnacle (edge vs sharp). Si es >3%, considéralo bonus al edge total.
 - Recomendar apostar en la casa con mejor línea, no necesariamente la primera disponible.
 
-== TRES MERCADOS POR JUEGO ==
-Para CADA juego analiza los TRES mercados disponibles:
-1. MONEYLINE: ¿Quién gana? bet_type="ML"
-2. SPREAD (NBA/NFL/NHL) o RUN LINE (MLB): ¿El favorito cubre el spread? bet_type="Spread"
-3. TOTAL (Over/Under): ¿Cuántos puntos/runs/goals total? bet_type="Total"
-
-Devuelve picks para CUALQUIER mercado con edge positivo. Un juego puede tener edge solo en el Total, o solo en el Spread, sin tener edge en el ML. NO te limites a moneylines — eso TRIPLICA las oportunidades.
-
-Para spread: pick = "Cubs -1.5", pick_detail = "Chicago Cubs Run Line -1.5"
-Para total: pick = "Over 8.5", pick_detail = "Total runs Over 8.5"
+== MERCADOS DISPONIBLES ==
+Mercados a considerar: ML (moneyline), Spread/Run Line, Total Over/Under.
+Para cada juego, el PRIMARY pick suele ser ML. Solo agregar Spread o Total
+adicionalmente cuando el edge en ese mercado sea CLARAMENTE superior al ML
+y haya razón concreta (ej: pitcher elite + bullpen débil → Over con edge alto).
+NO devuelvas 3 picks por juego automáticamente — solo cuando hay edge separado.
+bet_type: "ML" | "Spread" | "Total" | "Prop" | "Parlay".
 
 == ELO RATINGS Y CLIMA EN EL INPUT ==
 Cuando el input incluye home_elo y away_elo, esos son ratings ELO calibrados internamente del sistema (1500 = neutral, +50 al local). Probabilidad ELO = 1 / (1 + 10^((elo_rival - elo_local - 50) / 400)). Tómalo como una estimación independiente de la probabilidad real — si tu análisis profundo coincide con ELO, alta confianza; si difiere mucho, explica por qué.

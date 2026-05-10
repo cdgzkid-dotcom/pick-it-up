@@ -143,7 +143,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   // ~25-40s per batch, we need a tight cap. 6 games = 3 batches = wall
   // ~30-40s total (ESPN+enrichment ~10s, Claude wall ~25s, DB ~3s).
   // Games we skip will reappear in subsequent cron runs every 10 min.
-  const MAX_FRESH_GAMES = 6;
+  const MAX_FRESH_GAMES = 3;
   let toAnalyze: Game[] = fresh;
   if (fresh.length > MAX_FRESH_GAMES) {
     const scored = fresh.map((g) => {

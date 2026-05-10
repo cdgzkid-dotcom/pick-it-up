@@ -72,36 +72,36 @@ export default function UpcomingGames({ games }: Props) {
         const inWindow = minToStart >= 25 && minToStart <= 50;
         return (
           <div key={time} className="bg-card border border-line rounded p-3">
-            <div className="flex items-baseline justify-between mb-1.5">
-              <div className="text-sm font-bold">{time}</div>
-              <div className="text-[10px] text-muted">{diffShort(earliest, now)}</div>
+            <div className="flex items-baseline justify-between mb-2">
+              <div className="text-xl font-bold">{time}</div>
+              <div className="text-xs text-muted">{diffShort(earliest, now)}</div>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {gs.map((g) => {
                 const hasLogos = g.away_team_abbr || g.home_team_abbr;
                 const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
                 return (
-                  <div key={g.espn_event_id} className="space-y-1">
+                  <div key={g.espn_event_id} className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={18} className="text-[10px]" />
-                      {g.has_picks && <span className="text-green text-[10px]">✓ pick</span>}
+                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={20} className="text-xs" />
+                      {g.has_picks && <span className="text-green text-xs">✓ pick</span>}
                     </div>
                     {hasLogos ? (
-                      <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-1.5 text-[11px]">
-                        <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={18} className="shrink-0" />
-                        <span className="truncate">{awayName ?? ''}</span>
-                        <span className="text-muted text-[9px] px-0.5">@</span>
-                        <span className="truncate text-right">{homeName ?? ''}</span>
-                        <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={18} className="shrink-0" />
+                      <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-base">
+                        <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={28} className="shrink-0" />
+                        <span className="truncate font-medium">{awayName ?? ''}</span>
+                        <span className="text-muted text-xs px-0.5">@</span>
+                        <span className="truncate text-right font-medium">{homeName ?? ''}</span>
+                        <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={28} className="shrink-0" />
                       </div>
                     ) : (
-                      <div className="text-[11px] truncate">{g.game_label}</div>
+                      <div className="text-base truncate">{g.game_label}</div>
                     )}
                   </div>
                 );
               })}
             </div>
-            <div className="mt-2 text-[10px]">
+            <div className="mt-3 text-sm">
               {allPicked ? (
                 <span className="text-green">✓ Picks generados</span>
               ) : inWindow ? (

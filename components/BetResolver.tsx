@@ -53,12 +53,12 @@ export default function BetResolver({ bet }: Props) {
       <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={20} />
 
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
-        <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 pb-1 border-b border-line/40">
-          <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={24} className="shrink-0" />
-          <span className="text-[11px] truncate">{bet.away_team ?? ''}</span>
-          <span className="text-muted text-[10px] px-0.5">@</span>
-          <span className="text-[11px] truncate text-right">{bet.home_team ?? ''}</span>
-          <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={24} className="shrink-0" />
+        <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 pb-2 border-b border-line/40">
+          <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={32} className="shrink-0" />
+          <span className="text-base truncate font-medium">{bet.away_team ?? ''}</span>
+          <span className="text-muted text-xs px-0.5">@</span>
+          <span className="text-base truncate text-right font-medium">{bet.home_team ?? ''}</span>
+          <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={32} className="shrink-0" />
         </div>
       )}
       <div className="flex justify-between items-start gap-2">

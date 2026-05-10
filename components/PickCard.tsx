@@ -104,7 +104,7 @@ export default function PickCard({ pick, rank }: Props) {
         }`}
       >
         <span className="text-xs text-muted">#{rank}</span>
-        <SportLogo sport={pick.sport} size={16} />
+        <SportLogo sport={pick.sport} size={24} />
         <span className="flex-1 truncate text-fg">{pick.pick}</span>
         <span className={`text-xs font-bold ${isBet ? 'text-green' : 'text-muted'}`}>
           {done}
@@ -150,16 +150,16 @@ export default function PickCard({ pick, rank }: Props) {
           <TeamLogo
             sport={pick.sport}
             abbr={pick.away_team_abbr}
-            size={32}
+            size={40}
             className="shrink-0"
           />
-          <span className="text-xs leading-tight">{pick.away_team}</span>
-          <span className="text-muted text-[11px] px-1">@</span>
-          <span className="text-xs leading-tight text-right">{pick.home_team}</span>
+          <span className="text-lg leading-tight font-medium">{pick.away_team}</span>
+          <span className="text-muted text-sm px-1">@</span>
+          <span className="text-lg leading-tight text-right font-medium">{pick.home_team}</span>
           <TeamLogo
             sport={pick.sport}
             abbr={pick.home_team_abbr}
-            size={32}
+            size={40}
             className="shrink-0"
           />
         </div>

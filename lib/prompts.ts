@@ -203,19 +203,18 @@ RESPONDE SOLO EN JSON PURO (sin markdown, sin backticks, sin texto antes o despu
       "real_probability": 0.64,
       "implied_probability": 0.565,
       "edge": 0.075,
-      "analysis": "Análisis EXHAUSTIVO en español. Mínimo 150 palabras. Mencionar CADA factor que analizaste: record reciente, pitcher, bullpen, matchups, ballpark, clima, situational spots, regresión, line movement. Explicar exactamente CÓMO llegaste a la probabilidad real. Este es el campo más importante — el usuario necesita entender POR QUÉ debe apostar aquí.",
-      "risk_factors": "Todos los factores que podrían hacer que este pick pierda. Ser honesto.",
-      "injuries": "Lesiones relevantes de ambos equipos y su impacto",
+      "analysis": "Análisis profundo en español. ~130 palabras. Cubre los 3-4 factores MÁS importantes para este pick (no todos): pitcher/forma, matchup clave, contexto situacional, una nota de regresión o line movement si aplica. Densidad sobre exhaustividad — datos concretos, no relleno. Explica cómo llegaste a la probabilidad real.",
+      "risk_factors": "Lo que podría fallar — máximo 25 palabras",
+      "injuries": "Lesiones relevantes con impacto — máximo 30 palabras",
       "key_stats": [
         {"label": "Pitcher ERA", "value": "2.10", "flag": "green"},
         {"label": "Bullpen ERA", "value": "3.45", "flag": "green"},
         {"label": "Team OPS L10", "value": ".789", "flag": "green"},
-        {"label": "H2H this season", "value": "4-1", "flag": "green"},
-        {"label": "Opp starter ERA", "value": "5.20", "flag": "red"}
+        {"label": "H2H this season", "value": "4-1", "flag": "green"}
       ],
       "early_payout_eligible": false,
-      "line_movement_note": "Línea abrió en 1.85, ahora en 1.77 — dinero inteligente entrando",
-      "regression_flags": "Ninguna señal de regresión"
+      "line_movement_note": "(max 15 palabras, solo si hay movimiento relevante; null si no)",
+      "regression_flags": "(max 15 palabras, solo si hay flag importante; null si nada)"
     }
   ],
   "parlays": [
@@ -236,13 +235,15 @@ RESPONDE SOLO EN JSON PURO (sin markdown, sin backticks, sin texto antes o despu
 }
 
 == REGLAS FINALES ==
-- El análisis de cada pick MÍNIMO 150 palabras detallando TODO el razonamiento
+- El análisis de cada pick: ~130 palabras DENSAS con datos concretos. Foco en los 3-4 factores que más mueven la probabilidad — no enumeres TODO, solo lo que importa para este pick específico.
 - Si hay 5 LOCKs en diferentes deportes, devuelve los 5 — NUNCA te limites
 - Devuelve TODOS los picks con edge positivo
 - Nombres COMPLETOS de equipos SIEMPRE con ciudad
-- Si no tienes suficiente data de un factor, dilo — no inventes
-- Sé HONESTO con los riesgos — es mejor un pick con riesgos señalados que uno que parece perfecto pero no lo es
-- Si un día no hay buenos picks, devuelve array vacío — NUNCA fuerces picks malos`;
+- Si no tienes data confiable de un factor, omítelo en lugar de inventar
+- Sé HONESTO con los riesgos
+- Si no hay buenos picks, devuelve array vacío — NUNCA fuerces picks
+- key_stats: 3-5 items
+- line_movement_note y regression_flags: SOLO si tienes algo concreto que decir; sino null`;
 
 export const buildPickGenerationUserPrompt = (games: Game[]): string =>
   `Analiza los siguientes juegos del día. Cada juego incluye sus momios reales y, cuando está disponible, la lista de lesiones actuales de ambos equipos (de ESPN). Devuelve picks SOLO con edge positivo, ordenados por edge ajustado.\n\nJUEGOS:\n${JSON.stringify(games, null, 2)}\n\nDevuelve SOLO el JSON especificado en tu prompt de sistema. Sin texto antes ni después.`;

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
 import { callClaudeJson } from '@/lib/claude';
 import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from '@/lib/prompts';
-import { fetchGames } from '@/lib/espn';
+import { fetchGames, fetchInjuriesForSports } from '@/lib/espn';
 import { adjustedEdgeScore, edgeOf, impliedProbability } from '@/lib/edge';
 import {
   recommendedAmount,
@@ -82,6 +82,8 @@ const ClaudePickSchema = z.object({
   key_stats: z.array(KeyStatSchema).optional().nullable(),
   early_payout_eligible: z.coerce.boolean().optional(),
   early_payout_threshold: z.string().optional().nullable(),
+  line_movement_note: z.string().optional().nullable(),
+  regression_flags: z.string().optional().nullable(),
 });
 
 const ClaudeParlayLegSchema = z.object({
@@ -128,8 +130,14 @@ export async function POST(req: Request) {
   console.log(`[generate-picks] start sports=${parsed.data.sports.join(',')}`);
 
   let games: Game[];
+  let injuriesByTeam: Record<string, Record<string, { player: string; position?: string; status: string; detail?: string }[]>> = {};
   try {
-    games = await fetchGames(parsed.data.sports);
+    const [g, inj] = await Promise.all([
+      fetchGames(parsed.data.sports),
+      fetchInjuriesForSports(parsed.data.sports),
+    ]);
+    games = g;
+    injuriesByTeam = inj;
   } catch (err) {
     console.error('[generate-picks] ESPN fetch failed', err);
     return NextResponse.json(
@@ -138,6 +146,15 @@ export async function POST(req: Request) {
     );
   }
   console.log(`[generate-picks] ESPN fetched ${games.length} games in ${Date.now() - t0}ms`);
+
+  // Attach team-level injuries to each game (only for teams playing today)
+  for (const g of games) {
+    const sportInjuries = injuriesByTeam[g.sport] ?? {};
+    const homeInj = sportInjuries[g.home_team] ?? [];
+    const awayInj = sportInjuries[g.away_team] ?? [];
+    const merged = [...awayInj, ...homeInj];
+    if (merged.length > 0) g.injuries = merged;
+  }
 
   if (games.length === 0) {
     return NextResponse.json({
@@ -300,6 +317,8 @@ export async function POST(req: Request) {
     key_stats: p.key_stats ?? null,
     early_payout_eligible: p.early_payout_eligible ?? false,
     early_payout_threshold: p.early_payout_threshold ?? null,
+    line_movement_note: p.line_movement_note ?? null,
+    regression_flags: p.regression_flags ?? null,
     status: 'pending',
     is_parlay: false,
     parlay_legs: null,
@@ -334,6 +353,8 @@ export async function POST(req: Request) {
     key_stats: null,
     early_payout_eligible: false,
     early_payout_threshold: null,
+    line_movement_note: null,
+    regression_flags: null,
     status: 'pending',
     is_parlay: true,
     parlay_legs: par.parlay_legs,

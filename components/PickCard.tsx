@@ -184,6 +184,18 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="text-[11px] text-muted">🏥 {pick.injuries}</div>
       )}
 
+      {pick.line_movement_note && (
+        <div className="text-[11px] text-blue bg-blue/10 border border-blue/30 rounded px-2 py-1.5">
+          📈 {pick.line_movement_note}
+        </div>
+      )}
+
+      {pick.regression_flags && pick.regression_flags.toLowerCase() !== 'ninguna' && !pick.regression_flags.toLowerCase().startsWith('ninguna ') && (
+        <div className="text-[11px] text-yellow bg-yellow/10 border border-yellow/30 rounded px-2 py-1.5">
+          ⚠️ {pick.regression_flags}
+        </div>
+      )}
+
       {keyStatsItems.length > 0 && (
         <div className="grid grid-cols-2 gap-1.5">
           {keyStatsItems.slice(0, 6).map((s, i) => {

@@ -293,6 +293,75 @@ export interface EventStatus {
   away_team?: string;
 }
 
+export interface InjuryItem {
+  player: string;
+  position?: string;
+  status: string;
+  detail?: string;
+}
+
+const INJURY_PATHS: Record<string, string> = {
+  NBA: 'basketball/nba',
+  NHL: 'hockey/nhl',
+  MLB: 'baseball/mlb',
+  NFL: 'football/nfl',
+};
+
+interface EspnInjuriesResponse {
+  injuries?: Array<{
+    displayName?: string;
+    abbreviation?: string;
+    injuries?: Array<{
+      status?: string;
+      shortComment?: string;
+      details?: { type?: string; detail?: string; side?: string; returnDate?: string };
+      type?: { description?: string };
+      athlete?: { displayName?: string; position?: { abbreviation?: string } };
+    }>;
+  }>;
+}
+
+export async function fetchInjuriesByTeam(sport: string): Promise<Record<string, InjuryItem[]>> {
+  const path = INJURY_PATHS[sport];
+  if (!path) return {};
+  const data = await fetchJson<EspnInjuriesResponse>(
+    `https://site.api.espn.com/apis/site/v2/sports/${path}/injuries`,
+  );
+  if (!data?.injuries) return {};
+
+  const out: Record<string, InjuryItem[]> = {};
+  for (const team of data.injuries) {
+    const name = team.displayName;
+    if (!name) continue;
+    const items: InjuryItem[] = [];
+    for (const inj of team.injuries ?? []) {
+      const player = inj.athlete?.displayName;
+      if (!player) continue;
+      items.push({
+        player,
+        position: inj.athlete?.position?.abbreviation,
+        status: inj.status ?? 'Unknown',
+        detail:
+          inj.shortComment ??
+          inj.details?.detail ??
+          inj.type?.description,
+      });
+    }
+    if (items.length > 0) out[name] = items;
+  }
+  return out;
+}
+
+export async function fetchInjuriesForSports(
+  sports: string[],
+): Promise<Record<string, Record<string, InjuryItem[]>>> {
+  const valid = sports.filter((s) => INJURY_PATHS[s]);
+  const results = await Promise.all(
+    valid.map(async (s) => [s, await fetchInjuriesByTeam(s)] as const),
+  );
+  return Object.fromEntries(results);
+}
+
 export async function fetchEventStatus(sport: string, eventId: string): Promise<EventStatus | null> {
   const cfg = SPORTS[sport];
   if (!cfg) return null;

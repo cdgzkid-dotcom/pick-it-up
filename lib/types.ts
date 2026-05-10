@@ -13,6 +13,8 @@ export interface Pick {
   id: string;
   created_at: string;
   updated_at?: string;
+  line_movement_note?: string | null;
+  regression_flags?: string | null;
   sport: string;
   game: string;
   league?: string | null;
@@ -99,6 +101,6 @@ export interface Game {
     total?: { line: number; over: number; under: number };
   };
   odds_comparison?: Record<string, Record<string, number>>;
-  injuries?: string;
   notable_stats?: Record<string, unknown>;
+  injuries?: Array<{ player: string; position?: string; status: string; detail?: string }>;
 }

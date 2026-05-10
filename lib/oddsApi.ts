@@ -126,3 +126,71 @@ export function bestMoneylineByBook(rows: MultiOddsRow[]): { home?: BestOdds; aw
   }
   return { home: best_home, away: best_away };
 }
+
+/**
+ * Sharp money analysis — uses Pinnacle as the "true price" benchmark.
+ * Pinnacle has the highest limits + lowest margin in the industry, so its
+ * implied probability is the closest we get to the consensus sharp view.
+ *
+ * Returns null when Pinnacle isn't in the rows (free tier of The Odds API
+ * doesn't always include them — depends on region/sport).
+ */
+export interface SharpAnalysis {
+  pinnacle_home_ml: number;
+  pinnacle_away_ml: number;
+  sharp_prob_home: number;
+  sharp_prob_away: number;
+  /** Per-book edge vs Pinnacle (positive = book is paying more than sharp). */
+  edges: Array<{
+    book: string;
+    home_ml?: number;
+    away_ml?: number;
+    home_edge_vs_sharp?: number; // sharp_prob_home - (1/book.home_ml)
+    away_edge_vs_sharp?: number;
+  }>;
+  /** Best edge by side (which book + how much over sharp). */
+  best_home?: { book: string; ml: number; edge_vs_sharp: number };
+  best_away?: { book: string; ml: number; edge_vs_sharp: number };
+}
+
+export function sharpAnalysis(rows: MultiOddsRow[]): SharpAnalysis | null {
+  const pinn = rows.find((r) => /pinnacle/i.test(r.source));
+  if (!pinn?.home_ml || !pinn?.away_ml) return null;
+  const sharpProbHome = 1 / pinn.home_ml;
+  const sharpProbAway = 1 / pinn.away_ml;
+
+  const edges = rows
+    .filter((r) => !/pinnacle/i.test(r.source))
+    .map((r) => ({
+      book: r.source,
+      home_ml: r.home_ml,
+      away_ml: r.away_ml,
+      home_edge_vs_sharp: r.home_ml ? sharpProbHome - 1 / r.home_ml : undefined,
+      away_edge_vs_sharp: r.away_ml ? sharpProbAway - 1 / r.away_ml : undefined,
+    }));
+
+  let best_home: SharpAnalysis['best_home'];
+  let best_away: SharpAnalysis['best_away'];
+  for (const e of edges) {
+    if (e.home_ml && e.home_edge_vs_sharp != null && e.home_edge_vs_sharp > 0) {
+      if (!best_home || e.home_edge_vs_sharp > best_home.edge_vs_sharp) {
+        best_home = { book: e.book, ml: e.home_ml, edge_vs_sharp: e.home_edge_vs_sharp };
+      }
+    }
+    if (e.away_ml && e.away_edge_vs_sharp != null && e.away_edge_vs_sharp > 0) {
+      if (!best_away || e.away_edge_vs_sharp > best_away.edge_vs_sharp) {
+        best_away = { book: e.book, ml: e.away_ml, edge_vs_sharp: e.away_edge_vs_sharp };
+      }
+    }
+  }
+
+  return {
+    pinnacle_home_ml: pinn.home_ml,
+    pinnacle_away_ml: pinn.away_ml,
+    sharp_prob_home: sharpProbHome,
+    sharp_prob_away: sharpProbAway,
+    edges,
+    best_home,
+    best_away,
+  };
+}

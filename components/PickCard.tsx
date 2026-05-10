@@ -3,7 +3,6 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
 import { TeamLogo, SportLogo } from './Logo';
-import MatchupHeader from './MatchupHeader';
 import { tierLabel } from '@/lib/units';
 import type { KeyStat, Pick, Tier } from '@/lib/types';
 
@@ -142,7 +141,19 @@ export default function PickCard({ pick, rank }: Props) {
       </div>
 
       {!pick.is_parlay && (
-        <MatchupHeader sport={pick.sport} startTime={pick.game_start_time} size={24} />
+        <div className="flex items-center gap-2">
+          <SportLogo sport={pick.sport} size={24} />
+          <span className="text-base font-bold">
+            {pick.game_start_time
+              ? new Date(pick.game_start_time).toLocaleTimeString('es-MX', {
+                  hour: 'numeric',
+                  minute: '2-digit',
+                  hour12: true,
+                  timeZone: 'America/Mexico_City',
+                })
+              : ''}
+          </span>
+        </div>
       )}
 
       {!pick.is_parlay && (pick.home_team_abbr || pick.away_team_abbr || pick.home_team) && (

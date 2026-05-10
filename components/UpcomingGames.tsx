@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { TeamLogo } from './Logo';
-import MatchupHeader from './MatchupHeader';
+import { TeamLogo, SportLogo } from './Logo';
 
 interface UpcomingGame {
   espn_event_id: string;
@@ -51,68 +50,56 @@ export default function UpcomingGames({ games }: Props) {
     );
   }
 
-  // Group by hour bucket
-  const byHour = new Map<string, UpcomingGame[]>();
-  for (const g of games) {
-    const key = formatTimeMx(g.start_time);
-    if (!byHour.has(key)) byHour.set(key, []);
-    byHour.get(key)!.push(g);
-  }
-
   return (
     <div className="space-y-2">
       <div className="text-[10px] text-muted uppercase tracking-wider">
         Próximos juegos · picks llegan 30 min antes
       </div>
-      {Array.from(byHour.entries()).map(([time, gs]) => {
-        const earliest = gs.map((g) => g.start_time).sort()[0];
-        const minToStart = Math.round((new Date(earliest).getTime() - now) / 60_000);
-        const allPicked = gs.every((g) => g.has_picks);
-        const picksDueMin = minToStart - 30;
+      {games.map((g) => {
+        const hasLogos = g.away_team_abbr || g.home_team_abbr;
+        const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
+        const minToStart = Math.round((new Date(g.start_time).getTime() - now) / 60_000);
         const inWindow = minToStart >= 25 && minToStart <= 50;
+        const picksDueMin = minToStart - 30;
+
         return (
-          <div key={time} className="bg-card border border-line rounded p-3">
-            <div className="flex items-baseline justify-between mb-2">
-              <div className="text-xl font-bold">{time}</div>
-              <div className="text-xs text-muted">{diffShort(earliest, now)}</div>
+          <div key={g.espn_event_id} className="bg-card border border-line rounded p-3 space-y-2">
+            {/* Header: logo + big time on left, "en Xm" on right */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <SportLogo sport={g.sport} size={24} />
+                <span className="text-xl font-bold">{formatTimeMx(g.start_time)}</span>
+              </div>
+              <span className="text-xs text-muted">{diffShort(g.start_time, now)}</span>
             </div>
-            <div className="space-y-3">
-              {gs.map((g) => {
-                const hasLogos = g.away_team_abbr || g.home_team_abbr;
-                const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
-                return (
-                  <div key={g.espn_event_id} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={24} className="text-xs" />
-                      {g.has_picks && <span className="text-green text-xs shrink-0">✓ pick</span>}
-                    </div>
-                    {hasLogos ? (
-                      <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-base">
-                        <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={28} className="shrink-0" />
-                        <span className="font-medium whitespace-normal break-words min-w-0">
-                          {awayName ?? ''}
-                        </span>
-                        <span className="text-muted text-xs px-0.5 shrink-0">@</span>
-                        <span className="text-right font-medium whitespace-normal break-words min-w-0">
-                          {homeName ?? ''}
-                        </span>
-                        <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={28} className="shrink-0" />
-                      </div>
-                    ) : (
-                      <div className="text-base whitespace-normal break-words">{g.game_label}</div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-3 text-sm">
-              {allPicked ? (
+
+            {/* Matchup row */}
+            {hasLogos ? (
+              <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-base">
+                <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={28} className="shrink-0" />
+                <span className="font-medium whitespace-normal break-words min-w-0">
+                  {awayName ?? ''}
+                </span>
+                <span className="text-muted text-xs px-0.5 shrink-0">@</span>
+                <span className="text-right font-medium whitespace-normal break-words min-w-0">
+                  {homeName ?? ''}
+                </span>
+                <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={28} className="shrink-0" />
+              </div>
+            ) : (
+              <div className="text-base whitespace-normal break-words">{g.game_label}</div>
+            )}
+
+            {/* Status line */}
+            <div className="text-sm flex items-center justify-between">
+              {g.has_picks ? (
                 <span className="text-green">✓ Picks generados</span>
               ) : inWindow ? (
                 <span className="text-yellow animate-pulse">⏳ Generando picks…</span>
               ) : picksDueMin > 0 ? (
                 <span className="text-muted">
-                  Picks llegan en {Math.floor(picksDueMin / 60) > 0
+                  Picks llegan en{' '}
+                  {Math.floor(picksDueMin / 60) > 0
                     ? `${Math.floor(picksDueMin / 60)}h ${picksDueMin % 60}m`
                     : `${picksDueMin}m`}
                 </span>

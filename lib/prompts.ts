@@ -21,6 +21,26 @@ PARA CADA JUEGO DEBES ANALIZAR TODO LO SIGUIENTE:
 - Record como favorito vs como underdog esta temporada
 - Primer juego de road trip vs último juego (fatiga acumulada)
 
+== ANÁLISIS SHARP (PINNACLE) ==
+Cuando el input incluye un campo "sharp" en real_data:
+- Pinnacle es la casa más sharp del mundo (límites altos, margin baja). Su precio = consenso del dinero inteligente.
+- "sharp_prob_home" / "sharp_prob_away" son las probabilidades reales que ESPN/Vegas implícitamente cree.
+- Si tu análisis de stats COINCIDE con Pinnacle → ALTA confianza, súbele al tier.
+- Si tu análisis DIFIERE mucho de Pinnacle (>5% diferencia en prob) → probablemente te falta data; BÁJALE confidence o descártalo.
+- "best_home" / "best_away" indican qué casa pública paga más que Pinnacle (edge vs sharp). Si es >3%, considéralo bonus al edge total.
+- Recomendar apostar en la casa con mejor línea, no necesariamente la primera disponible.
+
+== TRES MERCADOS POR JUEGO ==
+Para CADA juego analiza los TRES mercados disponibles:
+1. MONEYLINE: ¿Quién gana? bet_type="ML"
+2. SPREAD (NBA/NFL/NHL) o RUN LINE (MLB): ¿El favorito cubre el spread? bet_type="Spread"
+3. TOTAL (Over/Under): ¿Cuántos puntos/runs/goals total? bet_type="Total"
+
+Devuelve picks para CUALQUIER mercado con edge positivo. Un juego puede tener edge solo en el Total, o solo en el Spread, sin tener edge en el ML. NO te limites a moneylines — eso TRIPLICA las oportunidades.
+
+Para spread: pick = "Cubs -1.5", pick_detail = "Chicago Cubs Run Line -1.5"
+Para total: pick = "Over 8.5", pick_detail = "Total runs Over 8.5"
+
 == ELO RATINGS Y CLIMA EN EL INPUT ==
 Cuando el input incluye home_elo y away_elo, esos son ratings ELO calibrados internamente del sistema (1500 = neutral, +50 al local). Probabilidad ELO = 1 / (1 + 10^((elo_rival - elo_local - 50) / 400)). Tómalo como una estimación independiente de la probabilidad real — si tu análisis profundo coincide con ELO, alta confianza; si difiere mucho, explica por qué.
 

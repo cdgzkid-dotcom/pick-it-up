@@ -3,8 +3,7 @@ import BetResolver from '@/components/BetResolver';
 import ManualBetForm from '@/components/ManualBetForm';
 import ResetPendingButton from '@/components/ResetPendingButton';
 import ResultsRefresher from '@/components/ResultsRefresher';
-import { TeamLogo } from '@/components/Logo';
-import MatchupHeader from '@/components/MatchupHeader';
+import { TeamLogo, SportLogo } from '@/components/Logo';
 import { tierLabel } from '@/lib/units';
 import type { Bet, Tier } from '@/lib/types';
 
@@ -91,7 +90,21 @@ function HistoryRow({ bet }: { bet: Bet }) {
 
   return (
     <div className="px-3 py-2 bg-card border border-line rounded text-xs space-y-1">
-      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={24} className="text-xs" />
+      <div className="flex items-center gap-2">
+        <SportLogo sport={bet.sport} size={24} />
+        <span className="text-sm font-bold">
+          {bet.game_start_time
+            ? new Date(bet.game_start_time).toLocaleString('es-MX', {
+                month: 'short',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+                hour12: true,
+                timeZone: 'America/Mexico_City',
+              })
+            : ''}
+        </span>
+      </div>
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-sm">
           <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={28} className="shrink-0" />

@@ -13,7 +13,7 @@ import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
 import { buildNhlGameContext } from './nhlStats';
 import { buildNbaGameContext } from './nbaStats';
-import { fetchMultiOdds, findOddsForGame, bestMoneylineByBook } from './oddsApi';
+import { fetchMultiOdds, findOddsForGame, bestMoneylineByBook, sharpAnalysis } from './oddsApi';
 import type { Game, Tier } from './types';
 
 const BATCH_SIZE = 2;
@@ -257,7 +257,8 @@ export async function analyzeGames(
         console.warn(`[pickGen] real-data enrichment failed for ${g.sport} ${g.game_label}`, e);
       }
 
-      // Multi-book odds (Odds API). Best-line per side included for Claude.
+      // Multi-book odds (Odds API). Best-line per side + Pinnacle sharp
+      // analysis included for Claude.
       const events = oddsBySport[g.sport];
       if (events) {
         const rows = findOddsForGame(events, g.home_team, g.away_team);
@@ -271,6 +272,15 @@ export async function analyzeGames(
           }));
           const best = bestMoneylineByBook(rows);
           (g.real_data as Record<string, unknown>).best_ml = best;
+          const sharp = sharpAnalysis(rows);
+          if (sharp) {
+            (g.real_data as Record<string, unknown>).sharp = sharp;
+            console.log(
+              `[DATA][SHARP] ${g.game_label} pinnacle=${sharp.pinnacle_home_ml}/${sharp.pinnacle_away_ml} best_edge_home=${sharp.best_home?.edge_vs_sharp?.toFixed(3) ?? '∅'} (${sharp.best_home?.book ?? '?'}) best_edge_away=${sharp.best_away?.edge_vs_sharp?.toFixed(3) ?? '∅'} (${sharp.best_away?.book ?? '?'})`,
+            );
+          } else {
+            console.log(`[DATA][SHARP] ${g.game_label} no Pinnacle in ${rows.length} books — fallback to consensus`);
+          }
           console.log(
             `[DATA][ODDS] ${g.game_label} ${rows.length} books, best home=${best.home?.decimal} (${best.home?.source}) best away=${best.away?.decimal} (${best.away?.source})`,
           );

@@ -91,21 +91,21 @@ function HistoryRow({ bet }: { bet: Bet }) {
 
   return (
     <div className="px-3 py-2 bg-card border border-line rounded text-xs space-y-1">
-      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={20} className="text-xs" />
+      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={24} className="text-xs" />
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-sm">
           <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={28} className="shrink-0" />
-          <span className="truncate">{bet.away_team ?? ''}</span>
-          <span className="text-muted text-[10px]">@</span>
-          <span className="truncate text-right">{bet.home_team ?? ''}</span>
+          <span className="whitespace-normal break-words min-w-0">{bet.away_team ?? ''}</span>
+          <span className="text-muted text-[10px] shrink-0">@</span>
+          <span className="text-right whitespace-normal break-words min-w-0">{bet.home_team ?? ''}</span>
           <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={28} className="shrink-0" />
         </div>
       )}
       <div className="flex items-center gap-2">
-        <span className={`text-base ${color} w-4`}>{symbol}</span>
+        <span className={`text-base ${color} w-4 shrink-0`}>{symbol}</span>
         <div className="min-w-0 flex-1">
-          <div className="truncate">{bet.pick}</div>
-          <div className="text-[10px] text-muted truncate">
+          <div className="break-words">{bet.pick}</div>
+          <div className="text-[10px] text-muted">
             {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
             {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
           </div>

@@ -153,9 +153,13 @@ export default function PickCard({ pick, rank }: Props) {
             size={40}
             className="shrink-0"
           />
-          <span className="text-lg leading-tight font-medium">{pick.away_team}</span>
-          <span className="text-muted text-sm px-1">@</span>
-          <span className="text-lg leading-tight text-right font-medium">{pick.home_team}</span>
+          <span className="text-lg leading-tight font-medium whitespace-normal break-words min-w-0">
+            {pick.away_team}
+          </span>
+          <span className="text-muted text-sm px-1 shrink-0">@</span>
+          <span className="text-lg leading-tight text-right font-medium whitespace-normal break-words min-w-0">
+            {pick.home_team}
+          </span>
           <TeamLogo
             sport={pick.sport}
             abbr={pick.home_team_abbr}

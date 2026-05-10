@@ -83,19 +83,23 @@ export default function UpcomingGames({ games }: Props) {
                 return (
                   <div key={g.espn_event_id} className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={20} className="text-xs" />
-                      {g.has_picks && <span className="text-green text-xs">✓ pick</span>}
+                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={24} className="text-xs" />
+                      {g.has_picks && <span className="text-green text-xs shrink-0">✓ pick</span>}
                     </div>
                     {hasLogos ? (
                       <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 text-base">
                         <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={28} className="shrink-0" />
-                        <span className="truncate font-medium">{awayName ?? ''}</span>
-                        <span className="text-muted text-xs px-0.5">@</span>
-                        <span className="truncate text-right font-medium">{homeName ?? ''}</span>
+                        <span className="font-medium whitespace-normal break-words min-w-0">
+                          {awayName ?? ''}
+                        </span>
+                        <span className="text-muted text-xs px-0.5 shrink-0">@</span>
+                        <span className="text-right font-medium whitespace-normal break-words min-w-0">
+                          {homeName ?? ''}
+                        </span>
                         <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={28} className="shrink-0" />
                       </div>
                     ) : (
-                      <div className="text-base truncate">{g.game_label}</div>
+                      <div className="text-base whitespace-normal break-words">{g.game_label}</div>
                     )}
                   </div>
                 );

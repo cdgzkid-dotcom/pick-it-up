@@ -50,14 +50,18 @@ export default function BetResolver({ bet }: Props) {
 
   return (
     <div className="bg-card border border-line rounded-lg p-3 space-y-2">
-      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={20} />
+      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={24} />
 
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 pb-2 border-b border-line/40">
           <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={32} className="shrink-0" />
-          <span className="text-base truncate font-medium">{bet.away_team ?? ''}</span>
-          <span className="text-muted text-xs px-0.5">@</span>
-          <span className="text-base truncate text-right font-medium">{bet.home_team ?? ''}</span>
+          <span className="text-base font-medium whitespace-normal break-words min-w-0">
+            {bet.away_team ?? ''}
+          </span>
+          <span className="text-muted text-xs px-0.5 shrink-0">@</span>
+          <span className="text-base text-right font-medium whitespace-normal break-words min-w-0">
+            {bet.home_team ?? ''}
+          </span>
           <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={32} className="shrink-0" />
         </div>
       )}

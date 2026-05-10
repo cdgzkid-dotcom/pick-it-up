@@ -98,6 +98,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     result.insertedPicks.map((p) => ({
       tier: p.tier,
       confidence: p.confidence,
+      real_probability: Number(p.real_probability),
       pick: p.pick,
       bet_type: p.bet_type,
       odds_decimal: Number(p.odds_decimal),
@@ -108,6 +109,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     result.insertedParlays.map((p) => ({
       tier: p.tier,
       confidence: p.confidence,
+      real_probability: Number(p.real_probability),
       pick: p.pick,
       bet_type: p.bet_type,
       odds_decimal: Number(p.odds_decimal),

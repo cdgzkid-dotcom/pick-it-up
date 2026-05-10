@@ -181,8 +181,10 @@ export async function analyzeGames(
       const odds = p.odds_decimal;
       const implied = impliedProbability(odds);
       const e = edgeOf(p.real_probability, odds);
-      const tier: Tier = p.tier ?? tierFromConfidence(p.confidence);
-      const adjustedTier = tierForOdds(tier, odds);
+      // Recompute tier server-side from confidence — never trust Claude's tier
+      const baseTier: Tier = tierFromConfidence(p.confidence);
+      // tierForOdds demotes one tier when odds < 1.40
+      const adjustedTier = tierForOdds(baseTier, odds);
       const recommended = recommendedAmount(adjustedTier, unit, odds);
       const score = adjustedEdgeScore(p.real_probability, odds);
       const homeAbbr =
@@ -209,7 +211,14 @@ export async function analyzeGames(
         _score: score,
       };
     })
+    // Server-side filters (don't trust Claude's self-policing):
+    //   - edge must be positive
+    //   - confidence >= 55 (anything below is no-bet territory)
+    //   - if odds < 1.40 (momio culero) require edge ≥ 5% — otherwise the
+    //     payout doesn't compensate the variance
     .filter((p) => p.edge > 0)
+    .filter((p) => p.confidence >= 55)
+    .filter((p) => !(p.odds_decimal < 1.4 && p.edge < 0.05))
     .sort((a, b) => b._score - a._score);
 
   const enrichedParlays = raw.parlays.map((par) => {

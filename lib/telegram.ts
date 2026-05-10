@@ -48,6 +48,7 @@ export async function sendTelegramMessage(
 interface PickForMessage {
   tier?: string | null;
   confidence?: number | null;
+  real_probability?: number | null;
   pick: string;
   bet_type: string;
   odds_decimal: number;
@@ -99,10 +100,14 @@ export function formatPicksMessage(
 
   picks.forEach((p, i) => {
     const conf = p.confidence != null ? ` ${Math.round(p.confidence)}%` : '';
+    const realProb =
+      p.real_probability != null
+        ? ` · Prob ganar: ${Math.round(p.real_probability * 100)}%`
+        : '';
     const edge = p.edge != null ? ` · Edge: ${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
-    lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf} · *${p.pick}*`);
+    lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf}${realProb} · *${p.pick}*`);
     lines.push(`   📊 Momio: ${p.odds_decimal.toFixed(2)}${edge}`);
     if (stake > 0) lines.push(`   💰 Meter: $${stake} → Ganas: $${win}`);
     const summary = oneLineSummary(p.analysis);

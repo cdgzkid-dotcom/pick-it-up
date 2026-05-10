@@ -220,37 +220,54 @@ export async function analyzeGames(
     }),
   );
 
+  // Hard timeout for any single enrichment call so a hung external API
+  // doesn't burn our 60s Vercel budget. NBA stats.nba.com in particular
+  // is often blocked from Vercel egress and hangs without timing out.
+  function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+    return Promise.race([
+      p,
+      new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+    ]);
+  }
+  const ENRICH_TIMEOUT_MS = 8_000;
+
   await Promise.all(
     enriched.map(async (g) => {
       g.real_data = g.real_data ?? {};
       try {
         if (g.sport === 'MLB') {
-          const ctx = await buildMlbGameContext(
-            g.home_team,
-            g.away_team,
-            g.home_team_abbr,
-            g.away_team_abbr,
-            today,
+          const ctx = await withTimeout(
+            buildMlbGameContext(g.home_team, g.away_team, g.home_team_abbr, g.away_team_abbr, today),
+            ENRICH_TIMEOUT_MS,
+            {} as Awaited<ReturnType<typeof buildMlbGameContext>>,
           );
           g.real_data = ctx as unknown as Record<string, unknown>;
           console.log(
             `[DATA][MLB] ${g.away_team} @ ${g.home_team} pitchers=${ctx.awayPitcher?.name ?? '?'} (ERA ${ctx.awayPitcher?.era ?? '?'}) vs ${ctx.homePitcher?.name ?? '?'} (ERA ${ctx.homePitcher?.era ?? '?'}) standings=${ctx.awayStanding?.wins}-${ctx.awayStanding?.losses} vs ${ctx.homeStanding?.wins}-${ctx.homeStanding?.losses}`,
           );
         } else if (g.sport === 'NHL') {
-          const ctx = await buildNhlGameContext(g.home_team_abbr, g.away_team_abbr);
+          const ctx = await withTimeout(
+            buildNhlGameContext(g.home_team_abbr, g.away_team_abbr),
+            ENRICH_TIMEOUT_MS,
+            {} as Awaited<ReturnType<typeof buildNhlGameContext>>,
+          );
           g.real_data = ctx as unknown as Record<string, unknown>;
           console.log(
             `[DATA][NHL] ${g.away_team_abbr}@${g.home_team_abbr} ${ctx.awayStanding?.record} vs ${ctx.homeStanding?.record} GF/GP ${ctx.awaySummary?.goalsForPerGame?.toFixed(2)} vs ${ctx.homeSummary?.goalsForPerGame?.toFixed(2)}`,
           );
         } else if (g.sport === 'NBA') {
-          const ctx = await buildNbaGameContext(g.home_team, g.away_team);
+          const ctx = await withTimeout(
+            buildNbaGameContext(g.home_team, g.away_team),
+            ENRICH_TIMEOUT_MS,
+            {} as Awaited<ReturnType<typeof buildNbaGameContext>>,
+          );
           g.real_data = ctx as unknown as Record<string, unknown>;
           if (ctx.home || ctx.away) {
             console.log(
               `[DATA][NBA] ${g.away_team} @ ${g.home_team} OffRtg ${ctx.away?.offRtg?.toFixed(1) ?? '?'} vs ${ctx.home?.offRtg?.toFixed(1) ?? '?'}`,
             );
           } else {
-            console.log(`[DATA][NBA] ${g.away_team} @ ${g.home_team} stats.nba.com unavailable, falling back to ESPN context`);
+            console.log(`[DATA][NBA] ${g.away_team} @ ${g.home_team} stats.nba.com unavailable (or timeout), falling back to ESPN context`);
           }
         }
       } catch (e) {

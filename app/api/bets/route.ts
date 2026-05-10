@@ -103,8 +103,37 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Insert failed', detail: error.message }, { status: 500 });
   }
 
-  // Deduct bankroll + log
-  await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+  // ATOMICITY GUARD: verify bet was actually persisted before touching bankroll
+  if (!bet || !bet.id) {
+    return NextResponse.json(
+      { error: 'Insert returned no data — bet not created. Bankroll untouched.' },
+      { status: 500 },
+    );
+  }
+
+  // Double-check bet exists in DB before deducting
+  const { data: verified } = await supabase.from('bets').select('id').eq('id', bet.id).maybeSingle();
+  if (!verified) {
+    return NextResponse.json(
+      { error: 'Bet not found after insert — possible timeout. Bankroll untouched.' },
+      { status: 500 },
+    );
+  }
+
+  // Deduct bankroll + log (only after confirmed bet exists)
+  const { error: bankrollErr } = await supabase
+    .from('settings')
+    .update({ bankroll_current: newBankroll })
+    .eq('id', 1);
+  if (bankrollErr) {
+    // Rollback: delete the bet since bankroll couldn't be deducted
+    await supabase.from('bets').delete().eq('id', bet.id);
+    return NextResponse.json(
+      { error: 'Bankroll update failed — bet rolled back.', detail: bankrollErr.message },
+      { status: 500 },
+    );
+  }
+
   await supabase.from('bankroll_log').insert([
     {
       type: 'stake',

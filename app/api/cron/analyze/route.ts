@@ -496,6 +496,53 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
   return { resolved: newlyResolved.length, notified: allToNotify.length };
 }
 
+/**
+ * Cleanup orphaned picks: status='bet' but no matching row in the `bets` table
+ * AND no espn_event_id. These are leftovers from failed bet flows. After 24h we
+ * mark them 'skipped' so they stop appearing in the UI.
+ */
+async function cleanupOrphanedPicks(): Promise<number> {
+  const supabase = supabaseAdmin();
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  // Find picks with status='bet', no espn_event_id, older than 24h
+  const { data: candidates } = await supabase
+    .from('picks')
+    .select('id, pick, espn_event_id')
+    .eq('status', 'bet')
+    .is('espn_event_id', null)
+    .lt('created_at', cutoff);
+
+  if (!candidates || candidates.length === 0) return 0;
+
+  // Double-check: ensure none of these have a matching bet in the bets table
+  const pickTexts = candidates.map((c) => c.pick);
+  const { data: realBets } = await supabase
+    .from('bets')
+    .select('pick')
+    .in('pick', pickTexts);
+  const realBetPicks = new Set((realBets ?? []).map((b) => b.pick));
+
+  const orphanIds = candidates
+    .filter((c) => !realBetPicks.has(c.pick))
+    .map((c) => c.id);
+
+  if (orphanIds.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('picks')
+    .update({ status: 'skipped' })
+    .in('id', orphanIds);
+
+  if (error) {
+    console.error('[cron] orphan cleanup failed', error);
+    return 0;
+  }
+
+  console.log(`[cron] cleaned ${orphanIds.length} orphaned picks`);
+  return orphanIds.length;
+}
+
 function authOk(req: Request): boolean {
   const expected = process.env.CRON_SECRET;
   if (!expected) return false;
@@ -512,6 +559,7 @@ async function handle(req: Request) {
   const errors: Record<string, string> = {};
   let analyze: Awaited<ReturnType<typeof runAnalyzeWindow>> | null = null;
   let results: Awaited<ReturnType<typeof runResultsCheck>> | null = null;
+  let orphansCleaned = 0;
 
   try {
     analyze = await runAnalyzeWindow();
@@ -527,11 +575,18 @@ async function handle(req: Request) {
     console.error('[cron/analyze] results failed', e);
   }
 
+  try {
+    orphansCleaned = await cleanupOrphanedPicks();
+  } catch (e) {
+    console.error('[cron/analyze] orphan cleanup failed', e);
+  }
+
   return NextResponse.json({
     ok: Object.keys(errors).length === 0,
     duration_ms: Date.now() - t0,
     analyze,
     results,
+    orphans_cleaned: orphansCleaned,
     errors: Object.keys(errors).length > 0 ? errors : undefined,
   });
 }

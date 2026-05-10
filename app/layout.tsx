@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono } from 'next/font/google';
 import './globals.css';
+import ThemeWatcher from '@/components/ThemeWatcher';
 
 const mono = JetBrains_Mono({
   subsets: ['latin'],
@@ -22,7 +23,27 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 };
 
-const themeBootstrap = `(function(){try{var h=new Date().getHours();if(h>=6&&h<19){document.documentElement.classList.add('light');}}catch(e){}})();`;
+// Sync bootstrap before first paint. Reads cached sunrise/sunset from
+// localStorage (set by ThemeWatcher on prior visits). Falls back to a
+// fixed 7am-8pm window. ThemeWatcher re-evaluates after mount + every 30
+// min using live data from sunrise-sunset.org for Guadalajara.
+const themeBootstrap = `(function(){try{
+  var now=Date.now();var isLight;
+  var raw=localStorage.getItem('pick-it-up:sun');
+  if(raw){
+    var c=JSON.parse(raw);
+    if(c&&c.sunrise&&c.sunset&&c.fetched_at&&(now-c.fetched_at)<86400000){
+      var sr=new Date(c.sunrise).getTime();
+      var ss=new Date(c.sunset).getTime();
+      isLight=now>=sr&&now<ss;
+    }
+  }
+  if(isLight===undefined){
+    var h=new Date().getHours();
+    isLight=h>=7&&h<20;
+  }
+  document.documentElement.classList.toggle('light',isLight);
+}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -40,7 +61,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           content="#08080d"
         />
       </head>
-      <body className="font-mono bg-bg text-fg min-h-screen">{children}</body>
+      <body className="font-mono bg-bg text-fg min-h-screen">
+        <ThemeWatcher />
+        {children}
+      </body>
     </html>
   );
 }

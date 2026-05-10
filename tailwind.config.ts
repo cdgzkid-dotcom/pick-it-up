@@ -14,11 +14,11 @@ const config: Config = {
         muted: 'rgb(var(--muted) / <alpha-value>)',
         line: 'rgb(var(--line) / <alpha-value>)',
         card: 'rgb(var(--card) / <alpha-value>)',
-        green: '#00ff87',
-        blue: '#00d4ff',
-        yellow: '#ffd000',
-        red: '#ff6b6b',
-        orange: '#ff8c42',
+        green: 'rgb(var(--green) / <alpha-value>)',
+        blue: 'rgb(var(--blue) / <alpha-value>)',
+        yellow: 'rgb(var(--yellow) / <alpha-value>)',
+        red: 'rgb(var(--red) / <alpha-value>)',
+        orange: 'rgb(var(--orange) / <alpha-value>)',
       },
       fontFamily: {
         mono: [

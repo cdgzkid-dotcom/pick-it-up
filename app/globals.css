@@ -2,21 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* DARK (default, 7pm-6am) — refined neutrals + accents toned down */
 :root {
-  --bg: 8 8 13;
-  --fg: 230 230 234;
-  --card: 16 16 26;
-  --line: 26 26 35;
-  --muted: 122 122 134;
+  --bg: 10 10 16;
+  --fg: 224 224 232;
+  --card: 20 20 28;
+  --line: 32 32 42;
+  --muted: 124 124 138;
+
+  --green: 74 222 128;
+  --blue: 56 189 248;
+  --yellow: 250 204 21;
+  --red: 248 113 113;
+  --orange: 251 146 60;
+
   color-scheme: dark;
 }
 
+/* LIGHT (6am-6:59pm) — readable accents on white */
 :root.light {
-  --bg: 245 245 245;
-  --fg: 26 26 26;
+  --bg: 245 245 247;
+  --fg: 26 26 34;
   --card: 255 255 255;
-  --line: 220 220 226;
-  --muted: 107 107 117;
+  --line: 226 226 232;
+  --muted: 116 116 126;
+
+  --green: 22 163 74;
+  --blue: 2 132 199;
+  --yellow: 202 138 4;
+  --red: 220 38 38;
+  --orange: 234 88 12;
+
   color-scheme: light;
 }
 

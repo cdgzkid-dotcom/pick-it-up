@@ -33,7 +33,7 @@ export default function StatsChart({ data }: Props) {
           <Line
             type="monotone"
             dataKey="y"
-            stroke="#00ff87"
+            stroke="rgb(var(--green))"
             strokeWidth={2}
             dot={false}
           />

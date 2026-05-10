@@ -34,7 +34,7 @@ export default function Toggle({ options, value, onChange }: Props) {
         if (disabled) {
           cls = 'border-line/40 text-muted/40 bg-card/40 cursor-not-allowed';
         } else if (active) {
-          cls = 'border-green bg-green text-bg font-bold shadow-[0_0_0_1px_#00ff87]';
+          cls = 'border-green bg-green text-bg font-bold shadow-[0_0_0_1px_rgb(var(--green))]';
         } else {
           cls = 'border-line text-fg bg-card active:bg-line';
         }

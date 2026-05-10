@@ -303,6 +303,16 @@ export async function POST(req: Request) {
 
   let inserted: unknown[] = [];
   if (rowsToInsert.length > 0) {
+    const { error: supErr, count: supCount } = await supabase
+      .from('picks')
+      .update({ status: 'superseded' }, { count: 'exact' })
+      .eq('status', 'pending');
+    if (supErr) {
+      console.error('[generate-picks] supersede failed', supErr);
+    } else {
+      console.log(`[generate-picks] superseded ${supCount ?? 0} previous pending picks`);
+    }
+
     const { data, error } = await supabase
       .from('picks')
       .insert(rowsToInsert)

@@ -54,6 +54,8 @@ interface PickForMessage {
   odds_decimal: number;
   edge?: number | null;
   recommended_amount?: number | null;
+  kelly_fraction?: number | null;
+  trap_warning?: string | null;
   analysis?: string | null;
   is_parlay?: boolean;
 }
@@ -107,9 +109,11 @@ export function formatPicksMessage(
     const edge = p.edge != null ? ` · Edge: ${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
+    const kelly = p.kelly_fraction != null ? ` (Kelly ${(p.kelly_fraction * 100).toFixed(1)}%)` : '';
     lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf}${realProb} · *${p.pick}*`);
     lines.push(`   📊 Momio: ${p.odds_decimal.toFixed(2)}${edge}`);
-    if (stake > 0) lines.push(`   💰 Meter: $${stake} → Ganas: $${win}`);
+    if (stake > 0) lines.push(`   💰 Meter: $${stake}${kelly} → Ganas: $${win}`);
+    if (p.trap_warning) lines.push(`   ⚠️ TRAMPA: ${p.trap_warning}`);
     const summary = oneLineSummary(p.analysis);
     if (summary) lines.push(`   📋 ${summary}`);
     lines.push('');
@@ -118,8 +122,9 @@ export function formatPicksMessage(
   parlays.forEach((par) => {
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
+    const kelly = par.kelly_fraction != null ? ` (Kelly ${(par.kelly_fraction * 100).toFixed(1)}%)` : '';
     lines.push(`🎯 *PARLAY*: ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
-    if (stake > 0) lines.push(`   💰 Meter: $${stake} → Ganas: $${win}`);
+    if (stake > 0) lines.push(`   💰 Meter: $${stake}${kelly} → Ganas: $${win}`);
     lines.push('');
   });
 
@@ -128,6 +133,23 @@ export function formatPicksMessage(
   }
   lines.push(`🔗 ${APP_URL}/picks`);
   return lines.join('\n');
+}
+
+interface MCSummary {
+  profit_probability: number;
+  expected_value: number;
+  worst_case_5p: number;
+  best_case_95p: number;
+}
+
+export function formatMonteCarloLines(mc: MCSummary): string[] {
+  const lines: string[] = [];
+  lines.push('📊 *Simulación 10K escenarios*');
+  lines.push(`✅ Prob de profit: ${Math.round(mc.profit_probability * 100)}%`);
+  lines.push(`💰 Ganancia esperada: ${mc.expected_value >= 0 ? '+' : ''}$${Math.round(mc.expected_value)}`);
+  lines.push(`📉 Peor caso (5%): $${Math.round(mc.worst_case_5p)}`);
+  lines.push(`📈 Mejor caso (95%): +$${Math.round(mc.best_case_95p)}`);
+  return lines;
 }
 
 interface ResolutionForMessage {

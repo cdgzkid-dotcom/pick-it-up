@@ -78,10 +78,16 @@ export async function POST(req: Request) {
   const currentBankroll = Number(settings.bankroll_current);
   const newBankroll = currentBankroll - fields.amount;
 
-  // Insert the bet
+  // Insert the bet — capture odds_at_bet for CLV tracking
   const { data: bet, error } = await supabase
     .from('bets')
-    .insert([{ ...fields, espn_event_id, pick_id: pick_id ?? null, result: 'pending' }])
+    .insert([{
+      ...fields,
+      espn_event_id,
+      pick_id: pick_id ?? null,
+      result: 'pending',
+      odds_at_bet: fields.odds_decimal,
+    }])
     .select()
     .single();
   if (error) {

@@ -21,6 +21,31 @@ PARA CADA JUEGO DEBES ANALIZAR TODO LO SIGUIENTE:
 - Record como favorito vs como underdog esta temporada
 - Primer juego de road trip vs último juego (fatiga acumulada)
 
+== ELO RATINGS Y CLIMA EN EL INPUT ==
+Cuando el input incluye home_elo y away_elo, esos son ratings ELO calibrados internamente del sistema (1500 = neutral, +50 al local). Probabilidad ELO = 1 / (1 + 10^((elo_rival - elo_local - 50) / 400)). Tómalo como una estimación independiente de la probabilidad real — si tu análisis profundo coincide con ELO, alta confianza; si difiere mucho, explica por qué.
+
+Cuando el input incluye un campo "weather" para juegos outdoor (MLB/NFL):
+- Viento ≥12mph soplando out (out CF/RF/LF en MLB) = más HR, favorece over
+- Viento ≥12mph soplando in = menos HR, favorece under
+- Temp ≥85°F = pelota viaja más (más HR/runs)
+- Humedad ≥70% = pelota viaja menos
+- Lluvia ≥40% probable = considerar suspensión
+- "is_dome": true → ignorar weather, juego indoor
+
+== DETECCIÓN DE TRAMPAS ==
+Para cada juego analizar SI hay señales de "trap line":
+- Momio que se ve "demasiado bueno" para el equipo claramente superior — la casa puede saber algo que no está en stats públicos (lesión no reportada, desmotivación, scratch del starter)
+- Reverse line movement (público en un lado, línea moviéndose al otro)
+- Discrepancia grande entre tu análisis y el momio (debería ser -150 pero está -120)
+Si detectas trampa, llenar el campo "trap_warning" con la razón en español (max 25 palabras). Si NO hay trampa, dejarlo en null. El sistema demote el tier automáticamente cuando trap_warning no es null.
+
+== PYTHAGOREAN EXPECTATION (SOLO MLB) ==
+Para juegos MLB, calcular Pythagorean Win% de cada equipo:
+PythW% = RS^1.83 / (RS^1.83 + RA^1.83)
+Si record actual es >5 juegos mejor que PythW%, el equipo está sobreperformando — flag de regresión negativa
+Si record es >5 juegos peor que PythW%, está subperformando — value spot
+Mencionarlo en regression_flags cuando aplique.
+
 == TENDENCIAS DE APUESTAS AVANZADAS ==
 - Line Movement: si el momio se movió significativamente desde la apertura, analizar por qué. Movimiento contra el público = dinero inteligente (sharps)
 - Reverse Line Movement: si el 70%+ del público apuesta a un lado pero la línea se mueve al otro, los sharps están en contra
@@ -214,7 +239,8 @@ RESPONDE SOLO EN JSON PURO (sin markdown, sin backticks, sin texto antes o despu
       ],
       "early_payout_eligible": false,
       "line_movement_note": "(max 15 palabras, solo si hay movimiento relevante; null si no)",
-      "regression_flags": "(max 15 palabras, solo si hay flag importante; null si nada)"
+      "regression_flags": "(max 15 palabras, solo si hay flag importante; null si nada)",
+      "trap_warning": "(max 25 palabras, solo si detectas trap line; null si todo limpio)"
     }
   ],
   "parlays": [

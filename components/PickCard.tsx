@@ -177,8 +177,24 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="text-right">
           <span className="text-muted text-xs">recomendado </span>
           <span className="font-bold text-green">${recommended}</span>
+          {(() => {
+            const b = odds - 1;
+            if (b <= 0 || !realProb) return null;
+            const k = (realProb * b - (1 - realProb)) / b;
+            if (k <= 0) return null;
+            const half = Math.max(0.01, Math.min(0.1, k / 2));
+            return (
+              <span className="text-muted text-[10px]"> (Kelly {(half * 100).toFixed(1)}%)</span>
+            );
+          })()}
         </div>
       </div>
+
+      {pick.trap_warning && (
+        <div className="text-[11px] text-red bg-red/10 border border-red/40 rounded px-2 py-1.5 font-bold">
+          ⚠️ POSIBLE TRAMPA: {pick.trap_warning}
+        </div>
+      )}
 
       {pick.injuries && (
         <div className="text-[11px] text-muted">🏥 {pick.injuries}</div>

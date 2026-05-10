@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const MAX_GAMES_PER_REQUEST = 10;
+const MAX_GAMES_PER_REQUEST = 20;
 
 const RequestSchema = z.object({
   sports: z.array(z.string()).min(1),

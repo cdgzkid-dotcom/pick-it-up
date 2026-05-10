@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { fetchEventStatus } from '@/lib/espn';
 import { potentialWin } from '@/lib/units';
+import { applyResult as applyEloResult } from '@/lib/elo';
 import type { Bet } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -100,10 +101,43 @@ export async function POST() {
       .single();
     const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
+    // CLV: odds_at_close = the moneyline at the moment we observed completion.
+    // For ML, we approximate with the post-game decimal odds we have on hand
+    // (no live moneyline once a game ends — Vegas pulls the line). Better
+    // sources would be an opening line snapshot vs closing snapshot, but
+    // ESPN doesn't expose that, so we record the at-bet odds vs the
+    // last-known odds we tracked. CLV stays accurate when odds_at_bet was
+    // captured pre-game and odds_at_close is updated on game start instead
+    // of completion — that's the next iteration.
+    const oddsAtBet = bet.odds_at_bet != null ? Number(bet.odds_at_bet) : Number(bet.odds_decimal);
+    const oddsAtClose = Number(bet.odds_decimal); // best-effort
+    const clv = oddsAtBet - oddsAtClose;
+
     await supabase
       .from('bets')
-      .update({ result: won ? 'win' : 'loss', payout })
+      .update({
+        result: won ? 'win' : 'loss',
+        payout,
+        odds_at_close: oddsAtClose,
+        clv,
+      })
       .eq('id', bet.id);
+
+    // Update ELO ratings for both teams based on actual game result.
+    if (bet.home_team && bet.away_team) {
+      try {
+        await applyEloResult(
+          supabase,
+          bet.sport,
+          bet.home_team,
+          bet.away_team,
+          status.home_score,
+          status.away_score,
+        );
+      } catch (e) {
+        console.error('[check-results] ELO update failed', e);
+      }
+    }
 
     if (payout > 0) {
       await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);

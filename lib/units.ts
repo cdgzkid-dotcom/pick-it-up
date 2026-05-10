@@ -37,6 +37,32 @@ export const recommendedAmount = (
   return Math.round(units * unit);
 };
 
+/**
+ * Half Kelly fractional bet sizing.
+ * Returns { amount, fraction }. fraction is the % of bankroll wagered (0..0.10).
+ * If Kelly is non-positive (no edge), returns { amount: 0, fraction: 0 }.
+ *
+ * Half Kelly is conservative: cuts the variance and bankroll-blow risk in half
+ * vs. full Kelly, at the cost of slightly slower compounding. Capped at 10%
+ * of bankroll regardless of edge magnitude (no all-in scenarios).
+ */
+export const kellyAmount = (
+  bankroll: number,
+  realProbability: number,
+  oddsDecimal: number,
+): { amount: number; fraction: number } => {
+  const b = oddsDecimal - 1;
+  if (b <= 0 || !Number.isFinite(realProbability)) return { amount: 0, fraction: 0 };
+  const p = Math.max(0, Math.min(1, realProbability));
+  const q = 1 - p;
+  const kelly = (p * b - q) / b;
+  if (kelly <= 0) return { amount: 0, fraction: 0 };
+  const halfKelly = kelly / 2;
+  const fraction = Math.max(0.01, Math.min(0.1, halfKelly));
+  const amount = Math.max(1, Math.round(bankroll * fraction));
+  return { amount, fraction };
+};
+
 export const potentialWin = (amount: number, oddsDecimal: number): number =>
   Math.round(amount * (oddsDecimal - 1));
 

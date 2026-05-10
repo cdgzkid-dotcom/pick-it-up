@@ -15,6 +15,7 @@ export interface Pick {
   updated_at?: string;
   line_movement_note?: string | null;
   regression_flags?: string | null;
+  trap_warning?: string | null;
   sport: string;
   game: string;
   league?: string | null;
@@ -56,6 +57,9 @@ export interface Bet {
   pick_id?: string | null;
   sport: string;
   game: string;
+  odds_at_bet?: number | null;
+  odds_at_close?: number | null;
+  clv?: number | null;
   home_team?: string | null;
   away_team?: string | null;
   home_team_abbr?: string | null;

@@ -7,7 +7,9 @@ import { z } from 'zod';
 import { callClaudeJson } from './claude';
 import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from './prompts';
 import { adjustedEdgeScore, edgeOf, impliedProbability } from './edge';
-import { recommendedAmount, tierForOdds, tierFromConfidence } from './units';
+import { kellyAmount, tierForOdds, tierFromConfidence } from './units';
+import { getRatingsForGames } from './elo';
+import { fetchGameWeather, isDome } from './weather';
 import type { Game, Tier } from './types';
 
 const BATCH_SIZE = 2;
@@ -48,6 +50,7 @@ const ClaudePickSchema = z.object({
   early_payout_threshold: z.string().optional().nullable(),
   line_movement_note: z.string().optional().nullable(),
   regression_flags: z.string().optional().nullable(),
+  trap_warning: z.string().optional().nullable(),
 });
 
 const ClaudeParlayLegSchema = z.object({
@@ -85,6 +88,8 @@ export interface AnalyzeResult {
   updated: number;
   insertedPicks: PickRow[];
   insertedParlays: PickRow[];
+  /** Kelly fraction map keyed by pick.pick + pick.bet_type for telegram lookup */
+  kellyByKey: Record<string, number>;
   withEdge: number;
   parlayCount: number;
 }
@@ -120,6 +125,7 @@ interface PickRow {
   early_payout_threshold: string | null;
   line_movement_note: string | null;
   regression_flags: string | null;
+  trap_warning: string | null;
   status: string;
   is_parlay: boolean;
   parlay_legs: unknown;
@@ -127,41 +133,116 @@ interface PickRow {
   updated_at: string;
 }
 
+interface EnrichedGame extends Game {
+  home_elo?: number;
+  away_elo?: number;
+  weather?: {
+    temp_f: number;
+    wind_mph: number;
+    wind_dir: string;
+    humidity: number;
+    precip_chance: number;
+    condition: string;
+    is_dome?: boolean;
+  } | null;
+}
+
 export async function analyzeGames(
   games: Game[],
   supabase: SupabaseClient,
   opts: AnalyzeOpts,
 ): Promise<AnalyzeResult> {
-  const unit = opts.bankroll * (opts.unitPercentage / 100);
-
-  const batches = chunk(games, BATCH_SIZE);
   const t0 = Date.now();
+
+  // Enrich games with ELO + weather BEFORE sending to Claude.
+  // ELO: pulled from elo_ratings table (1500 default for new teams).
+  // Weather: optional — only fetched when WEATHER_API_KEY is set + outdoor venue.
+  const enriched: EnrichedGame[] = games.map((g) => ({ ...g }));
+  try {
+    const ratings = await getRatingsForGames(
+      supabase,
+      enriched.map((g) => ({
+        sport: g.sport,
+        home_team: g.home_team,
+        away_team: g.away_team,
+        home_team_abbr: g.home_team_abbr,
+        away_team_abbr: g.away_team_abbr,
+      })),
+    );
+    for (const g of enriched) {
+      const r = ratings[`${g.sport}|${g.home_team}|${g.away_team}`];
+      if (r) {
+        g.home_elo = Math.round(Number(r.home.elo));
+        g.away_elo = Math.round(Number(r.away.elo));
+      }
+    }
+  } catch (e) {
+    console.error('[pickGen] ELO lookup failed (proceeding without)', e);
+  }
+
+  if (process.env.WEATHER_API_KEY) {
+    await Promise.all(
+      enriched.map(async (g) => {
+        const venue = (g.notable_stats as Record<string, unknown> | undefined)?.venue as string | undefined;
+        if (!venue) return;
+        if (isDome(venue)) {
+          g.weather = { temp_f: 72, wind_mph: 0, wind_dir: '', humidity: 50, precip_chance: 0, condition: 'Indoor', is_dome: true };
+          return;
+        }
+        try {
+          const w = await fetchGameWeather(venue, g.start_time ?? null);
+          if (w) g.weather = w;
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+  }
+
+  const batches = chunk(enriched, BATCH_SIZE);
   console.log(`[pickGen] launching ${batches.length} batches for ${games.length} games`);
 
-  const batchResults = await Promise.all(
-    batches.map(async (b, i) => {
-      const tStart = Date.now();
-      try {
-        const claudeOutput = await callClaudeJson(
-          PICK_GENERATION_SYSTEM,
-          buildPickGenerationUserPrompt(b),
-          { retry: false, maxTokens: 4096 },
-        );
-        const validated = ClaudeResponseSchema.safeParse(claudeOutput);
-        if (!validated.success) {
-          console.error(`[pickGen] batch ${i} validation failed`, validated.error.flatten());
-          return { picks: [], parlays: [] };
+  // Promise.allSettled with per-batch timeout (55s) — partial slate is better
+  // than failing the whole route at maxDuration=60.
+  const PER_BATCH_TIMEOUT_MS = 55_000;
+  const batchPromises = batches.map((b, i) =>
+    Promise.race([
+      (async () => {
+        const tStart = Date.now();
+        try {
+          const claudeOutput = await callClaudeJson(
+            PICK_GENERATION_SYSTEM,
+            buildPickGenerationUserPrompt(b),
+            { retry: false, maxTokens: 4096 },
+          );
+          const validated = ClaudeResponseSchema.safeParse(claudeOutput);
+          if (!validated.success) {
+            console.error(`[pickGen] batch ${i} validation failed`, validated.error.flatten());
+            return { picks: [], parlays: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
+          }
+          console.log(
+            `[pickGen] batch ${i} (${b.length} games) ${Date.now() - tStart}ms — ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays`,
+          );
+          return { picks: validated.data.picks, parlays: validated.data.parlays, dropped: 0, idx: i, ms: Date.now() - tStart };
+        } catch (err) {
+          console.error(`[pickGen] batch ${i} failed`, err);
+          return { picks: [], parlays: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
         }
-        console.log(
-          `[pickGen] batch ${i} (${b.length} games) ${Date.now() - tStart}ms — ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays`,
-        );
-        return { picks: validated.data.picks, parlays: validated.data.parlays };
-      } catch (err) {
-        console.error(`[pickGen] batch ${i} failed`, err);
-        return { picks: [], parlays: [] };
-      }
-    }),
+      })(),
+      new Promise<{ picks: never[]; parlays: never[]; dropped: number; idx: number; ms: number; timedOut: true }>((resolve) =>
+        setTimeout(() => resolve({ picks: [], parlays: [], dropped: b.length, idx: i, ms: PER_BATCH_TIMEOUT_MS, timedOut: true }), PER_BATCH_TIMEOUT_MS),
+      ),
+    ]),
   );
+
+  const settled = await Promise.allSettled(batchPromises);
+  const batchResults = settled.map((s) => (s.status === 'fulfilled' ? s.value : { picks: [], parlays: [], dropped: 0, idx: -1, ms: 0 }));
+
+  const totalDropped = batchResults.reduce((acc, r) => acc + ('dropped' in r ? r.dropped : 0), 0);
+  const timedOutBatches = batchResults.filter((r) => 'timedOut' in r && r.timedOut).map((r) => r.idx);
+  if (totalDropped > 0) {
+    console.warn(`[pickGen] dropped ${totalDropped} games — timed-out batches: [${timedOutBatches.join(',')}]`);
+  }
 
   const raw = {
     picks: batchResults.flatMap((r) => r.picks),
@@ -181,11 +262,19 @@ export async function analyzeGames(
       const odds = p.odds_decimal;
       const implied = impliedProbability(odds);
       const e = edgeOf(p.real_probability, odds);
-      // Recompute tier server-side from confidence — never trust Claude's tier
+      // Tier ALWAYS server-side from confidence — Claude's tier is ignored.
       const baseTier: Tier = tierFromConfidence(p.confidence);
-      // tierForOdds demotes one tier when odds < 1.40
-      const adjustedTier = tierForOdds(baseTier, odds);
-      const recommended = recommendedAmount(adjustedTier, unit, odds);
+      // tierForOdds demotes one tier when odds < 1.40 (momio culero).
+      let adjustedTier = tierForOdds(baseTier, odds);
+      // Trap warning from Claude → demote one extra tier (or push to no-bet).
+      if (p.trap_warning) {
+        if (adjustedTier === 'lock') adjustedTier = 'strong';
+        else if (adjustedTier === 'strong') adjustedTier = 'value';
+        else if (adjustedTier === 'value') adjustedTier = 'parlay';
+      }
+      // Half-Kelly bet sizing replaces fixed-units. fraction will be 0 if
+      // Kelly is non-positive (no real edge) — those picks get filtered out.
+      const k = kellyAmount(opts.bankroll, p.real_probability, odds);
       const score = adjustedEdgeScore(p.real_probability, odds);
       const homeAbbr =
         p.home_team_abbr?.toLowerCase() ??
@@ -207,17 +296,19 @@ export async function analyzeGames(
         implied_probability: implied,
         edge: e,
         tier: adjustedTier,
-        recommended_amount: recommended,
+        recommended_amount: k.amount,
+        kelly_fraction: k.fraction,
         _score: score,
       };
     })
     // Server-side filters (don't trust Claude's self-policing):
     //   - edge must be positive
     //   - confidence >= 55 (anything below is no-bet territory)
-    //   - if odds < 1.40 (momio culero) require edge ≥ 5% — otherwise the
-    //     payout doesn't compensate the variance
+    //   - Kelly returned a positive amount (no edge → 0 → discard)
+    //   - momio culero + low edge: discard
     .filter((p) => p.edge > 0)
     .filter((p) => p.confidence >= 55)
+    .filter((p) => p.recommended_amount > 0)
     .filter((p) => !(p.odds_decimal < 1.4 && p.edge < 0.05))
     .sort((a, b) => b._score - a._score);
 
@@ -227,6 +318,9 @@ export async function analyzeGames(
     const realProb = par.combined_probability;
     const e = par.edge ?? realProb - implied;
     const conf = par.confidence ?? Math.round(realProb * 100);
+    // Parlays use half-Kelly too — typically smaller than singles because
+    // the combined probability is lower.
+    const k = kellyAmount(opts.bankroll, realProb, odds);
     return {
       pick: par.legs.map((l) => l.pick).join(' + '),
       pick_detail: par.legs.map((l) => `${l.game}: ${l.pick}`).join(' | '),
@@ -236,11 +330,12 @@ export async function analyzeGames(
       edge: e,
       confidence: conf,
       tier: 'parlay' as Tier,
-      recommended_amount: recommendedAmount('parlay', unit, odds),
+      recommended_amount: k.amount,
+      kelly_fraction: k.fraction,
       analysis: par.analysis ?? null,
       parlay_legs: par.legs,
     };
-  });
+  }).filter((par) => par.recommended_amount > 0 && par.edge > 0);
 
   const now = new Date().toISOString();
 
@@ -274,6 +369,7 @@ export async function analyzeGames(
     early_payout_threshold: p.early_payout_threshold ?? null,
     line_movement_note: p.line_movement_note ?? null,
     regression_flags: p.regression_flags ?? null,
+    trap_warning: p.trap_warning ?? null,
     status: 'pending',
     is_parlay: false,
     parlay_legs: null,
@@ -311,6 +407,7 @@ export async function analyzeGames(
     early_payout_threshold: null,
     line_movement_note: null,
     regression_flags: null,
+    trap_warning: null,
     status: 'pending',
     is_parlay: true,
     parlay_legs: par.parlay_legs,
@@ -319,6 +416,16 @@ export async function analyzeGames(
   }));
 
   const allRows: PickRow[] = [...singleRows, ...parlayRows];
+
+  // Build a lookup of kelly fractions per pick — caller (cron) passes this to
+  // telegram so the message can show "Kelly 10.7%".
+  const kellyByKey: Record<string, number> = {};
+  for (const p of enrichedSingles) {
+    kellyByKey[`${p.pick}|${p.bet_type}`] = p.kelly_fraction;
+  }
+  for (const par of enrichedParlays) {
+    kellyByKey[`${par.pick}|Parlay`] = par.kelly_fraction;
+  }
 
   let insertedCount = 0;
   let updatedCount = 0;
@@ -382,6 +489,7 @@ export async function analyzeGames(
     updated: updatedCount,
     insertedPicks: insertedSinglesOut,
     insertedParlays: insertedParlaysOut,
+    kellyByKey,
     withEdge: enrichedSingles.length,
     parlayCount: enrichedParlays.length,
   };

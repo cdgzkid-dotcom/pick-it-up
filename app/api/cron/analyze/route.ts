@@ -14,7 +14,8 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { fetchGames, fetchInjuriesForSports, fetchEventStatus } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
-import { sendTelegramMessage, formatPicksMessage, formatResultsMessage } from '@/lib/telegram';
+import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines } from '@/lib/telegram';
+import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import type { Bet, Game } from '@/lib/types';
 
@@ -94,7 +95,16 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     .filter((s): s is string => Boolean(s))
     .sort()[0];
 
-  const text = formatPicksMessage(
+  // Run Monte Carlo on the slate (singles only — parlays already have their
+  // probability baked into the legs).
+  const mcInput = result.insertedPicks.map((p) => ({
+    real_probability: Number(p.real_probability),
+    odds_decimal: Number(p.odds_decimal),
+    recommended_amount: Number(p.recommended_amount),
+  }));
+  const mc = simulateDay(mcInput);
+
+  const picksMsg = formatPicksMessage(
     result.insertedPicks.map((p) => ({
       tier: p.tier,
       confidence: p.confidence,
@@ -104,6 +114,8 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       odds_decimal: Number(p.odds_decimal),
       edge: Number(p.edge),
       recommended_amount: Number(p.recommended_amount),
+      kelly_fraction: result.kellyByKey[`${p.pick}|${p.bet_type}`] ?? null,
+      trap_warning: (p as { trap_warning?: string | null }).trap_warning ?? null,
       analysis: p.analysis,
     })),
     result.insertedParlays.map((p) => ({
@@ -115,12 +127,14 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       odds_decimal: Number(p.odds_decimal),
       edge: Number(p.edge),
       recommended_amount: Number(p.recommended_amount),
+      kelly_fraction: result.kellyByKey[`${p.pick}|Parlay`] ?? null,
       analysis: p.analysis,
       is_parlay: true,
     })),
     earliestStart,
   );
 
+  const text = mcInput.length > 0 ? `${picksMsg}\n\n${formatMonteCarloLines(mc).join('\n')}` : picksMsg;
   const send = await sendTelegramMessage(text);
   if (send.ok) {
     const ids = [...result.insertedPicks, ...result.insertedParlays]

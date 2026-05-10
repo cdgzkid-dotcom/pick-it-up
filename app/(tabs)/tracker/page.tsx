@@ -4,6 +4,7 @@ import ManualBetForm from '@/components/ManualBetForm';
 import ResetPendingButton from '@/components/ResetPendingButton';
 import ResultsRefresher from '@/components/ResultsRefresher';
 import { TeamLogo } from '@/components/Logo';
+import MatchupHeader from '@/components/MatchupHeader';
 import { tierLabel } from '@/lib/units';
 import type { Bet, Tier } from '@/lib/types';
 
@@ -90,6 +91,7 @@ function HistoryRow({ bet }: { bet: Bet }) {
 
   return (
     <div className="px-3 py-2 bg-card border border-line rounded text-xs space-y-1">
+      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={18} className="text-[10px]" />
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-1.5 text-[11px]">
           <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={20} className="shrink-0" />
@@ -104,7 +106,7 @@ function HistoryRow({ bet }: { bet: Bet }) {
         <div className="min-w-0 flex-1">
           <div className="truncate">{bet.pick}</div>
           <div className="text-[10px] text-muted truncate">
-            {bet.sport} · {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
+            {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
             {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
           </div>
         </div>

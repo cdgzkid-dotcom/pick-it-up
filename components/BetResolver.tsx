@@ -2,6 +2,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { TeamLogo } from './Logo';
+import MatchupHeader from './MatchupHeader';
 import { tierLabel } from '@/lib/units';
 import type { Bet, Tier } from '@/lib/types';
 
@@ -49,6 +50,8 @@ export default function BetResolver({ bet }: Props) {
 
   return (
     <div className="bg-card border border-line rounded-lg p-3 space-y-2">
+      <MatchupHeader sport={bet.sport} startTime={bet.game_start_time} size={20} />
+
       {(bet.home_team_abbr || bet.away_team_abbr) && (bet.home_team || bet.away_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 pb-1 border-b border-line/40">
           <TeamLogo sport={bet.sport} abbr={bet.away_team_abbr} size={24} className="shrink-0" />
@@ -60,10 +63,9 @@ export default function BetResolver({ bet }: Props) {
       )}
       <div className="flex justify-between items-start gap-2">
         <div className="min-w-0">
-          <div className="text-[10px] text-muted">
-            {bet.sport}
-            {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
-          </div>
+          {bet.tier && (
+            <div className="text-[10px] text-muted">{tierLabel(bet.tier as Tier)}</div>
+          )}
           <div className="font-bold text-sm">{bet.pick}</div>
         </div>
         <div className="text-right text-xs shrink-0">

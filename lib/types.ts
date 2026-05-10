@@ -65,6 +65,7 @@ export interface Bet {
   home_team_abbr?: string | null;
   away_team_abbr?: string | null;
   espn_event_id?: string | null;
+  game_start_time?: string | null;
   pick: string;
   bet_type: string;
   odds_decimal: number;

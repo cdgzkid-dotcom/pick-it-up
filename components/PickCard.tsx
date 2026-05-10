@@ -3,6 +3,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
 import { TeamLogo, SportLogo } from './Logo';
+import MatchupHeader from './MatchupHeader';
 import { tierLabel } from '@/lib/units';
 import type { KeyStat, Pick, Tier } from '@/lib/types';
 
@@ -128,10 +129,6 @@ export default function PickCard({ pick, rank }: Props) {
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
-          <SportLogo sport={pick.sport} size={18} />
-          <span className="px-1.5 py-0.5 bg-line rounded text-[10px] text-muted">
-            {pick.sport}
-          </span>
           <span className={`text-xs font-bold ${pick.trap_warning ? 'text-red' : tierColor}`}>
             {tierLabel(tier, pick.confidence)}
             {pick.trap_warning && ' · TRAMPA DETECTADA'}
@@ -143,6 +140,10 @@ export default function PickCard({ pick, rank }: Props) {
           </span>
         )}
       </div>
+
+      {!pick.is_parlay && (
+        <MatchupHeader sport={pick.sport} startTime={pick.game_start_time} size={24} />
+      )}
 
       {!pick.is_parlay && (pick.home_team_abbr || pick.away_team_abbr || pick.home_team) && (
         <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2 py-2">

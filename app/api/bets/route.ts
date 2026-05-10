@@ -55,15 +55,17 @@ export async function POST(req: Request) {
     }
   }
 
-  // If the pick has an espn_event_id, copy it to the bet
+  // If the pick has an espn_event_id / game_start_time, copy to the bet
   let espn_event_id = fields.espn_event_id ?? null;
-  if (pick_id && !espn_event_id) {
+  let game_start_time: string | null = null;
+  if (pick_id) {
     const { data: pickRow } = await supabase
       .from('picks')
-      .select('espn_event_id')
+      .select('espn_event_id, game_start_time')
       .eq('id', pick_id)
       .maybeSingle();
-    espn_event_id = pickRow?.espn_event_id ?? null;
+    if (!espn_event_id) espn_event_id = pickRow?.espn_event_id ?? null;
+    game_start_time = pickRow?.game_start_time ?? null;
   }
 
   // Get current bankroll
@@ -84,6 +86,7 @@ export async function POST(req: Request) {
     .insert([{
       ...fields,
       espn_event_id,
+      game_start_time,
       pick_id: pick_id ?? null,
       result: 'pending',
       odds_at_bet: fields.odds_decimal,

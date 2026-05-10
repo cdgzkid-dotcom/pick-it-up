@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { TeamLogo, SportLogo } from './Logo';
+import { TeamLogo } from './Logo';
+import MatchupHeader from './MatchupHeader';
 
 interface UpcomingGame {
   espn_event_id: string;
@@ -75,32 +76,26 @@ export default function UpcomingGames({ games }: Props) {
               <div className="text-sm font-bold">{time}</div>
               <div className="text-[10px] text-muted">{diffShort(earliest, now)}</div>
             </div>
-            <div className="space-y-1">
+            <div className="space-y-2">
               {gs.map((g) => {
                 const hasLogos = g.away_team_abbr || g.home_team_abbr;
-                // game_label is "Away Team @ Home Team" — split for scoreboard
                 const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
                 return (
-                  <div
-                    key={g.espn_event_id}
-                    className="grid grid-cols-[14px_auto_1fr_auto_1fr_auto_auto] items-center gap-1.5 text-[11px]"
-                  >
-                    <SportLogo sport={g.sport} size={14} className="shrink-0" />
+                  <div key={g.espn_event_id} className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <MatchupHeader sport={g.sport} startTime={g.start_time} size={18} className="text-[10px]" />
+                      {g.has_picks && <span className="text-green text-[10px]">✓ pick</span>}
+                    </div>
                     {hasLogos ? (
-                      <>
+                      <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-1.5 text-[11px]">
                         <TeamLogo sport={g.sport} abbr={g.away_team_abbr} size={18} className="shrink-0" />
                         <span className="truncate">{awayName ?? ''}</span>
                         <span className="text-muted text-[9px] px-0.5">@</span>
                         <span className="truncate text-right">{homeName ?? ''}</span>
                         <TeamLogo sport={g.sport} abbr={g.home_team_abbr} size={18} className="shrink-0" />
-                      </>
+                      </div>
                     ) : (
-                      <span className="col-span-5 truncate">{g.game_label}</span>
-                    )}
-                    {g.has_picks ? (
-                      <span className="text-green text-[10px]">✓</span>
-                    ) : (
-                      <span />
+                      <div className="text-[11px] truncate">{g.game_label}</div>
                     )}
                   </div>
                 );

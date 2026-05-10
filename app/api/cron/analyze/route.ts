@@ -302,6 +302,9 @@ interface ResolutionForTg {
   result: 'win' | 'loss';
   pl: number;
   is_parlay: boolean;
+  final_score?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
 }
 
 function cronPickedSide(
@@ -406,12 +409,14 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       .single();
     const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
+    const finalScore = `${status.away_score}-${status.home_score}`;
     await supabase
       .from('bets')
       .update({
         result: won ? 'win' : 'loss',
         payout,
         result_notified_at: null,
+        final_score: finalScore,
       })
       .eq('id', bet.id);
 
@@ -434,6 +439,9 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       result: won ? 'win' : 'loss',
       pl: payout - amount,
       is_parlay: (bet.bet_type as string) === 'Parlay',
+      final_score: finalScore,
+      home_team: bet.home_team,
+      away_team: bet.away_team,
     });
   }
 
@@ -455,6 +463,9 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       result: b.result === 'win' ? 'win' : 'loss',
       pl: payout - amount,
       is_parlay: b.bet_type === 'Parlay',
+      final_score: b.final_score ?? null,
+      home_team: b.home_team,
+      away_team: b.away_team,
     });
   }
 

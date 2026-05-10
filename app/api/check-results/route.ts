@@ -19,6 +19,8 @@ interface Resolution {
   amount: number;
   home_score: number;
   away_score: number;
+  home_team?: string | null;
+  away_team?: string | null;
   is_parlay: boolean;
   was_already_notified: boolean;
 }
@@ -120,9 +122,13 @@ export async function POST() {
       const amount = Number(bet.amount);
       const { data: settings } = await supabase.from('settings').select('bankroll_current').eq('id', 1).single();
       const newBankroll = Number(settings?.bankroll_current ?? 0) + amount; // refund stake
-      await supabase.from('bets').update({ result: 'push', payout: amount }).eq('id', bet.id);
+      const finalScorePush = `${status.away_score}-${status.home_score}`;
+      await supabase
+        .from('bets')
+        .update({ result: 'push', payout: amount, final_score: finalScorePush })
+        .eq('id', bet.id);
       await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
-      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick}` }]);
+      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick} (${finalScorePush})` }]);
       continue;
     }
 
@@ -152,6 +158,10 @@ export async function POST() {
     const oddsAtClose = Number(bet.odds_decimal); // best-effort
     const clv = oddsAtBet - oddsAtClose;
 
+    // Save final score for display in tracker history + Telegram message.
+    // Format: "away-home" (e.g., "Royals 5 - Tigers 2" rendered from this).
+    const finalScore = `${status.away_score}-${status.home_score}`;
+
     await supabase
       .from('bets')
       .update({
@@ -159,6 +169,7 @@ export async function POST() {
         payout,
         odds_at_close: oddsAtClose,
         clv,
+        final_score: finalScore,
       })
       .eq('id', bet.id);
 
@@ -201,6 +212,8 @@ export async function POST() {
       amount,
       home_score: status.home_score,
       away_score: status.away_score,
+      home_team: bet.home_team,
+      away_team: bet.away_team,
       is_parlay: (bet.bet_type as string) === 'Parlay',
       was_already_notified: false,
     });

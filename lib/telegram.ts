@@ -252,6 +252,9 @@ interface ResolutionForMessage {
   result: 'win' | 'loss';
   pl: number;
   is_parlay?: boolean;
+  final_score?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
 }
 
 interface ResultsContext {
@@ -275,6 +278,17 @@ export function formatResultsMessage(
     const verb = r.result === 'win' ? 'Ganaste' : 'Perdiste';
     const sign = r.pl >= 0 ? '+' : '-';
     lines.push(`${emoji} ${r.pick} → ${verb} ${sign}$${Math.abs(Math.round(r.pl))}`);
+    // Final score line: "Marcador: Away 5 - Home 2"
+    if (r.final_score && r.away_team && r.home_team) {
+      const parts = r.final_score.split('-');
+      if (parts.length === 2) {
+        const awayShort = r.away_team.split(/\s+/).pop() ?? r.away_team;
+        const homeShort = r.home_team.split(/\s+/).pop() ?? r.home_team;
+        lines.push(`   Marcador: ${awayShort} ${parts[0]} - ${homeShort} ${parts[1]}`);
+      }
+    } else if (r.final_score) {
+      lines.push(`   Marcador: ${r.final_score}`);
+    }
   }
   lines.push('');
 

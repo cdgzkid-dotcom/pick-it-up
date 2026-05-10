@@ -63,6 +63,7 @@ export interface Bet {
   spread_line?: number | null;
   total_line?: number | null;
   bet_direction?: 'over' | 'under' | string | null;
+  final_score?: string | null;
   home_team?: string | null;
   away_team?: string | null;
   home_team_abbr?: string | null;

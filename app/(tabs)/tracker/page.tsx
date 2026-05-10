@@ -166,6 +166,20 @@ function HistoryRow({ bet }: { bet: Bet }) {
             {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
             {push ? ' · PUSH' : ''}
           </div>
+          {bet.final_score && (
+            <div className="text-[10px] text-muted">
+              Marcador:{' '}
+              {(() => {
+                const parts = String(bet.final_score).split('-');
+                if (parts.length === 2 && bet.away_team && bet.home_team) {
+                  const aw = bet.away_team.split(/\s+/).pop() ?? bet.away_team;
+                  const hm = bet.home_team.split(/\s+/).pop() ?? bet.home_team;
+                  return `${aw} ${parts[0]} - ${hm} ${parts[1]}`;
+                }
+                return bet.final_score;
+              })()}
+            </div>
+          )}
         </div>
         <div className={`text-right font-bold ${pl > 0 ? 'text-green' : pl < 0 ? 'text-red' : 'text-blue'}`}>
           {pl > 0 ? '+' : pl === 0 ? '' : ''}${Math.round(pl)}

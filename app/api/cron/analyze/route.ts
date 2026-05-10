@@ -137,7 +137,25 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     return { generated: 0, eventIds: [], message: 'all_already_generated' };
   }
 
-  const result = await analyzeGames(fresh, supabase, {
+  // Cap how many games we analyze per cron run so we stay under Vercel's
+  // 60s maxDuration. Each batch is ~25-40s and we run 2-3 batches in parallel.
+  // 12 games = 6 batches of 2 = wall ~30-45s (well under 60s).
+  // Prioritize playoff games + closer to start time.
+  const MAX_FRESH_GAMES = 12;
+  let toAnalyze: Game[] = fresh;
+  if (fresh.length > MAX_FRESH_GAMES) {
+    const scored = fresh.map((g) => {
+      const startMs = g.start_time ? new Date(g.start_time).getTime() : Number.POSITIVE_INFINITY;
+      const minToStart = (startMs - Date.now()) / 60_000;
+      const playoffBonus = isPlayoffSeason(g.sport) ? -1000 : 0; // negative pushes to front
+      return { g, score: playoffBonus + minToStart };
+    });
+    scored.sort((a, b) => a.score - b.score);
+    toAnalyze = scored.slice(0, MAX_FRESH_GAMES).map((s) => s.g);
+    console.log(`[AUDIT][cron] capping ${fresh.length} → ${MAX_FRESH_GAMES} (playoffs first, then closest to start)`);
+  }
+
+  const result = await analyzeGames(toAnalyze, supabase, {
     bankroll: Number(settings.bankroll_current),
     unitPercentage: Number(settings.unit_percentage),
   });
@@ -150,7 +168,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   const eventIdsWithPicks = new Set(
     result.insertedPicks.map((p) => p.espn_event_id).filter((x): x is string => Boolean(x)),
   );
-  const playoffsAnalyzedNoEdge = fresh.filter(
+  const playoffsAnalyzedNoEdge = toAnalyze.filter(
     (g) => isPlayoffSeason(g.sport) && g.espn_event_id && !eventIdsWithPicks.has(g.espn_event_id),
   );
 

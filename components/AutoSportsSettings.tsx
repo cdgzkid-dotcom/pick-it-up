@@ -1,11 +1,13 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { SportLogo } from './Logo';
 
 interface SportOption {
   value: string;
   label: string;
   hasGames: boolean;
+  iconSrc?: string;
 }
 
 interface Props {
@@ -78,14 +80,15 @@ export default function AutoSportsSettings({ options, initial, enabled }: Props)
                 save({ auto_sports: next });
               }}
               disabled={saving}
-              className={`tap text-[10px] py-1.5 rounded border ${
+              className={`tap inline-flex items-center justify-center gap-1.5 text-[10px] py-1.5 rounded border ${
                 on
                   ? 'border-green/60 bg-green/10 text-green'
                   : 'border-line text-muted'
               } ${!o.hasGames ? 'opacity-50' : ''}`}
             >
-              {o.label}
-              {o.hasGames && <span className="ml-1 text-[8px]">●</span>}
+              <SportLogo sport={o.value} size={20} className={!o.hasGames ? 'opacity-50' : ''} />
+              <span>{o.label}</span>
+              {o.hasGames && <span className="text-[8px]">●</span>}
             </button>
           );
         })}

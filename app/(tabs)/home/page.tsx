@@ -7,6 +7,7 @@ import UpcomingGames from '@/components/UpcomingGames';
 import AnalyzeNowButton from '@/components/AnalyzeNowButton';
 import { computeStats } from '@/lib/stats';
 import { ESPN_SPORTS, FAVORITE_SPORTS, fetchGames, gameCountsBySport } from '@/lib/espn';
+import { sportLeagueLogoUrl } from '@/components/Logo';
 import type { Bet, Settings } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -36,12 +37,15 @@ export default async function HomePage() {
     value: s,
     label: s.toUpperCase(),
     hasGames: (counts[s] ?? 0) > 0,
+    iconSrc: sportLeagueLogoUrl(s) ?? undefined,
   }));
 
   let upcoming: Array<{
     espn_event_id: string;
     sport: string;
     game_label: string;
+    home_team_abbr?: string;
+    away_team_abbr?: string;
     start_time: string;
     has_picks: boolean;
   }> = [];
@@ -68,6 +72,8 @@ export default async function HomePage() {
         espn_event_id: g.espn_event_id!,
         sport: g.sport,
         game_label: g.game_label,
+        home_team_abbr: g.home_team_abbr,
+        away_team_abbr: g.away_team_abbr,
         start_time: g.start_time!,
         has_picks: withPicks.has(g.espn_event_id!),
       }))

@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import StatsChart from '@/components/StatsChart';
 import WeeklyChart from '@/components/WeeklyChart';
+import { SportLogo } from '@/components/Logo';
 import {
   computeStats,
   groupBy,
@@ -194,7 +195,7 @@ export default async function StatsPage() {
         </section>
       )}
 
-      <BreakdownTable title="Por deporte" data={bySport} />
+      <BreakdownTable title="Por deporte" data={bySport} showLogos />
       <BreakdownTable title="Por tipo" data={byType} />
       <BreakdownTable title="Por tier (AI accuracy)" data={byTier} />
 
@@ -276,9 +277,11 @@ function Mini({
 function BreakdownTable({
   title,
   data,
+  showLogos = false,
 }: {
   title: string;
   data: Record<string, Bet[]>;
+  showLogos?: boolean;
 }) {
   const rows = Object.entries(data).map(([k, bets]) => {
     const wins = bets.filter((b) => b.result === 'win' || b.result === 'early_payout').length;
@@ -310,7 +313,10 @@ function BreakdownTable({
             key={r.k}
             className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-3 py-2 border-b border-line/50 last:border-b-0 text-xs"
           >
-            <span className="truncate">{r.k}</span>
+            <span className="truncate flex items-center gap-2">
+              {showLogos && <SportLogo sport={r.k} size={16} />}
+              {r.k}
+            </span>
             <span>
               {r.wins}-{r.losses}
             </span>

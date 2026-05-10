@@ -84,11 +84,14 @@ function tierBadge(tier?: string | null, confidence?: number | null): string {
 
 function oneLineSummary(analysis?: string | null): string {
   if (!analysis) return '';
-  // Take the first sentence; remove markdown chars; cap at 200 to avoid wraps
-  const first = analysis.split(/[\n\.]/).map((s) => s.trim()).find((s) => s.length > 0);
-  if (!first) return '';
-  const clean = first.replace(/[*_]/g, '');
-  return clean.length > 200 ? clean.slice(0, 197) + '…' : clean;
+  // Take the first 1-2 sentences (until period or newline). NO truncation —
+  // user prefers complete reasoning over a "..." cliffhanger.
+  const stripped = analysis.replace(/[*_]/g, '').trim();
+  const m = stripped.match(/^([^\n.]+(\.|$))(\s+[^\n.]+\.|$)?/);
+  if (m) {
+    return (m[1] + (m[3] ?? '')).trim();
+  }
+  return stripped;
 }
 
 function formatTimeMx(iso?: string | null): string {

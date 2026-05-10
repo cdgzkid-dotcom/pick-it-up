@@ -90,14 +90,24 @@ function formatTimeMx(iso?: string | null): string {
   });
 }
 
+interface PicksContext {
+  bankrollCurrent?: number;
+  record?: { wins: number; losses: number };
+  roi?: number;
+}
+
 export function formatPicksMessage(
   picks: PickForMessage[],
   parlays: PickForMessage[],
   gameStartTime?: string | null,
+  ctx: PicksContext = {},
 ): string {
   const lines: string[] = [];
   const total = picks.length + parlays.length;
   lines.push(`🎯 *PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
+  if (ctx.bankrollCurrent != null) {
+    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
+  }
   lines.push('');
 
   picks.forEach((p, i) => {
@@ -132,6 +142,22 @@ export function formatPicksMessage(
   if (gameStartTime) {
     lines.push(`⏰ Juego empieza a las ${formatTimeMx(gameStartTime)}`);
   }
+
+  // Footer with running totals
+  const footerBits: string[] = [];
+  if (ctx.bankrollCurrent != null) {
+    footerBits.push(`💰 Bankroll actual: $${Math.round(ctx.bankrollCurrent)} MXN`);
+  }
+  if (ctx.record && ctx.roi != null) {
+    footerBits.push(
+      `📈 Record total: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`,
+    );
+  }
+  if (footerBits.length > 0) {
+    lines.push('');
+    for (const f of footerBits) lines.push(f);
+  }
+
   lines.push(`🔗 ${APP_URL}/picks`);
   return lines.join('\n');
 }
@@ -162,6 +188,7 @@ interface ResolutionForMessage {
 
 interface ResultsContext {
   bankrollCurrent?: number;
+  bankrollBefore?: number;
   todayPl?: number;
   record?: { wins: number; losses: number };
   roi?: number;
@@ -182,11 +209,8 @@ export function formatResultsMessage(
   }
   lines.push('');
   if (ctx.bankrollCurrent != null) {
-    const todayLine =
-      ctx.todayPl != null
-        ? ` (${ctx.todayPl >= 0 ? '+' : ''}$${Math.round(ctx.todayPl)} hoy)`
-        : '';
-    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)}${todayLine}`);
+    const before = ctx.bankrollBefore != null ? ` (era $${Math.round(ctx.bankrollBefore)})` : '';
+    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN${before}`);
   }
   if (ctx.record && ctx.roi != null) {
     lines.push(

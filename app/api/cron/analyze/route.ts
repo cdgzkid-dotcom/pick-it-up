@@ -75,15 +75,24 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   }
 
   const eventIds = inWindow.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x));
-  const { data: existingPicks } = await supabase
+
+  // Dedup guard: skip events that either already have a pending/bet pick OR
+  // were ever notified via Telegram (telegram_notified_at). Once we've sent
+  // a notification for a slot, NEVER analyze or notify again — even if the
+  // pick was later superseded/skipped manually.
+  const { data: blockedPicks } = await supabase
     .from('picks')
-    .select('espn_event_id, status')
-    .in('status', ['pending', 'bet'])
+    .select('espn_event_id, status, telegram_notified_at')
+    .or('status.in.(pending,bet),telegram_notified_at.not.is.null')
     .in('espn_event_id', eventIds);
-  const alreadyDone = new Set((existingPicks ?? []).map((p) => p.espn_event_id));
+
+  const alreadyDone = new Set((blockedPicks ?? []).map((p) => p.espn_event_id));
+  const notifiedCount = (blockedPicks ?? []).filter((p) => p.telegram_notified_at).length;
   const fresh: Game[] = inWindow.filter((g) => g.espn_event_id && !alreadyDone.has(g.espn_event_id));
 
-  console.log(`[AUDIT][cron] already-have-picks events: ${alreadyDone.size}, fresh events to analyze: ${fresh.length}`);
+  console.log(
+    `[AUDIT][cron] blocked events: ${alreadyDone.size} (of which ${notifiedCount} previously notified), fresh events to analyze: ${fresh.length}`,
+  );
   console.log(`[AUDIT][cron] fresh games: ${fresh.map((g) => `${g.sport}/${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(', ')}`);
 
   if (fresh.length === 0) {
@@ -103,6 +112,15 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     .map((g) => g.start_time)
     .filter((s): s is string => Boolean(s))
     .sort()[0];
+
+  // Build context (bankroll + record + ROI) for header/footer of the message
+  const { data: allBets } = await supabase.from('bets').select('*');
+  const stats = computeStats((allBets as Bet[]) ?? []);
+  const ctx = {
+    bankrollCurrent: Number(settings.bankroll_current),
+    record: { wins: stats.wins, losses: stats.losses },
+    roi: stats.roi,
+  };
 
   // Run Monte Carlo on the slate (singles only — parlays already have their
   // probability baked into the legs).
@@ -141,6 +159,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       is_parlay: true,
     })),
     earliestStart,
+    ctx,
   );
 
   const text = mcInput.length > 0 ? `${picksMsg}\n\n${formatMonteCarloLines(mc).join('\n')}` : picksMsg;
@@ -295,8 +314,11 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
   const stats = computeStats((allBets as Bet[]) ?? []);
   const todayPl = allToNotify.reduce((s, r) => s + r.pl, 0);
 
+  const bankrollNow = Number(settings?.bankroll_current ?? 0);
+  const bankrollBefore = bankrollNow - todayPl;
   const text = formatResultsMessage(allToNotify, {
-    bankrollCurrent: Number(settings?.bankroll_current ?? 0),
+    bankrollCurrent: bankrollNow,
+    bankrollBefore,
     todayPl,
     record: { wins: stats.wins, losses: stats.losses },
     roi: stats.roi,

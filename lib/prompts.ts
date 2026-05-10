@@ -32,12 +32,23 @@ Cuando el input incluye un campo "weather" para juegos outdoor (MLB/NFL):
 - Lluvia ≥40% probable = considerar suspensión
 - "is_dome": true → ignorar weather, juego indoor
 
-== DETECCIÓN DE TRAMPAS ==
-Para cada juego analizar SI hay señales de "trap line":
-- Momio que se ve "demasiado bueno" para el equipo claramente superior — la casa puede saber algo que no está en stats públicos (lesión no reportada, desmotivación, scratch del starter)
-- Reverse line movement (público en un lado, línea moviéndose al otro)
-- Discrepancia grande entre tu análisis y el momio (debería ser -150 pero está -120)
-Si detectas trampa, llenar el campo "trap_warning" con la razón en español (max 25 palabras). Si NO hay trampa, dejarlo en null. El sistema demote el tier automáticamente cuando trap_warning no es null.
+== DETECCIÓN DE TRAMPAS — MUY RESTRICTIVO ==
+La MAYORÍA de los juegos NO tienen trampa. Solo marca trap_warning cuando hay EVIDENCIA CONCRETA de que la casa sabe algo que los datos públicos no reflejan.
+
+MARCA trap_warning SOLO en estos casos:
+- Una lesión confirmada de star player que la línea NO ha ajustado todavía (puedes verificar comparando con un escenario lógico)
+- Reverse line movement pronunciado: público >70% en un lado pero la línea se movió >15 centavos al otro lado sin razón pública
+
+NO marques trap_warning por:
+- "El momio se ve atractivo / demasiado bueno" → eso es VALUE, no trampa
+- "La casa puede saber algo" → especulación sin evidencia
+- "Jugador cuestionable / day-to-day" → incertidumbre normal del deporte
+- Discrepancia entre tu análisis y el momio → eso es ya el edge que estás capturando
+- Cualquier sospecha sin un dato concreto que la respalde
+
+Si una estrella está confirmada OUT y el momio ya lo refleja (vs su línea esperada con el jugador), NO es trampa — la casa ya ajustó correctamente.
+
+Cuando NO tengas evidencia concreta, trap_warning DEBE ser null. La regla por default es null.
 
 == PYTHAGOREAN EXPECTATION (SOLO MLB) ==
 Para juegos MLB, calcular Pythagorean Win% de cada equipo:
@@ -195,6 +206,20 @@ Compara el power rating de ambos equipos para obtener probabilidad real más pre
 - VALUE (55-69%): Edge existe pero delgado (1-3%) o hay factores de riesgo significativos. 1 unit.
 - Si momio menor a 1.40, bajar un tier automáticamente porque la ganancia no compensa.
 - Si hay red flags serios (star player GTD, clima extremo, situational trap), bajar un tier.
+
+== CALIBRACIÓN DE CONFIDENCE — NO SEAS TÍMIDO ==
+Históricamente has estado pegado en 55-65% para todo. Eso es indecisión. Calibra:
+
+- 85-100% (LOCK): equipo claramente superior, datos lo respaldan, momio > 1.40, sin lesiones clave de su lado. Ejemplo MLB: equipo top-5 en casa con su #1 pitcher (ERA <3.0) vs equipo bottom-5 con #5 pitcher (ERA >5.0).
+- 70-84% (STRONG): mayoría de factores a favor, riesgo menor identificable. Ejemplo: equipo top-10 en casa, mejor pitcher, vs mediocre.
+- 55-69% (VALUE): edge existe pero hay factores de riesgo reales que pesan en contra.
+
+Casos que MÍNIMO deben ser 75% confidence:
+- Equipo 8-2 últimos 10 + mejor pitcher + en casa vs equipo 3-7 últimos 10 → MÍNIMO 75%
+- Pitcher elite (ERA <2.50) en casa vs lineup contrario sin power → MÍNIMO 75%
+- Star team con descanso vs back-to-back fatigado en NBA → MÍNIMO 75%
+
+Si ves un mismatch claro y le pones 60%, estás siendo tímido. La data DICE que es un 75% — pónlo. La calibración importa.
 
 == PARLAYS ==
 - Evalúa TODAS las combinaciones posibles de 2 y 3 legs entre los picks con edge positivo

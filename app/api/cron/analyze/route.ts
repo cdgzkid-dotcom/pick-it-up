@@ -23,15 +23,52 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const WINDOW_MIN_MINUTES = 25;
-const WINDOW_MAX_MINUTES = 50;
+// Regular-season window: wider than before (was 25-50) because GH Actions
+// cron skipped 3 of 4 scheduled runs today. With the wider window plus
+// cron now every 10 min, we have multiple chances to catch every game.
+const WINDOW_MIN_MINUTES = 20;
+const WINDOW_MAX_MINUTES = 75;
+// Playoffs: NBA/NHL/MLB/NFL postseason games ALWAYS get a slot even if
+// they're hours away. The dedup guard (status, telegram_notified_at)
+// prevents re-analyzing the same event.
+const PLAYOFF_WINDOW_MIN_MINUTES = 0;
+const PLAYOFF_WINDOW_MAX_MINUTES = 180;
 
-function withinWindow(startIso: string | undefined): boolean {
+/**
+ * Date-based heuristic for whether `sport` is currently in postseason.
+ * Avoids relying on ESPN's `season.type` field (not always exposed by
+ * scoreboard endpoint consistently across sports).
+ */
+function isPlayoffSeason(sport: string, date: Date = new Date()): boolean {
+  const m = date.getUTCMonth() + 1; // 1..12
+  const d = date.getUTCDate();
+  if (sport === 'NBA' || sport === 'NHL') {
+    if (m === 4 && d >= 15) return true;
+    if (m === 5 || m === 6) return true;
+    return false;
+  }
+  if (sport === 'MLB') {
+    if (m === 10) return true;
+    if (m === 11 && d <= 15) return true;
+    return false;
+  }
+  if (sport === 'NFL') {
+    if (m === 1 && d >= 5) return true;
+    if (m === 2 && d <= 15) return true;
+    return false;
+  }
+  return false;
+}
+
+function withinWindow(sport: string, startIso: string | undefined): boolean {
   if (!startIso) return false;
   const t = new Date(startIso).getTime();
   if (Number.isNaN(t)) return false;
   const diffMin = (t - Date.now()) / 60_000;
-  return diffMin >= WINDOW_MIN_MINUTES && diffMin <= WINDOW_MAX_MINUTES;
+  const playoff = isPlayoffSeason(sport);
+  const min = playoff ? PLAYOFF_WINDOW_MIN_MINUTES : WINDOW_MIN_MINUTES;
+  const max = playoff ? PLAYOFF_WINDOW_MAX_MINUTES : WINDOW_MAX_MINUTES;
+  return diffMin >= min && diffMin <= max;
 }
 
 async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string[]; message: string | null }> {
@@ -68,22 +105,23 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   for (const g of games) bySport[g.sport] = (bySport[g.sport] ?? 0) + 1;
   console.log(`[AUDIT][cron] ESPN games found by sport: ${JSON.stringify(bySport)} (total ${games.length})`);
 
-  const inWindow = games.filter((g) => withinWindow(g.start_time));
-  console.log(`[AUDIT][cron] in-window games: ${inWindow.length} (filtered out ${games.length - inWindow.length} outside window)`);
+  const inWindow = games.filter((g) => withinWindow(g.sport, g.start_time));
+  const playoffsInWindow = inWindow.filter((g) => isPlayoffSeason(g.sport));
+  console.log(`[AUDIT][cron] in-window games: ${inWindow.length} (filtered out ${games.length - inWindow.length} outside window) · playoffs in window: ${playoffsInWindow.length}`);
   if (inWindow.length === 0) {
     return { generated: 0, eventIds: [], message: 'no_games_in_window' };
   }
 
   const eventIds = inWindow.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x));
 
-  // Dedup guard: skip events that either already have a pending/bet pick OR
-  // were ever notified via Telegram (telegram_notified_at). Once we've sent
-  // a notification for a slot, NEVER analyze or notify again — even if the
-  // pick was later superseded/skipped manually.
+  // Dedup guard: skip events that either already have a pending/bet pick,
+  // were ever notified via Telegram (telegram_notified_at), OR were marked
+  // as 'analyzed_no_edge' (for playoff games we already looked at but
+  // Claude found no edge — don't re-burn Claude tokens on the same game).
   const { data: blockedPicks } = await supabase
     .from('picks')
     .select('espn_event_id, status, telegram_notified_at')
-    .or('status.in.(pending,bet),telegram_notified_at.not.is.null')
+    .or('status.in.(pending,bet,analyzed_no_edge),telegram_notified_at.not.is.null')
     .in('espn_event_id', eventIds);
 
   const alreadyDone = new Set((blockedPicks ?? []).map((p) => p.espn_event_id));
@@ -104,8 +142,61 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     unitPercentage: Number(settings.unit_percentage),
   });
 
+  // Identify playoff games that were analyzed but produced no pick. We mark
+  // them with a 'analyzed_no_edge' row so the dedup guard skips them next
+  // cron run (no point burning Claude tokens twice on the same playoff
+  // game with no edge), and we surface them via Telegram so the user knows
+  // the system DID look at the game.
+  const eventIdsWithPicks = new Set(
+    result.insertedPicks.map((p) => p.espn_event_id).filter((x): x is string => Boolean(x)),
+  );
+  const playoffsAnalyzedNoEdge = fresh.filter(
+    (g) => isPlayoffSeason(g.sport) && g.espn_event_id && !eventIdsWithPicks.has(g.espn_event_id),
+  );
+
+  if (playoffsAnalyzedNoEdge.length > 0) {
+    // Insert marker rows so dedup blocks future re-analysis
+    const markers = playoffsAnalyzedNoEdge.map((g) => ({
+      sport: g.sport,
+      league: g.league ?? null,
+      game: `${g.away_team} @ ${g.home_team}`,
+      home_team: g.home_team,
+      away_team: g.away_team,
+      home_team_abbr: g.home_team_abbr ?? null,
+      away_team_abbr: g.away_team_abbr ?? null,
+      espn_event_id: g.espn_event_id!,
+      pick: '—',
+      bet_type: 'ML',
+      odds_decimal: 1,
+      confidence: 0,
+      real_probability: 0,
+      implied_probability: 0,
+      edge: 0,
+      recommended_amount: 0,
+      tier: 'value',
+      status: 'analyzed_no_edge',
+      is_parlay: false,
+      game_start_time: g.start_time ?? null,
+      picks_generated_at: new Date().toISOString(),
+    }));
+    const { error: markerErr } = await supabase.from('picks').insert(markers);
+    if (markerErr) console.error('[cron] no_edge markers insert failed', markerErr);
+
+    // Send playoff "analyzed without edge" notification
+    const lines: string[] = ['*Playoffs analizados sin edge*', ''];
+    for (const g of playoffsAnalyzedNoEdge) {
+      lines.push(`• ${g.sport}: ${g.away_team} @ ${g.home_team}`);
+      lines.push(`  Sistema analizó, no encontró edge para apostar.`);
+    }
+    await sendTelegramMessage(lines.join('\n'));
+  }
+
   if (result.insertedPicks.length === 0 && result.insertedParlays.length === 0) {
-    return { generated: 0, eventIds, message: 'no_picks_with_edge' };
+    return {
+      generated: 0,
+      eventIds,
+      message: playoffsAnalyzedNoEdge.length > 0 ? 'playoff_no_edge_notified' : 'no_picks_with_edge',
+    };
   }
 
   const earliestStart = fresh

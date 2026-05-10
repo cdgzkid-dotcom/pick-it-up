@@ -17,7 +17,14 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const MAX_GAMES_PER_REQUEST = 5;
+const BATCH_SIZE = 5;
+const MAX_GAMES_PER_REQUEST = 25; // up to 5 parallel Claude batches
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+}
 
 const RequestSchema = z.object({
   sports: z.array(z.string()).min(1),
@@ -162,33 +169,40 @@ export async function POST(req: Request) {
   const unitPct = Number(settingsRow.unit_percentage);
   const unit = unitSize(bankroll, unitPct);
 
-  let raw: z.infer<typeof ClaudeResponseSchema>;
-  const tClaude = Date.now();
-  try {
-    const claudeOutput = await callClaudeJson(
-      PICK_GENERATION_SYSTEM,
-      buildPickGenerationUserPrompt(games_to_analyze),
-    );
-    console.log(`[generate-picks] Claude responded in ${Date.now() - tClaude}ms`);
-    const validated = ClaudeResponseSchema.safeParse(claudeOutput);
-    if (!validated.success) {
-      console.error('[generate-picks] Claude JSON malformed', validated.error.flatten());
-      return NextResponse.json(
-        {
-          error: 'Claude returned malformed JSON',
-          detail: validated.error.flatten(),
-          claude_output: claudeOutput,
-        },
-        { status: 502 },
-      );
-    }
-    raw = validated.data;
-  } catch (err) {
-    console.error('[generate-picks] Claude request failed', err);
-    return NextResponse.json(
-      { error: 'Claude request failed', detail: (err as Error).message },
-      { status: 502 },
-    );
+  const batches = chunk(games_to_analyze, BATCH_SIZE);
+  console.log(`[generate-picks] launching ${batches.length} parallel batches of up to ${BATCH_SIZE} games`);
+  const tBatch = Date.now();
+
+  const batchResults = await Promise.all(
+    batches.map(async (b, i) => {
+      const tStart = Date.now();
+      try {
+        const claudeOutput = await callClaudeJson(
+          PICK_GENERATION_SYSTEM,
+          buildPickGenerationUserPrompt(b),
+        );
+        const validated = ClaudeResponseSchema.safeParse(claudeOutput);
+        if (!validated.success) {
+          console.error(`[generate-picks] batch ${i} validation failed`, validated.error.flatten());
+          return { picks: [], parlays: [] };
+        }
+        console.log(`[generate-picks] batch ${i} (${b.length} games) done in ${Date.now() - tStart}ms — ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays`);
+        return { picks: validated.data.picks, parlays: validated.data.parlays };
+      } catch (err) {
+        console.error(`[generate-picks] batch ${i} failed`, err);
+        return { picks: [], parlays: [] };
+      }
+    }),
+  );
+  console.log(`[generate-picks] all ${batches.length} batches done in ${Date.now() - tBatch}ms`);
+
+  const raw = {
+    picks: batchResults.flatMap((r) => r.picks),
+    parlays: batchResults.flatMap((r) => r.parlays),
+  };
+
+  if (raw.picks.length === 0 && raw.parlays.length === 0) {
+    console.warn('[generate-picks] all batches returned empty');
   }
 
   // Build lookup tables from analyzed games for abbr/event_id fallback

@@ -11,10 +11,11 @@ const TIMEOUT_MS = 58_000;
 
 const PHASES = [
   { ms: 0, text: 'Buscando juegos del día…' },
-  { ms: 800, text: 'Jalando momios…' },
-  { ms: 1800, text: 'Descargando lesiones…' },
-  { ms: 3000, text: 'Claude analizando juegos…' },
-  { ms: 25000, text: 'Calculando edge…' },
+  { ms: 1000, text: 'Jalando momios…' },
+  { ms: 2200, text: 'Lanzando análisis en paralelo…' },
+  { ms: 3500, text: 'Claude analizando todos los juegos en batches…' },
+  { ms: 25000, text: 'Calculando edge global…' },
+  { ms: 40000, text: 'Casi listo…' },
 ];
 
 export default function GenPicksButton({ selectedSports, hasPendingPicks }: Props) {

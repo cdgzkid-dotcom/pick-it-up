@@ -90,7 +90,7 @@ RESPONDE SOLO EN JSON con esta estructura exacta (sin markdown, sin backticks, s
       "real_probability": 0.64,
       "implied_probability": 0.565,
       "edge": 0.075,
-      "analysis": "Análisis detallado en español, 60-90 palabras explicando los datos clave que usaste (récord, forma, lesiones, matchup, contexto). Sé específico, no genérico.",
+      "analysis": "Análisis EXHAUSTIVO en español, MÍNIMO 150 palabras. Incluir datos específicos: récord W-L, forma últimos 10 juegos, head-to-head, lesiones clave con impacto real, contexto situacional. Datos por deporte: NBA (offensive/defensive rating, pace, FG%/3PT%, bench), MLB (pitcher abridor ERA/WHIP/FIP/K9, splits zurdos/derechos, bullpen, ballpark factors), NHL (goalie GAA/SV%, PP%/PK%, shots), fútbol (xG, posesión, clean sheets, motivación). Sé concreto, no relleno.",
       "risk_factors": "Qué podría salir mal",
       "injuries": "Lesiones relevantes de ambos equipos",
       "key_stats": [{"label": "ERA pitcher", "value": "2.10", "flag": "green"}],
@@ -115,7 +115,8 @@ RESPONDE SOLO EN JSON con esta estructura exacta (sin markdown, sin backticks, s
 }
 
 IMPORTANTE:
-- El análisis de cada pick: 60-90 palabras, específico (datos concretos), no relleno
+- El análisis de cada pick: MÍNIMO 150 palabras, datos concretos, no relleno
+- Profundidad sobre brevedad: tu análisis es lo que da el edge real al usuario
 - Si hay 5 LOCKs en diferentes deportes, devuelve los 5 — NO te limites a 3
 - Devuelve TODOS los picks con edge positivo, no solo unos cuantos
 - Nombres COMPLETOS de equipos siempre con ciudad`;

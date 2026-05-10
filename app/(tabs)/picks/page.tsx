@@ -1,8 +1,28 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import PickCard from '@/components/PickCard';
-import type { Pick } from '@/lib/types';
+import type { Pick, Tier } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+
+const TIER_ORDER: Record<Tier, number> = {
+  lock: 0,
+  strong: 1,
+  value: 2,
+  parlay: 3,
+};
+
+function tierRank(p: Pick): number {
+  return p.tier ? TIER_ORDER[p.tier] : TIER_ORDER.value + 0.5;
+}
+
+function byTierThenConfidence(a: Pick, b: Pick): number {
+  const t = tierRank(a) - tierRank(b);
+  if (t !== 0) return t;
+  const ca = a.confidence ?? 0;
+  const cb = b.confidence ?? 0;
+  if (cb !== ca) return cb - ca;
+  return (b.edge ?? 0) - (a.edge ?? 0);
+}
 
 function formatTime(iso?: string | null): string {
   if (!iso) return '';
@@ -39,9 +59,11 @@ export default async function PicksPage() {
     return acc;
   }, null);
 
-  // Sort: bet at top, then pending by edge desc, parlays after
-  const bet = picks.filter((p) => p.status === 'bet');
-  const pendingSingles = picks.filter((p) => p.status === 'pending' && !p.is_parlay);
+  // Sort: bet at top, then pending by tier (lock → strong → value), parlays after
+  const bet = picks.filter((p) => p.status === 'bet').sort(byTierThenConfidence);
+  const pendingSingles = picks
+    .filter((p) => p.status === 'pending' && !p.is_parlay)
+    .sort(byTierThenConfidence);
   const pendingParlays = picks.filter((p) => p.status === 'pending' && p.is_parlay);
 
   if (picks.length === 0) {
@@ -90,7 +112,7 @@ export default async function PicksPage() {
       {pendingSingles.length > 0 && (
         <>
           <div className="bg-card border border-line rounded p-3 text-xs text-muted">
-            Rankeados por edge ajustado · momios decimal · cross-sport
+            Ordenados por tier (más seguro → menos seguro)
           </div>
           <div className="space-y-3">
             {pendingSingles.map((p, i) => (

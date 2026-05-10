@@ -1,6 +1,11 @@
-// WeatherAPI.com integration. Optional — if WEATHER_API_KEY isn't set, returns
-// null and Claude analyzes without weather context. Mostly useful for MLB
-// (outdoor games) and outdoor NFL.
+// OpenWeather API integration (https://api.openweathermap.org).
+// Free tier: 1,000 calls/day, 5-day forecast in 3-hour increments.
+// Optional — if WEATHER_API_KEY isn't set or hasn't activated, returns null
+// and Claude analyzes without weather context. Mostly useful for outdoor MLB
+// and NFL games.
+//
+// IMPORTANT: newly-issued OpenWeather keys take up to 2 hours to activate.
+// If you see 401 errors in logs right after setting the key, wait.
 
 export interface GameWeather {
   temp_f: number;
@@ -30,7 +35,7 @@ const MLB_VENUES: Record<string, { lat: number; lon: number; dome?: boolean }> =
   'George M. Steinbrenner Field': { lat: 27.9789, lon: -82.5067 },
   'Globe Life Field': { lat: 32.7473, lon: -97.0817, dome: true }, // retractable
   'Great American Ball Park': { lat: 39.0974, lon: -84.5071 },
-  'Guaranteed Rate Field': { lat: 41.83, lon: -87.6339 }, // White Sox
+  'Guaranteed Rate Field': { lat: 41.83, lon: -87.6339 },
   'Rate Field': { lat: 41.83, lon: -87.6339 },
   'Kauffman Stadium': { lat: 39.0517, lon: -94.4803 },
   'LoanDepot Park': { lat: 25.7781, lon: -80.2197, dome: true }, // retractable
@@ -42,7 +47,7 @@ const MLB_VENUES: Record<string, { lat: number; lon: number; dome?: boolean }> =
   'PNC Park': { lat: 40.4469, lon: -80.0058 },
   'Progressive Field': { lat: 41.4962, lon: -81.6852 },
   'Rogers Centre': { lat: 43.6414, lon: -79.3894, dome: true }, // retractable
-  'Sutter Health Park': { lat: 38.5803, lon: -121.5133 }, // Athletics 2025+
+  'Sutter Health Park': { lat: 38.5803, lon: -121.5133 },
   'T-Mobile Park': { lat: 47.5914, lon: -122.3325, dome: true }, // retractable
   'Target Field': { lat: 44.9817, lon: -93.2776 },
   'Tropicana Field': { lat: 27.7682, lon: -82.6534, dome: true }, // fixed roof
@@ -74,10 +79,30 @@ const NFL_VENUES: Record<string, { lat: number; lon: number; dome?: boolean }> =
 
 const VENUES = { ...MLB_VENUES, ...NFL_VENUES };
 
+const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+function degToCompass(deg: number): string {
+  if (!Number.isFinite(deg)) return '';
+  const ix = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+  return COMPASS[ix];
+}
+
 export function isDome(venue?: string | null): boolean {
   if (!venue) return false;
   const v = VENUES[venue];
   return v?.dome === true;
+}
+
+interface OpenWeatherForecastResp {
+  cod?: string | number;
+  message?: string;
+  list?: Array<{
+    dt: number; // unix seconds
+    main?: { temp?: number; humidity?: number; feels_like?: number };
+    weather?: Array<{ main?: string; description?: string }>;
+    wind?: { speed?: number; deg?: number };
+    pop?: number; // 0..1
+    rain?: { '3h'?: number };
+  }>;
 }
 
 export async function fetchGameWeather(
@@ -87,60 +112,50 @@ export async function fetchGameWeather(
   if (!venue || !isoTime) return null;
   const v = VENUES[venue];
   if (!v) return null;
-  if (v.dome) return { temp_f: 72, wind_mph: 0, wind_dir: '', humidity: 50, precip_chance: 0, condition: 'Indoor', is_dome: true };
+  if (v.dome) {
+    return { temp_f: 72, wind_mph: 0, wind_dir: '', humidity: 50, precip_chance: 0, condition: 'Indoor', is_dome: true };
+  }
 
   const apiKey = process.env.WEATHER_API_KEY;
   if (!apiKey) return null;
 
-  const date = isoTime.slice(0, 10); // YYYY-MM-DD
-
   try {
-    const url = `https://api.weatherapi.com/v1/forecast.json?key=${apiKey}&q=${v.lat},${v.lon}&days=2&aqi=no&alerts=no`;
+    // OpenWeather 5-day / 3-hour forecast. Returns "list" of forecast points.
+    const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${v.lat}&lon=${v.lon}&appid=${apiKey}&units=imperial`;
     const r = await fetch(url, { next: { revalidate: 1800 } });
-    if (!r.ok) return null;
-    interface WAResp {
-      forecast?: {
-        forecastday?: Array<{
-          date: string;
-          hour?: Array<{
-            time?: string;
-            time_epoch?: number;
-            temp_f?: number;
-            wind_mph?: number;
-            wind_dir?: string;
-            humidity?: number;
-            chance_of_rain?: number;
-            condition?: { text?: string };
-          }>;
-        }>;
-      };
+    if (!r.ok) {
+      if (r.status === 401) {
+        console.warn('[weather] OpenWeather 401 — key not activated yet (can take up to 2hrs)');
+      } else {
+        console.warn(`[weather] OpenWeather HTTP ${r.status}`);
+      }
+      return null;
     }
-    const data: WAResp = await r.json();
-    const days = data.forecast?.forecastday ?? [];
-    const day = days.find((d) => d.date === date) ?? days[0];
-    if (!day?.hour) return null;
-    // Pick the hour closest to game start
+    const data: OpenWeatherForecastResp = await r.json();
+    if (!data.list || data.list.length === 0) return null;
+
+    // Pick the forecast point closest to game start time
     const target = new Date(isoTime).getTime();
-    let best = day.hour[0];
+    let best = data.list[0];
     let bestDelta = Number.POSITIVE_INFINITY;
-    for (const h of day.hour) {
-      if (!h.time_epoch) continue;
-      const delta = Math.abs(h.time_epoch * 1000 - target);
+    for (const slot of data.list) {
+      const delta = Math.abs(slot.dt * 1000 - target);
       if (delta < bestDelta) {
         bestDelta = delta;
-        best = h;
+        best = slot;
       }
     }
-    if (!best) return null;
+
     return {
-      temp_f: best.temp_f ?? 70,
-      wind_mph: best.wind_mph ?? 0,
-      wind_dir: best.wind_dir ?? '',
-      humidity: best.humidity ?? 50,
-      precip_chance: best.chance_of_rain ?? 0,
-      condition: best.condition?.text ?? '',
+      temp_f: best.main?.temp ?? 70,
+      wind_mph: best.wind?.speed ?? 0,
+      wind_dir: degToCompass(best.wind?.deg ?? 0),
+      humidity: best.main?.humidity ?? 50,
+      precip_chance: Math.round(((best.pop ?? 0) as number) * 100),
+      condition: best.weather?.[0]?.description ?? best.weather?.[0]?.main ?? '',
     };
-  } catch {
+  } catch (e) {
+    console.warn('[weather] fetch threw', e);
     return null;
   }
 }

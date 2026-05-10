@@ -50,6 +50,7 @@ export const kellyAmount = (
   bankroll: number,
   realProbability: number,
   oddsDecimal: number,
+  options: { conservative?: boolean } = {},
 ): { amount: number; fraction: number } => {
   const b = oddsDecimal - 1;
   if (b <= 0 || !Number.isFinite(realProbability)) return { amount: 0, fraction: 0 };
@@ -57,8 +58,10 @@ export const kellyAmount = (
   const q = 1 - p;
   const kelly = (p * b - q) / b;
   if (kelly <= 0) return { amount: 0, fraction: 0 };
-  const halfKelly = kelly / 2;
-  const fraction = Math.max(0.01, Math.min(0.1, halfKelly));
+  // half Kelly normally; quarter Kelly when trap detected (extra conservative)
+  const divisor = options.conservative ? 4 : 2;
+  const fractionalKelly = kelly / divisor;
+  const fraction = Math.max(0.01, Math.min(0.1, fractionalKelly));
   const amount = Math.max(1, Math.round(bankroll * fraction));
   return { amount, fraction };
 };

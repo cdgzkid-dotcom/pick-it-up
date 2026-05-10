@@ -110,10 +110,11 @@ export function formatPicksMessage(
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
     const kelly = p.kelly_fraction != null ? ` (Kelly ${(p.kelly_fraction * 100).toFixed(1)}%)` : '';
-    lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf}${realProb} · *${p.pick}*`);
+    const trapInline = p.trap_warning ? ' · ⚠️ TRAMPA DETECTADA' : '';
+    lines.push(`${i + 1}. ${tierLabelShort(p.tier)}${conf}${realProb}${trapInline} · *${p.pick}*`);
     lines.push(`   📊 Momio: ${p.odds_decimal.toFixed(2)}${edge}`);
     if (stake > 0) lines.push(`   💰 Meter: $${stake}${kelly} → Ganas: $${win}`);
-    if (p.trap_warning) lines.push(`   ⚠️ TRAMPA: ${p.trap_warning}`);
+    if (p.trap_warning) lines.push(`   ⚠️ ${p.trap_warning}`);
     const summary = oneLineSummary(p.analysis);
     if (summary) lines.push(`   📋 ${summary}`);
     lines.push('');

@@ -132,8 +132,9 @@ export default function PickCard({ pick, rank }: Props) {
           <span className="px-1.5 py-0.5 bg-line rounded text-[10px] text-muted">
             {pick.sport}
           </span>
-          <span className={`text-xs font-bold ${tierColor}`}>
+          <span className={`text-xs font-bold ${pick.trap_warning ? 'text-red' : tierColor}`}>
             {tierLabel(tier, pick.confidence)}
+            {pick.trap_warning && ' · TRAMPA DETECTADA'}
           </span>
         </div>
         {pick.early_payout_eligible && (

@@ -265,16 +265,13 @@ export async function analyzeGames(
       // Tier ALWAYS server-side from confidence — Claude's tier is ignored.
       const baseTier: Tier = tierFromConfidence(p.confidence);
       // tierForOdds demotes one tier when odds < 1.40 (momio culero).
-      let adjustedTier = tierForOdds(baseTier, odds);
-      // Trap warning from Claude → demote one extra tier (or push to no-bet).
-      if (p.trap_warning) {
-        if (adjustedTier === 'lock') adjustedTier = 'strong';
-        else if (adjustedTier === 'strong') adjustedTier = 'value';
-        else if (adjustedTier === 'value') adjustedTier = 'parlay';
-      }
-      // Half-Kelly bet sizing replaces fixed-units. fraction will be 0 if
-      // Kelly is non-positive (no real edge) — those picks get filtered out.
-      const k = kellyAmount(opts.bankroll, p.real_probability, odds);
+      // Trap warning does NOT demote the tier (would confuse a single ML
+      // pick into looking like a parlay) — it switches Kelly to quarter
+      // mode (more conservative sizing) and the UI/Telegram add a "TRAMPA
+      // DETECTADA" marker on top of the original tier.
+      const adjustedTier = tierForOdds(baseTier, odds);
+      const hasTrap = !!p.trap_warning;
+      const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
       const score = adjustedEdgeScore(p.real_probability, odds);
       const homeAbbr =
         p.home_team_abbr?.toLowerCase() ??

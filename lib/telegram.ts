@@ -53,11 +53,15 @@ interface PickForMessage {
   bet_type: string;
   odds_decimal: number;
   edge?: number | null;
+  edge_vs_sharp?: number | null;
   recommended_amount?: number | null;
   kelly_fraction?: number | null;
   trap_warning?: string | null;
   analysis?: string | null;
   is_parlay?: boolean;
+  best_odds_source?: string | null;
+  /** Per-book ML lines for the comparator line. */
+  odds_comparison?: Array<{ source: string; ml: number }>;
 }
 
 const TIER_EMOJI: Record<string, string> = {
@@ -84,14 +88,40 @@ function tierBadge(tier?: string | null, confidence?: number | null): string {
 
 function oneLineSummary(analysis?: string | null): string {
   if (!analysis) return '';
-  // Take the first 1-2 sentences (until period or newline). NO truncation —
-  // user prefers complete reasoning over a "..." cliffhanger.
-  const stripped = analysis.replace(/[*_]/g, '').trim();
-  const m = stripped.match(/^([^\n.]+(\.|$))(\s+[^\n.]+\.|$)?/);
-  if (m) {
-    return (m[1] + (m[3] ?? '')).trim();
+  // Take the first 1-2 COMPLETE sentences. Never cut mid-sentence, never
+  // leave an open paren, never end with ', .'
+  const stripped = analysis.replace(/[*_]/g, '').replace(/\s+/g, ' ').trim();
+
+  // Walk through and extract complete sentences (ending in . ! ? followed
+  // by space or end). Stop after 2 sentences or 280 chars, whichever first.
+  const sentences: string[] = [];
+  let buf = '';
+  let parenDepth = 0;
+  for (let i = 0; i < stripped.length; i++) {
+    const c = stripped[i];
+    buf += c;
+    if (c === '(') parenDepth++;
+    else if (c === ')') parenDepth = Math.max(0, parenDepth - 1);
+    // Sentence terminator only counts when parens are balanced
+    if ((c === '.' || c === '!' || c === '?') && parenDepth === 0) {
+      // Look ahead — make sure it's not part of a decimal number or abbreviation
+      const next = stripped[i + 1];
+      if (!next || next === ' ' || i === stripped.length - 1) {
+        sentences.push(buf.trim());
+        buf = '';
+        if (sentences.length >= 2) break;
+        if (sentences.join(' ').length >= 280) break;
+      }
+    }
   }
-  return stripped;
+
+  if (sentences.length === 0) {
+    // Couldn't find a complete sentence. Return whole stripped (no truncation).
+    return stripped;
+  }
+
+  const out = sentences.join(' ');
+  return out;
 }
 
 function formatTimeMx(iso?: string | null): string {
@@ -120,26 +150,37 @@ export function formatPicksMessage(
   const total = picks.length + parlays.length;
 
   // ─── HEADER ─────────────────────────────────────────────────────────────
-  lines.push(`*PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
+  lines.push(`🎯 *PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
   if (ctx.bankrollCurrent != null) {
-    lines.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
+    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
   }
   lines.push('');
 
   // ─── PICKS ──────────────────────────────────────────────────────────────
   picks.forEach((p, i) => {
-    const trap = p.trap_warning ? ' · TRAMPA' : '';
+    const trap = p.trap_warning ? ' · ⚠️ TRAMPA' : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
     const edgePct = p.edge != null ? `${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : null;
     const realPct = p.real_probability != null ? `${Math.round(p.real_probability * 100)}%` : null;
+    const sharpTag =
+      p.edge_vs_sharp != null && p.edge_vs_sharp > 0 ? ' vs Pinnacle' : '';
+    const bookTag = p.best_odds_source ? ` (${p.best_odds_source})` : '';
 
     lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
-    lines.push(`${p.pick} @ ${p.odds_decimal.toFixed(2)}`);
-    if (edgePct && realPct) lines.push(`Edge: ${edgePct} · Prob: ${realPct}`);
-    if (stake > 0) lines.push(`Apostar: $${stake} → Ganas: $${win}`);
+    lines.push(`${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
+    if (edgePct && realPct) {
+      lines.push(`📊 Edge: ${edgePct}${sharpTag} · Prob: ${realPct}`);
+    } else if (edgePct) {
+      lines.push(`📊 Edge: ${edgePct}${sharpTag}`);
+    }
+    if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
+    if (p.odds_comparison && p.odds_comparison.length >= 2) {
+      const sorted = [...p.odds_comparison].sort((a, b) => b.ml - a.ml);
+      lines.push(`📍 ${sorted.map((b) => `${b.source} ${b.ml.toFixed(2)}`).join(' | ')}`);
+    }
     const summary = oneLineSummary(p.analysis);
-    if (summary) lines.push(summary);
+    if (summary) lines.push(`📋 ${summary}`);
     lines.push('');
   });
 
@@ -147,23 +188,23 @@ export function formatPicksMessage(
   parlays.forEach((par) => {
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
-    lines.push(`*Parlay:* ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
-    if (stake > 0) lines.push(`Apostar: $${stake} → Ganas: $${win}`);
+    lines.push(`🎯 *Parlay:* ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
     lines.push('');
   });
 
   // ─── FOOTER ─────────────────────────────────────────────────────────────
   if (gameStartTime) {
-    lines.push(`Juegos a las ${formatTimeMx(gameStartTime)} CDMX`);
+    lines.push(`⏰ Juegos a las ${formatTimeMx(gameStartTime)} CDMX`);
   }
 
   const footerBits: string[] = [];
-  if (ctx.bankrollCurrent != null) footerBits.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)}`);
-  if (ctx.record) footerBits.push(`Record: ${ctx.record.wins}W-${ctx.record.losses}L`);
+  if (ctx.bankrollCurrent != null) footerBits.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)}`);
+  if (ctx.record) footerBits.push(`📈 Record: ${ctx.record.wins}W-${ctx.record.losses}L`);
   if (ctx.roi != null) footerBits.push(`ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
   if (footerBits.length > 0) lines.push(footerBits.join(' · '));
 
-  lines.push(`${APP_URL.replace(/^https?:\/\//, '')}/picks`);
+  lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
 
   return lines.join('\n');
 }
@@ -178,9 +219,8 @@ interface MCSummary {
 export function formatMonteCarloLines(mc: MCSummary): string[] {
   const profitPct = Math.round(mc.profit_probability * 100);
   const ev = mc.expected_value >= 0 ? `+$${Math.round(mc.expected_value)}` : `-$${Math.abs(Math.round(mc.expected_value))}`;
-  // Compact 2-line format: probability + expected value, then range
   return [
-    `Simulación 10K: ${profitPct}% prob profit · Esperada ${ev}`,
+    `📊 Simulación 10K: ${profitPct}% prob profit · Esperada ${ev}`,
     `Rango: ${mc.worst_case_5p < 0 ? '-' : '+'}$${Math.abs(Math.round(mc.worst_case_5p))} a +$${Math.round(mc.best_case_95p)}`,
   ];
 }
@@ -205,7 +245,7 @@ export function formatResultsMessage(
   ctx: ResultsContext = {},
 ): string {
   const lines: string[] = [];
-  lines.push('*RESULTADOS*');
+  lines.push('📊 *RESULTADOS*');
   lines.push('');
 
   for (const r of resolutions) {
@@ -217,14 +257,14 @@ export function formatResultsMessage(
   lines.push('');
 
   if (ctx.todayPl != null) {
-    lines.push(`Hoy: ${ctx.todayPl >= 0 ? '+' : '-'}$${Math.abs(Math.round(ctx.todayPl))}`);
+    lines.push(`💰 Hoy: ${ctx.todayPl >= 0 ? '+' : '-'}$${Math.abs(Math.round(ctx.todayPl))}`);
   }
   if (ctx.bankrollCurrent != null) {
     const before = ctx.bankrollBefore != null ? ` (era $${Math.round(ctx.bankrollBefore)})` : '';
-    lines.push(`Bankroll: $${Math.round(ctx.bankrollCurrent)}${before}`);
+    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)}${before}`);
   }
   if (ctx.record && ctx.roi != null) {
-    lines.push(`Record: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
+    lines.push(`📈 Record: ${ctx.record.wins}W-${ctx.record.losses}L · ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
   }
 
   return lines.join('\n');

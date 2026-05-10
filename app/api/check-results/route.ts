@@ -67,27 +67,66 @@ export async function POST() {
 
   for (const bet of bets) {
     if (!bet.espn_event_id) continue;
-    if (bet.bet_type !== 'ML') continue; // auto-resolve only ML for now
+    const betType = String(bet.bet_type).toLowerCase();
+    const isML = betType === 'ml' || betType === 'moneyline';
+    const isSpread = betType === 'spread' || betType === 'runline' || betType === 'run line';
+    const isTotal = betType === 'total' || betType === 'over' || betType === 'under' || betType.startsWith('o/u');
+    if (!isML && !isSpread && !isTotal) continue; // skip props/parlays/etc
 
     const status = await fetchEventStatus(bet.sport, bet.espn_event_id);
     if (!status || !status.completed) continue;
     if (status.home_score == null || status.away_score == null) continue;
 
-    const side = pickedSide(
-      bet.pick,
-      bet.home_team_abbr,
-      bet.away_team_abbr,
-      bet.home_team,
-      bet.away_team,
-    );
-    if (!side) continue; // can't determine, leave for manual
+    let won: boolean | null = null;
+    let isPush = false;
+    const homeScore = status.home_score;
+    const awayScore = status.away_score;
+    const total = homeScore + awayScore;
 
-    const homeWon = status.home_score > status.away_score;
-    const awayWon = status.away_score > status.home_score;
-    const tied = status.home_score === status.away_score;
-    if (tied) continue; // push or extra time, leave manual
+    if (isML) {
+      const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      if (!side) continue;
+      if (homeScore === awayScore) continue; // tie / OT etc — manual
+      won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+    } else if (isSpread) {
+      // Parse "Cubs -1.5" or "Cubs +2.5" — pull the signed number
+      const lineMatch = bet.pick.match(/([+-]?\d+(\.\d+)?)/);
+      const line = lineMatch ? parseFloat(lineMatch[1]) : (bet.spread_line != null ? Number(bet.spread_line) : NaN);
+      if (!Number.isFinite(line)) continue;
+      const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      if (!side) continue;
+      // Margin for the picked side after adding their line. They cover if margin > 0.
+      const adjusted = side === 'home' ? homeScore + line - awayScore : awayScore + line - homeScore;
+      if (adjusted === 0) {
+        isPush = true;
+      } else {
+        won = adjusted > 0;
+      }
+    } else if (isTotal) {
+      const lineMatch = bet.pick.match(/(\d+(\.\d+)?)/);
+      const line = lineMatch ? parseFloat(lineMatch[0]) : (bet.total_line != null ? Number(bet.total_line) : NaN);
+      if (!Number.isFinite(line)) continue;
+      const isOver = /\bover\b/i.test(bet.pick) || (bet.bet_direction === 'over');
+      const isUnder = /\bunder\b/i.test(bet.pick) || (bet.bet_direction === 'under');
+      if (!isOver && !isUnder) continue;
+      if (total === line) {
+        isPush = true;
+      } else {
+        won = isOver ? total > line : total < line;
+      }
+    }
 
-    const won = (side === 'home' && homeWon) || (side === 'away' && awayWon);
+    if (isPush) {
+      const amount = Number(bet.amount);
+      const { data: settings } = await supabase.from('settings').select('bankroll_current').eq('id', 1).single();
+      const newBankroll = Number(settings?.bankroll_current ?? 0) + amount; // refund stake
+      await supabase.from('bets').update({ result: 'push', payout: amount }).eq('id', bet.id);
+      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick}` }]);
+      continue;
+    }
+
+    if (won === null) continue;
 
     const amount = Number(bet.amount);
     const odds = Number(bet.odds_decimal);

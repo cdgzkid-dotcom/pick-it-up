@@ -13,7 +13,7 @@ interface Props {
 
 export default function PickCard({ pick, rank }: Props) {
   const [analysisOpen, setAnalysisOpen] = useState(false);
-  const [showOdds, setShowOdds] = useState(false);
+  // (showOdds removed — comparator is now always visible)
   const [, start] = useTransition();
   const router = useRouter();
   const [err, setErr] = useState<string | null>(null);
@@ -273,24 +273,37 @@ export default function PickCard({ pick, rank }: Props) {
         </details>
       )}
 
-      {pick.odds_comparison && Object.keys(pick.odds_comparison).length > 0 && (
-        <details
-          className="text-xs"
-          onToggle={(e) => setShowOdds((e.target as HTMLDetailsElement).open)}
-        >
-          <summary className="text-muted cursor-pointer">
-            {showOdds ? '▼' : '▶'} comparador momios
-          </summary>
-          <div className="mt-2 grid grid-cols-2 gap-1 pl-3 border-l border-line">
-            {Object.entries(pick.odds_comparison).map(([source, val]) => (
-              <div key={source} className="flex justify-between">
-                <span className="text-muted">{source}</span>
-                <span className="text-fg">{Number(val).toFixed(2)}</span>
-              </div>
-            ))}
+      {pick.odds_comparison && (() => {
+        // Support both array shape ([{source, ml}, ...]) and legacy
+        // object shape ({ source: ml }) for older picks.
+        const list: Array<{ source: string; ml: number }> = Array.isArray(pick.odds_comparison)
+          ? (pick.odds_comparison as Array<{ source: string; ml: number }>)
+          : Object.entries(pick.odds_comparison as Record<string, number>).map(([source, ml]) => ({
+              source,
+              ml: Number(ml),
+            }));
+        if (list.length < 2) return null;
+        const sorted = [...list].sort((a, b) => b.ml - a.ml);
+        const best = sorted[0];
+        return (
+          <div className="text-xs bg-bg/40 border border-line rounded px-2 py-1.5 space-y-0.5">
+            <div className="text-[10px] text-muted uppercase tracking-wider">
+              📍 Comparador
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {sorted.slice(0, 6).map((b) => (
+                <span key={b.source} className="text-[11px]">
+                  <span className={b.source === best.source ? 'text-green font-bold' : 'text-muted'}>
+                    {b.source}
+                  </span>
+                  <span className="ml-1">{b.ml.toFixed(2)}</span>
+                  {b.source === best.source && <span className="ml-0.5">⭐</span>}
+                </span>
+              ))}
+            </div>
           </div>
-        </details>
-      )}
+        );
+      })()}
 
       {err && <div className="text-red text-xs">{err}</div>}
 

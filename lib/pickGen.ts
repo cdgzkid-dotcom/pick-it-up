@@ -401,7 +401,48 @@ export async function analyzeGames(
     const odds = p.odds_decimal;
     const implied = impliedProbability(odds);
     const e = edgeOf(p.real_probability, odds);
-    const baseTier: Tier = tierFromConfidence(p.confidence);
+    // CONFIDENCE FLOOR — math overrides Claude's timidity. Claude has been
+    // parking everything at 55-65% even when the edge is large. Force:
+    //   edge > 7% + odds > 1.5 + no trap → confidence at least 85 (LOCK)
+    //   edge > 5% + odds > 1.5 + no trap → confidence at least 70 (STRONG)
+    let conf = p.confidence;
+    if (e > 0.07 && odds > 1.5 && !p.trap_warning) conf = Math.max(conf, 85);
+    else if (e > 0.05 && odds > 1.5 && !p.trap_warning) conf = Math.max(conf, 70);
+
+    // Determine which side Claude picked (home/away/neither) via team name
+    // last-word match so we can attribute multi-book best line + sharp edge.
+    const homeLast = p.home_team.split(/\s+/).pop()?.toLowerCase() ?? '';
+    const awayLast = p.away_team.split(/\s+/).pop()?.toLowerCase() ?? '';
+    const pickLower = p.pick.toLowerCase();
+    const isHome = homeLast.length >= 3 && pickLower.includes(homeLast);
+    const isAway = !isHome && awayLast.length >= 3 && pickLower.includes(awayLast);
+
+    const matchedGameForOdds = gameByMatchup.get(`${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`);
+    let bestOddsSource: string | null = null;
+    let oddsComparison: Array<{ source: string; ml: number }> | null = null;
+    let edgeVsSharp: number | null = null;
+    if (matchedGameForOdds?.multi_odds && matchedGameForOdds.multi_odds.length > 0) {
+      const rows = matchedGameForOdds.multi_odds;
+      let bestLine = 0;
+      for (const r of rows) {
+        const ml = isHome ? r.home_ml : isAway ? r.away_ml : null;
+        if (ml && ml > bestLine) {
+          bestLine = ml;
+          bestOddsSource = r.source;
+        }
+      }
+      oddsComparison = rows
+        .map((r) => ({ source: r.source, ml: (isHome ? r.home_ml : isAway ? r.away_ml : undefined) ?? 0 }))
+        .filter((x) => x.ml > 0)
+        .slice(0, 6);
+      const sharp = (matchedGameForOdds.real_data as Record<string, unknown> | undefined)?.sharp as { sharp_prob_home?: number; sharp_prob_away?: number } | undefined;
+      if (sharp) {
+        const sharpProb = isHome ? sharp.sharp_prob_home : isAway ? sharp.sharp_prob_away : undefined;
+        if (sharpProb != null) edgeVsSharp = sharpProb - 1 / odds;
+      }
+    }
+
+    const baseTier: Tier = tierFromConfidence(conf);
     const adjustedTier = tierForOdds(baseTier, odds);
     const hasTrap = !!p.trap_warning;
     const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
@@ -419,6 +460,7 @@ export async function analyzeGames(
     );
     return {
       ...p,
+      confidence: conf, // floor-adjusted (overrides Claude's timidity)
       home_team_abbr: homeAbbr,
       away_team_abbr: awayAbbr,
       espn_event_id: matchedGame?.espn_event_id ?? null,
@@ -428,6 +470,9 @@ export async function analyzeGames(
       tier: adjustedTier,
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
+      best_odds_source: bestOddsSource,
+      odds_comparison: oddsComparison,
+      edge_vs_sharp: edgeVsSharp,
       _score: score,
     };
   });
@@ -508,8 +553,8 @@ export async function analyzeGames(
     bet_type: p.bet_type,
     odds_decimal: p.odds_decimal,
     best_odds: p.odds_decimal,
-    best_odds_source: null,
-    odds_comparison: null,
+    best_odds_source: (p as { best_odds_source?: string | null }).best_odds_source ?? null,
+    odds_comparison: (p as { odds_comparison?: unknown }).odds_comparison ?? null,
     confidence: p.confidence,
     tier: p.tier,
     real_probability: p.real_probability,

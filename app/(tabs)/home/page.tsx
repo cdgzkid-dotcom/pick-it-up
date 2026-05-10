@@ -5,6 +5,7 @@ import ResultsRefresher from '@/components/ResultsRefresher';
 import AutoSportsSettings from '@/components/AutoSportsSettings';
 import UpcomingGames from '@/components/UpcomingGames';
 import AnalyzeNowButton from '@/components/AnalyzeNowButton';
+import BoostEvaluator from '@/components/BoostEvaluator';
 import { computeStats } from '@/lib/stats';
 import { ESPN_SPORTS, FAVORITE_SPORTS, fetchGames, gameCountsBySport } from '@/lib/espn';
 import { sportLeagueLogoUrl } from '@/components/Logo';
@@ -93,6 +94,8 @@ export default async function HomePage() {
         initial={Number(settings?.bankroll_current ?? 0)}
         unitPercentage={Number(settings?.unit_percentage ?? 5)}
       />
+
+      <BoostEvaluator bankroll={Number(settings?.bankroll_current ?? 0)} />
 
       <div className="grid grid-cols-4 gap-2">
         <Stat label="W-L" value={`${stats.wins}-${stats.losses}`} />

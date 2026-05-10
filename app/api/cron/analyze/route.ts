@@ -251,9 +251,12 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       bet_type: p.bet_type,
       odds_decimal: Number(p.odds_decimal),
       edge: Number(p.edge),
+      edge_vs_sharp: (p as { edge_vs_sharp?: number | null }).edge_vs_sharp ?? null,
       recommended_amount: Number(p.recommended_amount),
       kelly_fraction: result.kellyByKey[`${p.pick}|${p.bet_type}`] ?? null,
       trap_warning: (p as { trap_warning?: string | null }).trap_warning ?? null,
+      best_odds_source: p.best_odds_source ?? null,
+      odds_comparison: (p.odds_comparison as Array<{ source: string; ml: number }> | null) ?? undefined,
       analysis: p.analysis,
     })),
     result.insertedParlays.map((p) => ({

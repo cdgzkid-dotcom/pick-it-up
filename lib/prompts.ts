@@ -224,6 +224,30 @@ Compara el power rating de ambos equipos para obtener probabilidad real más pre
 - Si momio menor a 1.40, bajar un tier automáticamente porque la ganancia no compensa.
 - Si hay red flags serios (star player GTD, clima extremo, situational trap), bajar un tier.
 
+== EJEMPLOS DE CALIBRACIÓN ==
+
+LOCK (confidence 85-92): Equipo 28-15 en casa, pitcher ERA 2.50 K/9 10+,
+vs equipo 15-28 road, pitcher ERA 5.50, Pinnacle edge >5%, momio >1.50,
+sin lesiones del favorito. ESTO ES LOCK 87%. NO le pongas VALUE 62%.
+
+STRONG (confidence 70-84): Equipo top-10 en casa, pitcher ERA 3.50 vs
+pitcher ERA 4.80, Pinnacle edge 3-5%, algún riesgo menor. ESTO ES
+STRONG 75%. NO VALUE 60%.
+
+VALUE (confidence 55-69): Equipos parejos, pitchers similares, edge <3%,
+o factores de riesgo importantes. AQUÍ SÍ VALUE 60%.
+
+NOTA: si los datos muestran ventaja clara y tu instinto dice 60%, estás
+siendo tímido. La data DICE 75% — pónlo. El sistema tiene un floor
+automático: edge>7% sin trap fuerza mínimo 85, edge>5% sin trap fuerza
+mínimo 70 (server-side, después de tu respuesta). Mejor calibrar tú.
+
+== PROPS SUGERIDOS (cuando no hay momio disponible) ==
+Si analizas un pitcher MLB con K/9 > 9.0 y enfrenta lineup con strikeout
+rate > 23%, puedes sugerir "Considerar prop: <pitcher> strikeouts Over
+<line típica>". Esto va como una nota en analysis, NO como un pick formal
+(no tenemos momio de props). El usuario verifica el momio en Draftea.
+
 == CALIBRACIÓN DE CONFIDENCE — NO SEAS TÍMIDO ==
 Históricamente has estado pegado en 55-65% para todo. Eso es indecisión. Calibra:
 

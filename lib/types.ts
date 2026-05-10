@@ -45,6 +45,9 @@ export interface Pick {
   status: PickStatus;
   is_parlay: boolean;
   parlay_legs?: unknown[] | null;
+  game_start_time?: string | null;
+  picks_generated_at?: string | null;
+  telegram_notified_at?: string | null;
 }
 
 export interface Bet {
@@ -83,6 +86,8 @@ export interface Settings {
   id: 1;
   bankroll_current: number;
   unit_percentage: number;
+  auto_sports?: string[];
+  auto_enabled?: boolean;
 }
 
 export interface Game {

@@ -1,33 +1,19 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
-import { callClaudeJson } from '@/lib/claude';
-import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from '@/lib/prompts';
 import { fetchGames, fetchInjuriesForSports } from '@/lib/espn';
-import { adjustedEdgeScore, edgeOf, impliedProbability } from '@/lib/edge';
-import {
-  recommendedAmount,
-  tierForOdds,
-  tierFromConfidence,
-  unitSize,
-} from '@/lib/units';
-import type { Game, Tier } from '@/lib/types';
+import { analyzeGames } from '@/lib/pickGen';
+import type { Game } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const BATCH_SIZE = 2;
-const MAX_GAMES_PER_REQUEST = 10; // up to 5 parallel Claude batches of 2
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
-  return chunks;
-}
+const MAX_GAMES_PER_REQUEST = 10;
 
 const RequestSchema = z.object({
   sports: z.array(z.string()).min(1),
+  event_ids: z.array(z.string()).optional(),
 });
 
 function competitiveness(g: Game): number {
@@ -53,63 +39,6 @@ function selectTopGames(games: Game[], requestedSports: string[], max: number): 
   }
   return result;
 }
-
-const KeyStatSchema = z.object({
-  label: z.string(),
-  value: z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v)),
-  flag: z.enum(['green', 'yellow', 'red']).optional().nullable(),
-});
-
-const ClaudePickSchema = z.object({
-  sport: z.string(),
-  league: z.string().optional().nullable(),
-  home_team: z.string(),
-  away_team: z.string(),
-  home_team_abbr: z.string().optional().nullable(),
-  away_team_abbr: z.string().optional().nullable(),
-  pick: z.string(),
-  pick_detail: z.string().optional().nullable(),
-  bet_type: z.string(),
-  odds_decimal: z.coerce.number(),
-  confidence: z.coerce.number().int().min(0).max(100),
-  tier: z.enum(['lock', 'strong', 'value', 'parlay']).optional().nullable(),
-  real_probability: z.coerce.number().min(0).max(1),
-  implied_probability: z.coerce.number().optional().nullable(),
-  edge: z.coerce.number().optional().nullable(),
-  analysis: z.string().optional().nullable(),
-  risk_factors: z.string().optional().nullable(),
-  injuries: z.string().optional().nullable(),
-  key_stats: z.array(KeyStatSchema).optional().nullable(),
-  early_payout_eligible: z.coerce.boolean().optional(),
-  early_payout_threshold: z.string().optional().nullable(),
-  line_movement_note: z.string().optional().nullable(),
-  regression_flags: z.string().optional().nullable(),
-});
-
-const ClaudeParlayLegSchema = z.object({
-  game: z.string(),
-  pick: z.string(),
-  odds_decimal: z.coerce.number(),
-  real_probability: z.coerce.number().min(0).max(1).optional(),
-});
-
-const ClaudeParlaySchema = z.object({
-  legs: z.array(ClaudeParlayLegSchema).min(2),
-  combined_odds: z.coerce.number(),
-  combined_probability: z.coerce.number().min(0).max(1),
-  implied_probability: z.coerce.number().optional().nullable(),
-  edge: z.coerce.number().optional().nullable(),
-  confidence: z.coerce.number().int().min(0).max(100).optional(),
-  tier: z.enum(['lock', 'strong', 'value', 'parlay']).optional().nullable(),
-  analysis: z.string().optional().nullable(),
-});
-
-const ClaudeResponseSchema = z.object({
-  analyzed_count: z.coerce.number().int().optional(),
-  discarded_count: z.coerce.number().int().optional(),
-  picks: z.array(ClaudePickSchema).default([]),
-  parlays: z.array(ClaudeParlaySchema).optional().default([]),
-});
 
 export async function POST(req: Request) {
   let body: unknown;
@@ -145,9 +74,7 @@ export async function POST(req: Request) {
       { status: 502 },
     );
   }
-  console.log(`[generate-picks] ESPN fetched ${games.length} games in ${Date.now() - t0}ms`);
 
-  // Attach team-level injuries to each game (only for teams playing today)
   for (const g of games) {
     const sportInjuries = injuriesByTeam[g.sport] ?? {};
     const homeInj = sportInjuries[g.home_team] ?? [];
@@ -168,10 +95,15 @@ export async function POST(req: Request) {
   }
 
   const totalAvailable = games.length;
-  const games_to_analyze = selectTopGames(games, parsed.data.sports, MAX_GAMES_PER_REQUEST);
-  console.log(
-    `[generate-picks] analyzing ${games_to_analyze.length} of ${totalAvailable}`,
-  );
+  let toAnalyze: Game[];
+  if (parsed.data.event_ids && parsed.data.event_ids.length > 0) {
+    const set = new Set(parsed.data.event_ids);
+    toAnalyze = games.filter((g) => g.espn_event_id && set.has(g.espn_event_id));
+  } else {
+    toAnalyze = selectTopGames(games, parsed.data.sports, MAX_GAMES_PER_REQUEST);
+  }
+
+  console.log(`[generate-picks] analyzing ${toAnalyze.length} of ${totalAvailable}`);
 
   const supabase = supabaseAdmin();
   const { data: settingsRow, error: settingsErr } = await supabase
@@ -182,249 +114,26 @@ export async function POST(req: Request) {
   if (settingsErr) {
     return NextResponse.json({ error: 'Settings missing', detail: settingsErr.message }, { status: 500 });
   }
-  const bankroll = Number(settingsRow.bankroll_current);
-  const unitPct = Number(settingsRow.unit_percentage);
-  const unit = unitSize(bankroll, unitPct);
 
-  const batches = chunk(games_to_analyze, BATCH_SIZE);
-  console.log(`[generate-picks] launching ${batches.length} parallel batches of up to ${BATCH_SIZE} games`);
-  const tBatch = Date.now();
-
-  const batchResults = await Promise.all(
-    batches.map(async (b, i) => {
-      const tStart = Date.now();
-      try {
-        const claudeOutput = await callClaudeJson(
-          PICK_GENERATION_SYSTEM,
-          buildPickGenerationUserPrompt(b),
-          { retry: false, maxTokens: 4096 },
-        );
-        const validated = ClaudeResponseSchema.safeParse(claudeOutput);
-        if (!validated.success) {
-          console.error(`[generate-picks] batch ${i} validation failed`, validated.error.flatten());
-          return { picks: [], parlays: [] };
-        }
-        console.log(`[generate-picks] batch ${i} (${b.length} games) done in ${Date.now() - tStart}ms — ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays`);
-        return { picks: validated.data.picks, parlays: validated.data.parlays };
-      } catch (err) {
-        console.error(`[generate-picks] batch ${i} failed`, err);
-        return { picks: [], parlays: [] };
-      }
-    }),
-  );
-  console.log(`[generate-picks] all ${batches.length} batches done in ${Date.now() - tBatch}ms`);
-
-  const raw = {
-    picks: batchResults.flatMap((r) => r.picks),
-    parlays: batchResults.flatMap((r) => r.parlays),
-  };
-
-  if (raw.picks.length === 0 && raw.parlays.length === 0) {
-    console.warn('[generate-picks] all batches returned empty');
+  let result;
+  try {
+    result = await analyzeGames(toAnalyze, supabase, {
+      bankroll: Number(settingsRow.bankroll_current),
+      unitPercentage: Number(settingsRow.unit_percentage),
+    });
+  } catch (e) {
+    return NextResponse.json({ error: 'Analyze failed', detail: (e as Error).message }, { status: 500 });
   }
 
-  // Build lookup tables from analyzed games for abbr/event_id fallback
-  const gameByMatchup = new Map<string, Game>();
-  const teamAbbrByName = new Map<string, string>();
-  for (const g of games_to_analyze) {
-    gameByMatchup.set(`${g.home_team.toLowerCase()}|${g.away_team.toLowerCase()}`, g);
-    if (g.home_team_abbr) teamAbbrByName.set(g.home_team.toLowerCase(), g.home_team_abbr);
-    if (g.away_team_abbr) teamAbbrByName.set(g.away_team.toLowerCase(), g.away_team_abbr);
-  }
-
-  const enrichedSingles = raw.picks
-    .map((p) => {
-      const odds = p.odds_decimal;
-      const implied = impliedProbability(odds);
-      const e = edgeOf(p.real_probability, odds);
-      const tier: Tier = p.tier ?? tierFromConfidence(p.confidence);
-      const adjustedTier = tierForOdds(tier, odds);
-      const recommended = recommendedAmount(adjustedTier, unit, odds);
-      const score = adjustedEdgeScore(p.real_probability, odds);
-      const homeAbbr =
-        p.home_team_abbr?.toLowerCase() ??
-        teamAbbrByName.get(p.home_team.toLowerCase()) ??
-        null;
-      const awayAbbr =
-        p.away_team_abbr?.toLowerCase() ??
-        teamAbbrByName.get(p.away_team.toLowerCase()) ??
-        null;
-      const matchedGame = gameByMatchup.get(
-        `${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`,
-      );
-      return {
-        ...p,
-        home_team_abbr: homeAbbr,
-        away_team_abbr: awayAbbr,
-        espn_event_id: matchedGame?.espn_event_id ?? null,
-        implied_probability: implied,
-        edge: e,
-        tier: adjustedTier,
-        recommended_amount: recommended,
-        _score: score,
-      };
-    })
-    .filter((p) => p.edge > 0)
-    .sort((a, b) => b._score - a._score);
-
-  const enrichedParlays = raw.parlays.map((par) => {
-    const odds = par.combined_odds;
-    const implied = par.implied_probability ?? impliedProbability(odds);
-    const realProb = par.combined_probability;
-    const e = par.edge ?? realProb - implied;
-    const conf = par.confidence ?? Math.round(realProb * 100);
-    return {
-      pick: par.legs.map((l) => l.pick).join(' + '),
-      pick_detail: par.legs.map((l) => `${l.game}: ${l.pick}`).join(' | '),
-      odds_decimal: odds,
-      real_probability: realProb,
-      implied_probability: implied,
-      edge: e,
-      confidence: conf,
-      tier: 'parlay' as Tier,
-      recommended_amount: recommendedAmount('parlay', unit, odds),
-      analysis: par.analysis ?? null,
-      parlay_legs: par.legs,
-    };
-  });
-
-  const now = new Date().toISOString();
-
-  const singleRows = enrichedSingles.map((p) => ({
-    sport: p.sport,
-    league: p.league ?? null,
-    game: `${p.away_team} @ ${p.home_team}`,
-    home_team: p.home_team,
-    away_team: p.away_team,
-    home_team_abbr: p.home_team_abbr,
-    away_team_abbr: p.away_team_abbr,
-    espn_event_id: p.espn_event_id,
-    pick: p.pick,
-    pick_detail: p.pick_detail ?? null,
-    bet_type: p.bet_type,
-    odds_decimal: p.odds_decimal,
-    best_odds: p.odds_decimal,
-    best_odds_source: null,
-    odds_comparison: null,
-    confidence: p.confidence,
-    tier: p.tier,
-    real_probability: p.real_probability,
-    implied_probability: p.implied_probability,
-    edge: p.edge,
-    recommended_amount: p.recommended_amount,
-    analysis: p.analysis ?? null,
-    risk_factors: p.risk_factors ?? null,
-    injuries: p.injuries ?? null,
-    key_stats: p.key_stats ?? null,
-    early_payout_eligible: p.early_payout_eligible ?? false,
-    early_payout_threshold: p.early_payout_threshold ?? null,
-    line_movement_note: p.line_movement_note ?? null,
-    regression_flags: p.regression_flags ?? null,
-    status: 'pending',
-    is_parlay: false,
-    parlay_legs: null,
-    updated_at: now,
-  }));
-
-  const parlayRows = enrichedParlays.map((par) => ({
-    sport: 'Parlay',
-    league: null,
-    game: par.pick,
-    home_team: '',
-    away_team: '',
-    home_team_abbr: null,
-    away_team_abbr: null,
-    espn_event_id: null,
-    pick: par.pick,
-    pick_detail: par.pick_detail,
-    bet_type: 'Parlay',
-    odds_decimal: par.odds_decimal,
-    best_odds: par.odds_decimal,
-    best_odds_source: null,
-    odds_comparison: null,
-    confidence: par.confidence,
-    tier: 'parlay' as Tier,
-    real_probability: par.real_probability,
-    implied_probability: par.implied_probability,
-    edge: par.edge,
-    recommended_amount: par.recommended_amount,
-    analysis: par.analysis,
-    risk_factors: null,
-    injuries: null,
-    key_stats: null,
-    early_payout_eligible: false,
-    early_payout_threshold: null,
-    line_movement_note: null,
-    regression_flags: null,
-    status: 'pending',
-    is_parlay: true,
-    parlay_legs: par.parlay_legs,
-    updated_at: now,
-  }));
-
-  const allRows = [...singleRows, ...parlayRows];
-
-  let insertedCount = 0;
-  let updatedCount = 0;
-
-  if (allRows.length > 0) {
-    // Look up existing pending picks (don't touch bet/skipped)
-    const { data: existing } = await supabase
-      .from('picks')
-      .select('id, sport, home_team, away_team, pick, bet_type')
-      .eq('status', 'pending');
-
-    const keyOf = (r: { sport: string; home_team: string; away_team: string; pick: string; bet_type: string }) =>
-      `${r.sport}|${r.home_team}|${r.away_team}|${r.pick}|${r.bet_type}`;
-
-    const existingMap = new Map<string, string>();
-    for (const e of existing ?? []) existingMap.set(keyOf(e), e.id);
-
-    const toInsert: typeof allRows = [];
-    const toUpdate: { id: string; row: (typeof allRows)[number] }[] = [];
-
-    for (const row of allRows) {
-      const id = existingMap.get(keyOf(row));
-      if (id) toUpdate.push({ id, row });
-      else toInsert.push(row);
-    }
-
-    if (toInsert.length > 0) {
-      const { error: insErr } = await supabase.from('picks').insert(toInsert);
-      if (insErr) {
-        console.error('[generate-picks] insert failed', insErr);
-        return NextResponse.json(
-          { error: 'DB insert failed', detail: insErr.message },
-          { status: 500 },
-        );
-      }
-      insertedCount = toInsert.length;
-    }
-
-    for (const u of toUpdate) {
-      const { id, row } = u;
-      const updateFields: Record<string, unknown> = { ...row };
-      delete updateFields.status;
-      const { error: updErr } = await supabase.from('picks').update(updateFields).eq('id', id);
-      if (updErr) {
-        console.error('[generate-picks] update failed', updErr);
-      } else {
-        updatedCount++;
-      }
-    }
-  }
-
-  console.log(
-    `[generate-picks] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount}`,
-  );
+  console.log(`[generate-picks] done in ${Date.now() - t0}ms`);
 
   return NextResponse.json({
-    analyzed: games_to_analyze.length,
+    analyzed: toAnalyze.length,
     total_available: totalAvailable,
-    with_edge: enrichedSingles.length,
-    parlays: enrichedParlays.length,
-    inserted: insertedCount,
-    updated: updatedCount,
-    timestamp: now,
+    with_edge: result.withEdge,
+    parlays: result.parlayCount,
+    inserted: result.inserted,
+    updated: result.updated,
+    timestamp: new Date().toISOString(),
   });
 }

@@ -26,12 +26,16 @@ function byTierThenConfidence(a: Pick, b: Pick): number {
 
 function formatTime(iso?: string | null): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('es-MX', {
+  return new Date(iso).toLocaleTimeString('es-MX', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    timeZone: 'America/Mexico_City',
   });
+}
+
+function minutesUntil(iso: string): number {
+  return Math.round((new Date(iso).getTime() - Date.now()) / 60_000);
 }
 
 export default async function PicksPage() {
@@ -51,7 +55,6 @@ export default async function PicksPage() {
 
   const picks = (data as Pick[]) ?? [];
 
-  // Compute latest analysis time for header
   const latest = picks.reduce<string | null>((acc, p) => {
     const t = p.updated_at ?? p.created_at;
     if (!t) return acc;
@@ -59,12 +62,34 @@ export default async function PicksPage() {
     return acc;
   }, null);
 
-  // Sort: bet at top, then pending by tier (lock → strong → value), parlays after
-  const bet = picks.filter((p) => p.status === 'bet').sort(byTierThenConfidence);
-  const pendingSingles = picks
-    .filter((p) => p.status === 'pending' && !p.is_parlay)
-    .sort(byTierThenConfidence);
-  const pendingParlays = picks.filter((p) => p.status === 'pending' && p.is_parlay);
+  const parlays = picks.filter((p) => p.is_parlay).sort(byTierThenConfidence);
+  const singles = picks.filter((p) => !p.is_parlay);
+
+  // Group singles by start_time bucket. Picks without start_time go into "Sin horario".
+  // Past start time → "Picks anteriores".
+  const now = Date.now();
+  const buckets = new Map<string, { startTime: string | null; picks: Pick[] }>();
+  const past: Pick[] = [];
+  const noTime: Pick[] = [];
+
+  for (const p of singles) {
+    if (!p.game_start_time) {
+      noTime.push(p);
+      continue;
+    }
+    const t = new Date(p.game_start_time).getTime();
+    if (t < now - 30 * 60_000) {
+      past.push(p);
+      continue;
+    }
+    const key = p.game_start_time;
+    if (!buckets.has(key)) buckets.set(key, { startTime: key, picks: [] });
+    buckets.get(key)!.picks.push(p);
+  }
+
+  const bucketList = Array.from(buckets.values())
+    .map((b) => ({ ...b, picks: b.picks.sort(byTierThenConfidence) }))
+    .sort((a, b) => (a.startTime ?? '').localeCompare(b.startTime ?? ''));
 
   if (picks.length === 0) {
     return (
@@ -74,12 +99,14 @@ export default async function PicksPage() {
           <div className="text-4xl mb-2">🎯</div>
           <div className="text-muted text-sm">No hay picks recientes</div>
           <div className="text-muted text-xs mt-1">
-            Ve a Home y toca &quot;Generar picks&quot;
+            Los picks llegan automáticamente 30 min antes de cada juego
           </div>
         </div>
       </div>
     );
   }
+
+  let rankCounter = 0;
 
   return (
     <div className="space-y-4">
@@ -88,48 +115,82 @@ export default async function PicksPage() {
           <h1 className="text-xl font-bold">PICKS</h1>
           {latest && (
             <div className="text-[10px] text-muted mt-0.5">
-              Análisis de {formatTime(latest)}
+              Último análisis {formatTime(latest)}
             </div>
           )}
         </div>
         <span className="text-xs text-muted">
-          {pendingSingles.length + pendingParlays.length} pendientes
-          {bet.length > 0 ? ` · ${bet.length} apostados` : ''}
+          {singles.length} singles
+          {parlays.length > 0 ? ` · ${parlays.length} parlays` : ''}
         </span>
       </header>
 
-      {bet.length > 0 && (
-        <section className="space-y-2">
-          <div className="text-[10px] text-muted uppercase tracking-wider">
-            Apostados hoy
-          </div>
-          {bet.map((p, i) => (
-            <PickCard key={p.id} pick={p} rank={i + 1} />
-          ))}
-        </section>
-      )}
+      {bucketList.map((bucket) => {
+        const minLeft = bucket.startTime ? minutesUntil(bucket.startTime) : 0;
+        const urgent = minLeft <= 60 && minLeft > 0;
+        const live = minLeft <= 0;
+        return (
+          <section key={bucket.startTime} className="space-y-2">
+            <div className="flex items-baseline justify-between">
+              <div className="text-sm font-bold">
+                {formatTime(bucket.startTime)}
+              </div>
+              {urgent && (
+                <span className="text-[10px] text-red bg-red/10 border border-red/40 px-2 py-0.5 rounded uppercase tracking-wider animate-pulse">
+                  🔴 Apuesta ahora — juego en {minLeft}m
+                </span>
+              )}
+              {live && (
+                <span className="text-[10px] text-yellow bg-yellow/10 border border-yellow/40 px-2 py-0.5 rounded uppercase tracking-wider">
+                  En vivo
+                </span>
+              )}
+            </div>
+            <div className="space-y-2">
+              {bucket.picks.map((p) => {
+                rankCounter++;
+                return <PickCard key={p.id} pick={p} rank={rankCounter} />;
+              })}
+            </div>
+          </section>
+        );
+      })}
 
-      {pendingSingles.length > 0 && (
-        <>
-          <div className="bg-card border border-line rounded p-3 text-xs text-muted">
-            Ordenados por tier (más seguro → menos seguro)
-          </div>
-          <div className="space-y-3">
-            {pendingSingles.map((p, i) => (
-              <PickCard key={p.id} pick={p} rank={i + 1} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {pendingParlays.length > 0 && (
-        <section className="space-y-3 pt-2">
+      {parlays.length > 0 && (
+        <section className="space-y-2 pt-2">
           <div className="text-[10px] text-muted uppercase tracking-wider">
             Parlays sugeridos
           </div>
-          {pendingParlays.map((p, i) => (
-            <PickCard key={p.id} pick={p} rank={pendingSingles.length + i + 1} />
-          ))}
+          {parlays.map((p) => {
+            rankCounter++;
+            return <PickCard key={p.id} pick={p} rank={rankCounter} />;
+          })}
+        </section>
+      )}
+
+      {noTime.length > 0 && (
+        <section className="space-y-2 pt-2">
+          <div className="text-[10px] text-muted uppercase tracking-wider">
+            Sin horario
+          </div>
+          {noTime.sort(byTierThenConfidence).map((p) => {
+            rankCounter++;
+            return <PickCard key={p.id} pick={p} rank={rankCounter} />;
+          })}
+        </section>
+      )}
+
+      {past.length > 0 && (
+        <section className="space-y-2 pt-4 border-t border-line">
+          <div className="text-[10px] text-muted uppercase tracking-wider">
+            Picks anteriores ({past.length})
+          </div>
+          <div className="opacity-60 space-y-2">
+            {past.sort(byTierThenConfidence).map((p) => {
+              rankCounter++;
+              return <PickCard key={p.id} pick={p} rank={rankCounter} />;
+            })}
+          </div>
         </section>
       )}
     </div>

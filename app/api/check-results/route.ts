@@ -15,8 +15,11 @@ interface Resolution {
   result: 'win' | 'loss';
   payout: number;
   pl: number;
+  amount: number;
   home_score: number;
   away_score: number;
+  is_parlay: boolean;
+  was_already_notified: boolean;
 }
 
 function pickedSide(
@@ -122,8 +125,11 @@ export async function POST() {
       result: won ? 'win' : 'loss',
       payout,
       pl: payout - amount,
+      amount,
       home_score: status.home_score,
       away_score: status.away_score,
+      is_parlay: (bet.bet_type as string) === 'Parlay',
+      was_already_notified: false,
     });
   }
 

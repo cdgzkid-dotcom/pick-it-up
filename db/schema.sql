@@ -9,11 +9,15 @@ create extension if not exists "pgcrypto";
 create table if not exists picks (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
+  updated_at timestamptz,
   sport text not null,
   game text not null,
   league text,
   home_team text not null,
   away_team text not null,
+  home_team_abbr text,
+  away_team_abbr text,
+  espn_event_id text,
   pick text not null,
   pick_detail text,
   bet_type text not null,
@@ -33,14 +37,21 @@ create table if not exists picks (
   key_stats jsonb,
   early_payout_eligible boolean not null default false,
   early_payout_threshold text,
+  line_movement_note text,
+  regression_flags text,
   status text not null default 'pending',
   is_parlay boolean not null default false,
-  parlay_legs jsonb
+  parlay_legs jsonb,
+  game_start_time timestamptz,
+  picks_generated_at timestamptz,
+  telegram_notified_at timestamptz
 );
 
 create index if not exists picks_created_at_idx on picks(created_at desc);
 create index if not exists picks_status_idx on picks(status);
 create index if not exists picks_sport_idx on picks(sport);
+create index if not exists picks_game_start_time_idx on picks(game_start_time);
+create index if not exists picks_espn_event_id_idx on picks(espn_event_id);
 
 create table if not exists bets (
   id uuid primary key default gen_random_uuid(),
@@ -50,6 +61,9 @@ create table if not exists bets (
   game text not null,
   home_team text,
   away_team text,
+  home_team_abbr text,
+  away_team_abbr text,
+  espn_event_id text,
   pick text not null,
   bet_type text not null,
   odds_decimal numeric not null,
@@ -59,12 +73,14 @@ create table if not exists bets (
   cashout_amount numeric,
   payout numeric,
   date text,
-  notes text
+  notes text,
+  result_notified_at timestamptz
 );
 
 create index if not exists bets_result_idx on bets(result);
 create index if not exists bets_created_at_idx on bets(created_at desc);
 create index if not exists bets_pick_id_idx on bets(pick_id);
+create index if not exists bets_espn_event_id_idx on bets(espn_event_id);
 
 create table if not exists bankroll_log (
   id uuid primary key default gen_random_uuid(),
@@ -81,6 +97,8 @@ create table if not exists settings (
   id int primary key default 1,
   bankroll_current numeric not null default 300,
   unit_percentage numeric not null default 5,
+  auto_sports text[] not null default array['NBA','MLB','NHL','Liga MX','Premier League']::text[],
+  auto_enabled boolean not null default true,
   constraint settings_singleton check (id = 1)
 );
 

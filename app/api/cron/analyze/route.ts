@@ -20,9 +20,9 @@ import {
   formatResultsMessage,
   formatMonteCarloLines,
   formatSupersededOnlyMessage,
-  formatNoOddsAlertMessage,
+  formatPickDigestMessage,
 } from '@/lib/telegram';
-import type { SupersededPickForTg } from '@/lib/telegram';
+import type { SupersededPickForTg, PickDigestData } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
@@ -328,42 +328,99 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       };
     }
 
-    // Fix C — slate-without-odds alert. Triggered when the cron analyzed at
-    // least one in-window game and ALL of them ended in analyzed_no_odds_data
-    // (DK hasn't published). Anti-spam: skip if we already sent a no_odds
-    // alert in the last 2 hours (avoids one alert per cron run for the same
-    // slate).
-    if (result.insertedNoOddsCount > 0 && result.noOddsEvents.length > 0) {
+    // Pick Digest — replaces the older single-purpose "no DK odds" alert
+    // with a unified summary of WHY the cron didn't produce any picks.
+    // Surfaces the categories so the user can see the system DID analyze
+    // and DID compute, killing the "silent system = broken system" anxiety.
+    //
+    // Anti-spam: same 2h sliding window via system_notifications, but now
+    // keyed by kind='pick_digest'. Legacy kind='no_odds_alert' rows
+    // (none in DB today) stay as historical and are ignored by this query.
+    const digestData: PickDigestData = {
+      analyzedCount: toAnalyze.length,
+      edgeBelow: result.edgeBelowEvents.map((e) => ({
+        sport: e.sport,
+        home_team: e.home_team,
+        away_team: e.away_team,
+        picked_team: e.picked_team,
+        claude_prob: e.claude_prob,
+        dk_implied: e.dk_implied,
+        edge: e.edge,
+      })),
+      auditFiltered: result.auditFilteredEvents.map((e) => ({
+        sport: e.sport,
+        home_team: e.home_team,
+        away_team: e.away_team,
+        pick: e.pick,
+        tier: e.tier,
+        failures: e.failures,
+      })),
+      playoffNoEdge: playoffsAnalyzedNoEdge.map((g) => ({
+        sport: g.sport,
+        home_team: g.home_team,
+        away_team: g.away_team,
+        game_start_time: g.start_time ?? null,
+      })),
+      noOdds: result.noOddsEvents.map((e) => ({
+        sport: e.sport,
+        home_team: e.home_team,
+        away_team: e.away_team,
+        game_start_time: e.game_start_time,
+      })),
+    };
+    const hasDigestContent =
+      digestData.edgeBelow.length +
+        digestData.auditFiltered.length +
+        digestData.playoffNoEdge.length +
+        digestData.noOdds.length >
+      0;
+
+    if (hasDigestContent && digestData.analyzedCount > 0) {
       const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
       const { data: recentNotif } = await supabase
         .from('system_notifications')
         .select('sent_at')
-        .eq('kind', 'no_odds_alert')
+        .eq('kind', 'pick_digest')
         .gte('sent_at', cutoff)
         .order('sent_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (recentNotif) {
-        console.log('[NO_ODDS_ALERT_SUPPRESSED]', {
+        console.log('[PICK_DIGEST_SUPPRESSED]', {
           last_sent: recentNotif.sent_at,
           reason: 'within_2h_window',
         });
       } else {
         const systemHealth = await computeSystemHealthBounded();
-        const text = formatNoOddsAlertMessage(result.noOddsEvents, { systemHealth });
+        const text = formatPickDigestMessage(digestData, { systemHealth });
         const sent = await sendTelegramMessage(text);
         if (sent.ok) {
           await supabase.from('system_notifications').insert({
-            kind: 'no_odds_alert',
+            kind: 'pick_digest',
             payload: {
-              event_ids: result.noOddsEvents.map((g) => g.espn_event_id),
-              count: result.noOddsEvents.length,
+              kind_version: 1,
+              analyzed_count: digestData.analyzedCount,
+              by_category: {
+                edge_below: digestData.edgeBelow.length,
+                audit_filtered: digestData.auditFiltered.length,
+                playoff_no_edge: digestData.playoffNoEdge.length,
+                no_odds: digestData.noOdds.length,
+              },
+              sent_for_run_at: new Date().toISOString(),
             },
           });
-          console.log('[NO_ODDS_ALERT_SENT]', { count: result.noOddsEvents.length });
+          console.log('[PICK_DIGEST_SENT]', {
+            analyzed: digestData.analyzedCount,
+            categories: {
+              edge_below: digestData.edgeBelow.length,
+              audit_filtered: digestData.auditFiltered.length,
+              playoff_no_edge: digestData.playoffNoEdge.length,
+              no_odds: digestData.noOdds.length,
+            },
+          });
         } else {
-          console.error('[NO_ODDS_ALERT_FAILED]', sent);
+          console.error('[PICK_DIGEST_FAILED]', sent);
         }
       }
     }

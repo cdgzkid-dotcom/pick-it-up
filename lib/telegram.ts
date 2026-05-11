@@ -81,6 +81,18 @@ const TIER_NAME: Record<string, string> = {
   parlay: 'PARLAY',
 };
 
+/** Visual sport indicator used by the Pick Digest message. Match the keys
+ * to Game.sport values produced by lib/espn.ts (uppercase 3-letter codes
+ * for the major leagues; 'Soccer' for any MLS/EPL/UEFA aggregate). */
+const SPORT_EMOJI: Record<string, string> = {
+  MLB: '⚾',
+  NBA: '🏀',
+  NHL: '🏒',
+  NFL: '🏈',
+  Soccer: '⚽',
+};
+const sportEmoji = (sport: string): string => SPORT_EMOJI[sport] ?? '🎲';
+
 function tierBadge(tier?: string | null, confidence?: number | null): string {
   if (!tier) return '';
   const e = TIER_EMOJI[tier] ?? '';
@@ -331,45 +343,140 @@ function renderSupersededBlock(items: SupersededPickForTg[]): string[] {
 }
 
 /**
- * Fix C (no-odds slate alert): rendered when the cron analyzed at least
- * one in-window game but ALL of them ended in the analyzed_no_odds_data
- * branch. Without this message the user can't distinguish "DK is late"
- * from "system is broken" — both look like Telegram silence. Anti-spam
- * gating happens in the caller via system_notifications.
+ * Pick Digest message. Sent when the cron analyzed at least one game but
+ * produced ZERO actionable picks (all categories below trigger). Replaces
+ * the older single-purpose "no DK odds" alert with a unified summary that
+ * covers all paths to "no pick":
+ *   • Sin edge contra DK  — Claude analyzed but edge < EDGE_THRESHOLD (2%)
+ *   • Filtrado por calidad — passed gate but failed Auditoría 2
+ *   • Sin edge (playoff)   — analyzed_no_edge marker
+ *   • Sin DK odds          — analyzed_no_odds_data marker
+ *
+ * Surfaces per-game numbers (Claude prob vs DK implied vs edge) so the
+ * user can SEE the math the system did, killing the "silent system"
+ * anxiety that motivated this whole digest.
+ *
+ * Anti-spam (2h window) is enforced by the caller via system_notifications
+ * with kind='pick_digest'.
  */
-export function formatNoOddsAlertMessage(
-  games: Array<{
+export interface PickDigestData {
+  analyzedCount: number;
+  /** Picks where edge < EDGE_THRESHOLD. Most common "no pick" reason on a
+   *  normal slate where market and Claude agree. */
+  edgeBelow: Array<{
+    sport: string;
+    home_team: string;
+    away_team: string;
+    picked_team: string;
+    claude_prob: number; // 0-1
+    dk_implied: number; // 0-1
+    edge: number; // claude_prob - dk_implied, may be small but positive
+  }>;
+  /** Picks that survived all upstream filters but failed Auditoría 2. */
+  auditFiltered: Array<{
+    sport: string;
+    home_team: string;
+    away_team: string;
+    pick: string;
+    tier: string;
+    failures: string[];
+  }>;
+  /** Playoff games Claude analyzed but found no edge on either side. */
+  playoffNoEdge: Array<{
     sport: string;
     home_team: string;
     away_team: string;
     game_start_time: string | null;
-  }>,
+  }>;
+  /** Games where DK never published moneylines in time. */
+  noOdds: Array<{
+    sport: string;
+    home_team: string;
+    away_team: string;
+    game_start_time: string | null;
+  }>;
+}
+
+const PER_CATEGORY_LIMIT = 5;
+
+function formatStartTimeMx(iso: string | null): string {
+  if (!iso) return 'TBD';
+  return new Date(iso).toLocaleTimeString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'America/Mexico_City',
+  });
+}
+
+export function formatPickDigestMessage(
+  data: PickDigestData,
   ctx: { systemHealth?: SystemHealthSummary } = {},
 ): string {
   const lines: string[] = [];
-  lines.push('🟡 *Pick It Up · Slate sin odds*');
+  lines.push('📊 *Pick It Up · Sin picks este run*');
   lines.push('─────────────────────');
-  lines.push(`${games.length} juego(s) en ventana pero sin odds DK disponibles:`);
-  lines.push('');
+  lines.push(`${data.analyzedCount} juego(s) analizados, sin recomendaciones:`);
 
-  for (const g of games.slice(0, 5)) {
-    const startTime = g.game_start_time
-      ? new Date(g.game_start_time).toLocaleTimeString('es-MX', {
-          hour: '2-digit',
-          minute: '2-digit',
-          timeZone: 'America/Mexico_City',
-        })
-      : 'TBD';
-    lines.push(`• ${g.away_team} @ ${g.home_team} (${g.sport}, ${startTime})`);
+  // Order: most-relevant-to-user first.
+  // 1) ❌ Sin edge contra DK
+  if (data.edgeBelow.length > 0) {
+    lines.push('');
+    lines.push(`❌ *Sin edge contra DK* (${data.edgeBelow.length}):`);
+    for (const g of data.edgeBelow.slice(0, PER_CATEGORY_LIMIT)) {
+      const claudePct = (g.claude_prob * 100).toFixed(1);
+      const dkPct = (g.dk_implied * 100).toFixed(1);
+      const edgePct = (g.edge * 100).toFixed(1);
+      const sign = g.edge >= 0 ? '+' : '';
+      lines.push(`• ${sportEmoji(g.sport)} ${g.away_team} @ ${g.home_team}`);
+      lines.push(`   Pick ${g.picked_team}: Claude ${claudePct}% · DK ${dkPct}% · edge ${sign}${edgePct}%`);
+    }
+    if (data.edgeBelow.length > PER_CATEGORY_LIMIT) {
+      lines.push(`   ...y ${data.edgeBelow.length - PER_CATEGORY_LIMIT} más`);
+    }
   }
 
-  if (games.length > 5) {
-    lines.push(`...y ${games.length - 5} más`);
+  // 2) ⚠️ Filtrado por calidad
+  if (data.auditFiltered.length > 0) {
+    lines.push('');
+    lines.push(`⚠️ *Filtrado por calidad* (${data.auditFiltered.length}):`);
+    for (const g of data.auditFiltered.slice(0, PER_CATEGORY_LIMIT)) {
+      const tier = (g.tier || 'value').toUpperCase();
+      const failures = g.failures.slice(0, 2).join(', ');
+      lines.push(`• ${sportEmoji(g.sport)} ${g.pick} (${tier})`);
+      lines.push(`   ${failures}${g.failures.length > 2 ? '...' : ''}`);
+    }
+    if (data.auditFiltered.length > PER_CATEGORY_LIMIT) {
+      lines.push(`   ...y ${data.auditFiltered.length - PER_CATEGORY_LIMIT} más`);
+    }
+  }
+
+  // 3) ⛔ Sin edge en playoff
+  if (data.playoffNoEdge.length > 0) {
+    lines.push('');
+    lines.push(`⛔ *Sin edge en playoff* (${data.playoffNoEdge.length}):`);
+    for (const g of data.playoffNoEdge.slice(0, PER_CATEGORY_LIMIT)) {
+      lines.push(`• ${sportEmoji(g.sport)} ${g.away_team} @ ${g.home_team} (${formatStartTimeMx(g.game_start_time)})`);
+    }
+    if (data.playoffNoEdge.length > PER_CATEGORY_LIMIT) {
+      lines.push(`   ...y ${data.playoffNoEdge.length - PER_CATEGORY_LIMIT} más`);
+    }
+  }
+
+  // 4) 🚫 Sin DK odds
+  if (data.noOdds.length > 0) {
+    lines.push('');
+    lines.push(`🚫 *Sin DK odds* (${data.noOdds.length}):`);
+    for (const g of data.noOdds.slice(0, PER_CATEGORY_LIMIT)) {
+      lines.push(`• ${sportEmoji(g.sport)} ${g.away_team} @ ${g.home_team} (${formatStartTimeMx(g.game_start_time)})`);
+    }
+    if (data.noOdds.length > PER_CATEGORY_LIMIT) {
+      lines.push(`   ...y ${data.noOdds.length - PER_CATEGORY_LIMIT} más`);
+    }
+    lines.push('Reintento automático cada 10 min hasta 3 veces.');
   }
 
   lines.push('');
-  lines.push('Sistema OK, esperando que DK publique.');
-  lines.push('Reintento automático cada 10 min hasta 3 veces.');
+  lines.push('Sistema OK · picks aparecen cuando edge ≥ 2% vs mercado.');
 
   if (ctx.systemHealth) {
     lines.push(renderHealthIndicator(ctx.systemHealth));

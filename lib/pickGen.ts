@@ -224,7 +224,7 @@ export interface AnalyzeResult {
    * fire the no_odds_alert Telegram. */
   insertedNoOddsCount: number;
   /** Metadata for the games behind insertedNoOddsCount. The cron passes
-   * this to formatNoOddsAlertMessage so the user sees which games are
+   * this to the pick-digest Telegram so the user sees which games are
    * waiting on DK odds. */
   noOddsEvents: Array<{
     espn_event_id: string;
@@ -232,6 +232,38 @@ export interface AnalyzeResult {
     home_team: string;
     away_team: string;
     game_start_time: string | null;
+  }>;
+  /** Pick Digest: games where Claude returned a pick but its edge against
+   * the DK line fell below EDGE_THRESHOLD (2%). Filtered before reaching
+   * the floor or audit — would otherwise be silent. Surfaced to Telegram
+   * so the user can see the system DID analyze and DID compute, but the
+   * mathematical edge wasn't enough to bet. */
+  edgeBelowEvents: Array<{
+    espn_event_id: string | null;
+    sport: string;
+    home_team: string;
+    away_team: string;
+    picked_team: string;
+    claude_prob: number; // 0-1
+    dk_implied: number; // 0-1
+    edge: number; // claude_prob - dk_implied
+    odds_decimal: number;
+  }>;
+  /** Pick Digest: picks that survived all upstream filters (gate + kelly +
+   * edge threshold) and reached Auditoría 2, but failed one or more
+   * critical quality checks (status='filtered_quality_audit'). Surfaced in
+   * the digest with their failure reasons so the user understands *why*
+   * an otherwise-edgy pick was suppressed. Captures only rows that
+   * actually got persisted (post Rail-5 dedup), so this matches
+   * filteredByAudit count exactly. */
+  auditFilteredEvents: Array<{
+    espn_event_id: string | null;
+    sport: string;
+    home_team: string;
+    away_team: string;
+    pick: string;
+    tier: string;
+    failures: string[];
   }>;
 }
 /** Convenience alias for one entry in AnalyzeResult.supersededList. */
@@ -669,6 +701,11 @@ export async function analyzeGames(
     game_start_time: string | null;
   }> = [];
 
+  // Pick Digest accumulator — populated in the flatMap when Claude's pick
+  // is filtered for edge < EDGE_THRESHOLD. Returned in AnalyzeResult for
+  // the cron's digest message to the user.
+  const edgeBelowEvents: AnalyzeResult['edgeBelowEvents'] = [];
+
   const mapped: MappedRow[] = raw.picks.flatMap((p): MappedRow[] => {
     // (1) Game match — exact home_team / away_team (case-insensitive).
     const matchedGame = gameByMatchup.get(`${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`);
@@ -776,6 +813,22 @@ export async function analyzeGames(
         threshold: EDGE_THRESHOLD,
       });
       reasons.fail_edge_below_threshold++;
+      // Pick Digest: capture metadata for Telegram summary. The pick was
+      // mathematically valid but the edge was too thin to bet — still
+      // valuable signal for the user (proves the system analyzed).
+      const pickedOddsLocal = side === 'home' ? homeOdds : awayOdds;
+      const pickedProbLocal = side === 'home' ? homeProb : awayProb;
+      edgeBelowEvents.push({
+        espn_event_id: matchedGame.espn_event_id ?? null,
+        sport: p.sport,
+        home_team: p.home_team,
+        away_team: p.away_team,
+        picked_team: side === 'home' ? p.home_team : p.away_team,
+        claude_prob: pickedProbLocal,
+        dk_implied: 1 / pickedOddsLocal,
+        edge: bestEdge,
+        odds_decimal: pickedOddsLocal,
+      });
       return [];
     }
 
@@ -1278,6 +1331,9 @@ export async function analyzeGames(
   let supersededLineMovedCount = 0;
   let filteredByAuditCount = 0;
   let flippedSideIgnoredCount = 0;
+  // Pick Digest accumulator — populated by Rail 5 only after a row actually
+  // gets persisted (post dedup). Mirrors filteredByAuditCount 1:1.
+  const auditFilteredEvents: AnalyzeResult['auditFilteredEvents'] = [];
   // Accumulator for the supersede list — populated by both the in-loop
   // CAPA-3 line-moved branch (Rail 3) and the post-loop CAPA-2 orphaned
   // pass (Rail 4). Declared up here so Rail 3 can push into it.
@@ -1734,6 +1790,20 @@ export async function analyzeGames(
         console.error('[pickGen] filtered_quality_audit insert failed', error);
       } else {
         filteredByAuditCount = toInsertFiltered.length;
+        // Pick Digest: capture audit-filtered events post-dedup so the
+        // count matches what got persisted. failures comes from the
+        // audit_failures column we just set on each row.
+        for (const r of toInsertFiltered) {
+          auditFilteredEvents.push({
+            espn_event_id: r.espn_event_id,
+            sport: r.sport,
+            home_team: r.home_team,
+            away_team: r.away_team,
+            pick: r.pick,
+            tier: r.tier,
+            failures: r.audit_failures ?? [],
+          });
+        }
       }
     }
   }
@@ -1757,5 +1827,7 @@ export async function analyzeGames(
     supersededList,
     insertedNoOddsCount,
     noOddsEvents,
+    edgeBelowEvents,
+    auditFilteredEvents,
   };
 }

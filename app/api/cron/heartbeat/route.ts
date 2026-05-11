@@ -18,7 +18,9 @@ async function buildHeartbeat(): Promise<string> {
 
   const { data: picks24h } = await sb
     .from('picks')
-    .select('id, status, locked_at, telegram_notified_at')
+    .select(
+      'id, status, locked_at, telegram_notified_at, tier, edge, edge_vs_market, market_sources_count, floor_applied, confidence, confidence_raw, is_parlay',
+    )
     .gte('created_at', since24h);
   const generated = picks24h?.length ?? 0;
   const notified = picks24h?.filter((p) => p.telegram_notified_at).length ?? 0;
@@ -32,19 +34,94 @@ async function buildHeartbeat(): Promise<string> {
   const supersededLegacy = picks24h?.filter((p) =>
     p.status === 'superseded' || p.status === 'superseded_legacy',
   ).length ?? 0;
-  // Auto-alert: only meaningful when we have a sample of post-CAPA-2 picks
-  // (locked_at populated). Threshold of 30% picked because 0-15% is normal
-  // and >30% is patological for a lock-in that's supposed to be sticky.
-  const totalNewPicks = picks24h?.filter((p) => p.locked_at !== null).length ?? 0;
-  const capaSupersedeRatio = totalNewPicks > 0 ? supersededCapa / totalNewPicks : 0;
+  // Lockable picks = post-CAPA-2 singles. Parlays never take the lock-in
+  // path (server regenerates parlay combinations every run), so we filter
+  // them out defensively even though they normally have locked_at=null.
+  // This is the canonical sample for BOTH the supersede-ratio auto-alert
+  // and the CAPA-3 quality metrics block.
+  const lockablePicks = picks24h?.filter((p) => p.locked_at !== null && !p.is_parlay) ?? [];
+  // Auto-alert (existing): supersede ratio. Threshold of 30% picked because
+  // 0-15% is normal and >30% is pathological for a sticky lock-in.
+  const capaSupersedeRatio =
+    lockablePicks.length > 0 ? supersededCapa / lockablePicks.length : 0;
   const alertLine =
-    totalNewPicks >= 10 && capaSupersedeRatio > 0.30
-      ? `\n⚠️ ALERT: ${(capaSupersedeRatio * 100).toFixed(0)}% CAPA supersede ratio (${supersededCapa}/${totalNewPicks}). Investigate.`
+    lockablePicks.length >= 10 && capaSupersedeRatio > 0.30
+      ? `\n⚠️ ALERT: ${(capaSupersedeRatio * 100).toFixed(0)}% CAPA supersede ratio (${supersededCapa}/${lockablePicks.length}). Investigate.`
       : '';
   const supersededStr =
     supersededLegacy > 0
       ? `${supersededCapa} CAPA, ${supersededLegacy} legacy`
       : `${supersededCapa} superseded`;
+
+  // ── CAPA-3 quality metrics ────────────────────────────────────────────
+  // Surface pick-quality signals so the user can tell BEFORE betting whether
+  // today's picks are trustworthy. We only emit the block when the sample
+  // is statistically meaningful (>= 5 lockable picks); below that, metrics
+  // would mislead more than inform.
+  const notifiedLockable = lockablePicks.filter((p) => p.telegram_notified_at);
+  const haveSample = lockablePicks.length >= 5;
+  const qualityAlerts: string[] = [];
+  let qualityMetrics = '';
+  if (haveSample) {
+    // (1) avg edge vs market — only picks with consensus contribute.
+    const withConsensus = lockablePicks.filter((p) => p.edge_vs_market !== null);
+    const avgEdgeVsMarket =
+      withConsensus.length > 0
+        ? withConsensus.reduce((s, p) => s + Number(p.edge_vs_market), 0) / withConsensus.length
+        : null;
+    // (2) % with full market consensus (DK + BPI).
+    const fullConsensusCount = lockablePicks.filter((p) => (p.market_sources_count ?? 0) >= 2).length;
+    const fullConsensusPct = (fullConsensusCount / lockablePicks.length) * 100;
+    // (3) % of notified picks with floor applied (vs Claude-organic tier).
+    const notifiedWithFloor = notifiedLockable.filter(
+      (p) => p.floor_applied && p.floor_applied !== 'none',
+    ).length;
+    const floorAppliedPct =
+      notifiedLockable.length > 0 ? (notifiedWithFloor / notifiedLockable.length) * 100 : 0;
+    // (4) STRONG/LOCK with insufficient market consensus — most dangerous combo.
+    const strongLockTotal = notifiedLockable.filter(
+      (p) => p.tier === 'strong' || p.tier === 'lock',
+    ).length;
+    const strongLockMissingConsensus = notifiedLockable.filter(
+      (p) => (p.tier === 'strong' || p.tier === 'lock') && (p.market_sources_count ?? 0) < 2,
+    ).length;
+
+    qualityMetrics =
+      `\n\n🎯 *Calidad de picks 24h:*\n` +
+      `Avg edge vs market: ${avgEdgeVsMarket !== null ? (avgEdgeVsMarket * 100).toFixed(1) + '%' : 'n/a'}\n` +
+      `Picks con consenso completo: ${fullConsensusCount}/${lockablePicks.length} (${fullConsensusPct.toFixed(0)}%)\n` +
+      `Notificados con floor aplicado: ${notifiedWithFloor}/${notifiedLockable.length} (${floorAppliedPct.toFixed(0)}%)`;
+
+    // Thresholds derived from system logic, not arbitrary:
+    //   • avg edge < 1pp → likely fantasma edge (post-mortem 2026-05-10 pattern)
+    //   • <50% consensus → most picks were promoted on partial data
+    //   • STRONG/LOCK without consensus → exactly the failure mode from post-mortem
+    //   • <60% floor applied on notified → Claude organic confidence drove the tier
+    if (avgEdgeVsMarket !== null && avgEdgeVsMarket < 0.01) {
+      qualityAlerts.push(
+        `Avg edge vs market is ${(avgEdgeVsMarket * 100).toFixed(1)}% — likely edge fantasma`,
+      );
+    }
+    if (fullConsensusPct < 50) {
+      qualityAlerts.push(
+        `Only ${fullConsensusPct.toFixed(0)}% picks have full market consensus (need >=50%)`,
+      );
+    }
+    if (strongLockTotal > 0 && strongLockMissingConsensus > 0) {
+      qualityAlerts.push(
+        `${strongLockMissingConsensus} of ${strongLockTotal} STRONG/LOCK picks lack market consensus — HIGH RISK`,
+      );
+    }
+    if (notifiedLockable.length >= 3 && floorAppliedPct < 60) {
+      qualityAlerts.push(
+        `Only ${floorAppliedPct.toFixed(0)}% of notified picks had floor applied — Claude may be over-confident`,
+      );
+    }
+  }
+  const qualityAlertsBlock =
+    qualityAlerts.length > 0
+      ? `\n\n⚠️ *ALERTS:*\n` + qualityAlerts.map((a) => `• ${a}`).join('\n')
+      : '';
 
   const { data: bets24h } = await sb
     .from('bets')
@@ -97,7 +174,7 @@ Picks generated 24h: ${generated}
 Notified: ${notified} (${supersededStr})
 Bets resolved: ${wins}W-${losses}L (P/L ${plSign}$${pl.toFixed(2)})
 Bankroll: $${bankroll.toFixed(2)}
-System: ${healthSummary}${stuckLine}${alertLine}`;
+System: ${healthSummary}${stuckLine}${alertLine}${qualityMetrics}${qualityAlertsBlock}`;
 }
 
 async function handle(req: Request) {

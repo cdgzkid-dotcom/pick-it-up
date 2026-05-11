@@ -3,6 +3,7 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { TeamLogo, SportLogo } from './Logo';
 import { tierLabel } from '@/lib/units';
+import { evaluateBetLive, type LiveBetStatus } from '@/lib/betEval';
 import type { Bet, Tier } from '@/lib/types';
 
 interface Props {
@@ -90,6 +91,9 @@ export default function BetResolver({ bet }: Props) {
   const isLive = live?.state === 'in';
   const isFinal = live?.completed || live?.state === 'post';
   const statusLabel = live?.short_detail || live?.detail;
+  const betStatus: LiveBetStatus = liveScore
+    ? evaluateBetLive(bet, liveScore.home, liveScore.away)
+    : 'unknown';
 
   const resolve = async (
     result: 'win' | 'loss' | 'push' | 'cashout' | 'early_payout',
@@ -148,53 +152,76 @@ export default function BetResolver({ bet }: Props) {
         </div>
       )}
 
-      {liveScore && (
-        <div
-          className={`flex items-center justify-between gap-2 px-2 py-2 rounded border ${
-            isLive
-              ? 'bg-green/10 border-green/40'
-              : isFinal
-                ? 'bg-line/30 border-line'
-                : 'bg-blue/10 border-blue/40'
-          }`}
-        >
-          <div className="flex items-center gap-2 text-base font-bold">
-            <span className="text-muted text-[10px] uppercase">
-              {bet.away_team_abbr?.toUpperCase() ?? 'AWAY'}
-            </span>
-            <span
-              className={
-                liveScore.away > liveScore.home ? 'text-green' : 'text-fg'
-              }
-            >
-              {liveScore.away}
-            </span>
-            <span className="text-muted text-xs">—</span>
-            <span
-              className={
-                liveScore.home > liveScore.away ? 'text-green' : 'text-fg'
-              }
-            >
-              {liveScore.home}
-            </span>
-            <span className="text-muted text-[10px] uppercase">
-              {bet.home_team_abbr?.toUpperCase() ?? 'HOME'}
-            </span>
-          </div>
-          <div className="text-right">
-            {isLive && (
-              <span className="inline-block w-2 h-2 rounded-full bg-red animate-pulse mr-1 align-middle" />
+      {liveScore && (() => {
+        const containerCls =
+          betStatus === 'winning'
+            ? 'bg-green/10 border-green/40'
+            : betStatus === 'losing'
+              ? 'bg-red/10 border-red/40'
+              : betStatus === 'push'
+                ? 'bg-blue/10 border-blue/40'
+                : isFinal
+                  ? 'bg-line/30 border-line'
+                  : 'bg-yellow/10 border-yellow/40';
+        const statusLabelText =
+          betStatus === 'winning'
+            ? isFinal
+              ? '✓ GANÓ'
+              : '✓ VAS GANANDO'
+            : betStatus === 'losing'
+              ? isFinal
+                ? '✕ PERDIÓ'
+                : '✕ VAS PERDIENDO'
+              : betStatus === 'push'
+                ? '↩ EMPATE'
+                : null;
+        const statusColor =
+          betStatus === 'winning'
+            ? 'text-green'
+            : betStatus === 'losing'
+              ? 'text-red'
+              : betStatus === 'push'
+                ? 'text-blue'
+                : 'text-muted';
+        return (
+          <div className={`rounded border px-2 py-2 ${containerCls}`}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-base font-bold">
+                <span className="text-muted text-[10px] uppercase">
+                  {bet.away_team_abbr?.toUpperCase() ?? 'AWAY'}
+                </span>
+                <span className={liveScore.away > liveScore.home ? 'text-green' : 'text-fg'}>
+                  {liveScore.away}
+                </span>
+                <span className="text-muted text-xs">—</span>
+                <span className={liveScore.home > liveScore.away ? 'text-green' : 'text-fg'}>
+                  {liveScore.home}
+                </span>
+                <span className="text-muted text-[10px] uppercase">
+                  {bet.home_team_abbr?.toUpperCase() ?? 'HOME'}
+                </span>
+              </div>
+              <div className="text-right">
+                {isLive && (
+                  <span className="inline-block w-2 h-2 rounded-full bg-red animate-pulse mr-1 align-middle" />
+                )}
+                <span
+                  className={`text-[11px] font-bold ${
+                    isLive ? 'text-fg' : isFinal ? 'text-muted' : 'text-blue'
+                  }`}
+                >
+                  {isFinal ? 'FINAL' : (statusLabel ?? (isLive ? 'EN VIVO' : 'PRÓXIMO'))}
+                </span>
+              </div>
+            </div>
+            {statusLabelText && (
+              <div className={`mt-1 text-[11px] font-bold ${statusColor}`}>
+                {statusLabelText}
+              </div>
             )}
-            <span
-              className={`text-[11px] font-bold ${
-                isLive ? 'text-green' : isFinal ? 'text-muted' : 'text-blue'
-              }`}
-            >
-              {isFinal ? 'FINAL' : (statusLabel ?? (isLive ? 'EN VIVO' : 'PRÓXIMO'))}
-            </span>
           </div>
-        </div>
-      )}
+        );
+      })()}
       <div className="flex justify-between items-start gap-2">
         <div className="min-w-0">
           {bet.tier && (

@@ -17,6 +17,7 @@ import { buildNbaGameContext } from './nbaStats';
 import { fetchEspnGameOdds, fetchEspnPredictor } from './espn';
 import type { EspnOddsResult, EspnPredictor } from './espn';
 import { captureOrLoadOpening, computeMovement } from './lineMovement';
+import { auditPickQuality } from './pickAudit';
 import type { MovementSignal } from './lineMovement';
 import { recordPickFactors, getWeightsForPrompt } from './learning';
 import type { Game, Pick, Tier } from './types';
@@ -200,6 +201,9 @@ export interface AnalyzeResult {
   supersededEdgeEvaporated: number;
   supersededLineMoved: number;
   flippedSideIgnored: number;
+  /** Quality-audit counter: picks that passed all gates but failed the
+   * final quality audit (Rail 5). Persisted as status='filtered_quality_audit'. */
+  filteredByAudit: number;
   /** Detail of each superseded pick — used by cron to send a standalone
    * Telegram alert when the only thing that happened was a supersede AND
    * at least one was previously notified. Discriminated by `reason`. */
@@ -267,6 +271,9 @@ interface PickRow {
   original_odds?: number | null;
   reanalysis_count?: number | null;
   lock_reason?: string | null;
+  // Quality-audit findings (failures for Rail 5 rows, warnings for healthy
+  // singleRows). Persists as jsonb in DB.
+  audit_failures?: string[] | null;
 }
 
 interface EnrichedGame extends Game {
@@ -603,6 +610,11 @@ export async function analyzeGames(
     market_sources_count: number;
     market_sources: MarketSource[] | null;
     floor_applied: 'lock' | 'strong' | 'none';
+    // Populated by the post-mapping quality audit pass. When set on a row
+    // that survives (audit.passed=true) these are non-blocking warnings;
+    // when set on a row routed to Rail 5 (audit.passed=false) these are
+    // the blocking failures.
+    audit_failures?: string[] | null;
     _score: number;
   };
 
@@ -900,6 +912,46 @@ export async function analyzeGames(
 
   console.log(`[AUDIT] filter summary: ${JSON.stringify(reasons)}`);
 
+  // ── Quality audit (Auditoría 2 pre-Telegram) ────────────────────────────
+  // Last safety net before picks reach Telegram. Picks that survive all
+  // upstream filters (gate, kelly, culero, etc.) still need to clear the
+  // quality criteria derived from the 2026-05-10 post-mortem. Failures route
+  // to a separate rail with status='filtered_quality_audit'. Warnings
+  // persist non-blocking in audit_failures.
+  const auditedSingles: typeof enrichedSingles = [];
+  const filteredByAudit: typeof enrichedSingles = [];
+  for (const row of enrichedSingles) {
+    const audit = auditPickQuality(row);
+    if (!audit.passed) {
+      console.log('[QUALITY_AUDIT_FAILED]', {
+        pick: row.pick,
+        espn_event_id: row.espn_event_id,
+        tier: row.tier,
+        edge: Number(row.edge.toFixed(4)),
+        edge_vs_market: row.edge_vs_market != null ? Number(row.edge_vs_market.toFixed(4)) : null,
+        market_sources_count: row.market_sources_count,
+        floor_applied: row.floor_applied,
+        failures: audit.failures,
+      });
+      filteredByAudit.push({ ...row, audit_failures: audit.failures });
+    } else {
+      if (audit.warnings.length > 0) {
+        console.log('[QUALITY_AUDIT_WARN]', {
+          pick: row.pick,
+          tier: row.tier,
+          warnings: audit.warnings,
+        });
+      }
+      auditedSingles.push({
+        ...row,
+        audit_failures: audit.warnings.length > 0 ? audit.warnings : null,
+      });
+    }
+  }
+  console.log(
+    `[QUALITY_AUDIT] summary: ${auditedSingles.length} passed, ${filteredByAudit.length} filtered`,
+  );
+
   // ── Server-side parlay generation ───────────────────────────────────────
   // Replaces Claude-side parlays. Rules (D1):
   //   • Only legs with edge ≥ 3% AND floor_applied ≠ 'none' (STRONG/LOCK)
@@ -907,7 +959,9 @@ export async function analyzeGames(
   //   • Different espn_event_id required between legs
   //   • combined_edge ≥ 5% to keep
   //   • Cap to top 5 parlays by combined_edge
-  const parlayCandidates = enrichedSingles.filter(
+  //   • Filtered-audit singles excluded (status !== 'filtered_quality_audit'
+  //     implicit: we use auditedSingles, not enrichedSingles).
+  const parlayCandidates = auditedSingles.filter(
     (p) => p.edge >= 0.03 && p.floor_applied !== 'none' && p.espn_event_id,
   );
   type GeneratedParlay = {
@@ -992,7 +1046,7 @@ export async function analyzeGames(
 
   const now = new Date().toISOString();
 
-  const singleRows: PickRow[] = enrichedSingles.map((p) => ({
+  const singleRows: PickRow[] = auditedSingles.map((p) => ({
     sport: p.sport,
     league: p.league,
     game: `${p.away_team} @ ${p.home_team}`,
@@ -1034,6 +1088,55 @@ export async function analyzeGames(
     parlay_legs: null,
     game_start_time: p.game_start_time,
     updated_at: now,
+    audit_failures: p.audit_failures ?? null,
+  }));
+
+  // Rail 5 source: rows that failed the quality audit. Persisted with
+  // status='filtered_quality_audit', visible in /tracker for manual review,
+  // never sent to Telegram automatically.
+  const filteredAuditRows: PickRow[] = filteredByAudit.map((p) => ({
+    sport: p.sport,
+    league: p.league,
+    game: `${p.away_team} @ ${p.home_team}`,
+    home_team: p.home_team,
+    away_team: p.away_team,
+    home_team_abbr: p.home_team_abbr,
+    away_team_abbr: p.away_team_abbr,
+    espn_event_id: p.espn_event_id,
+    pick: p.pick,
+    pick_detail: p.pick_detail,
+    bet_type: p.bet_type,
+    odds_decimal: p.odds_decimal,
+    best_odds: p.odds_decimal,
+    best_odds_source: p.best_odds_source,
+    odds_comparison: p.odds_comparison,
+    edge_vs_market: p.edge_vs_market,
+    market_consensus_implied: p.market_consensus_implied,
+    market_sources_count: p.market_sources_count,
+    market_sources: p.market_sources,
+    floor_applied: p.floor_applied,
+    confidence: p.confidence,
+    confidence_raw: p.confidence_raw,
+    tier: p.tier,
+    real_probability: p.real_probability,
+    implied_probability: p.implied_probability,
+    edge: p.edge,
+    recommended_amount: p.recommended_amount,
+    analysis: p.analysis,
+    risk_factors: p.risk_factors,
+    injuries: p.injuries,
+    key_stats: p.key_stats,
+    early_payout_eligible: false,
+    early_payout_threshold: null,
+    line_movement_note: p.line_movement_note,
+    regression_flags: p.regression_flags,
+    trap_warning: p.trap_warning,
+    status: 'filtered_quality_audit',
+    is_parlay: false,
+    parlay_legs: null,
+    game_start_time: p.game_start_time,
+    updated_at: now,
+    audit_failures: p.audit_failures ?? null,
   }));
 
   const parlayRows: PickRow[] = enrichedParlays.map((par) => ({
@@ -1078,6 +1181,7 @@ export async function analyzeGames(
     parlay_legs: par.parlay_legs as unknown as PickRow['parlay_legs'],
     game_start_time: null,
     updated_at: now,
+    audit_failures: null,
   }));
 
   // Marker rows for games whose Phase 3 enrichment didn't yield DK odds —
@@ -1125,6 +1229,7 @@ export async function analyzeGames(
     parlay_legs: null,
     game_start_time: m.game_start_time,
     updated_at: now,
+    audit_failures: null,
   }));
 
   // Build a lookup of kelly fractions per pick — caller (cron) passes this to
@@ -1141,6 +1246,7 @@ export async function analyzeGames(
   let updatedCount = 0;
   let supersededEdgeEvaporatedCount = 0;
   let supersededLineMovedCount = 0;
+  let filteredByAuditCount = 0;
   let flippedSideIgnoredCount = 0;
   // Accumulator for the supersede list — populated by both the in-loop
   // CAPA-3 line-moved branch (Rail 3) and the post-loop CAPA-2 orphaned
@@ -1500,8 +1606,51 @@ export async function analyzeGames(
     }
   }
 
+  // ── Rail 5: filtered-by-audit picks (NEW — Auditoría 2) ────────────────
+  // Picks that survived all upstream gates but failed the quality audit.
+  // Inserted with status='filtered_quality_audit' so they're visible in
+  // /tracker for manual review but never auto-sent to Telegram. Dedup by
+  // espn_event_id+bet_type: if ANY row already exists for this event+
+  // bet_type (any status), skip — historical row is enough.
+  if (filteredAuditRows.length > 0) {
+    const eventIdsToCheck = filteredAuditRows
+      .map((r) => r.espn_event_id)
+      .filter((x): x is string => Boolean(x));
+    const { data: existingForEvents } = await supabase
+      .from('picks')
+      .select('espn_event_id, bet_type')
+      .in('espn_event_id', eventIdsToCheck.length > 0 ? eventIdsToCheck : ['__none__'])
+      .eq('is_parlay', false);
+    const seenEventBetType = new Set<string>(
+      (existingForEvents ?? []).map((e) => `${e.espn_event_id}|${e.bet_type}`),
+    );
+    const toInsertFiltered: PickRow[] = [];
+    for (const r of filteredAuditRows) {
+      const key = `${r.espn_event_id}|${r.bet_type}`;
+      if (r.espn_event_id && seenEventBetType.has(key)) {
+        console.log('[QUALITY_AUDIT_SKIPPED_DUPLICATE]', {
+          espn_event_id: r.espn_event_id,
+          bet_type: r.bet_type,
+          pick: r.pick,
+        });
+        continue;
+      }
+      toInsertFiltered.push(r);
+      if (r.espn_event_id) seenEventBetType.add(key); // dedup within batch too
+    }
+    if (toInsertFiltered.length > 0) {
+      const payload = toInsertFiltered.map((r) => ({ ...r, picks_generated_at: now }));
+      const { error } = await supabase.from('picks').insert(payload);
+      if (error) {
+        console.error('[pickGen] filtered_quality_audit insert failed', error);
+      } else {
+        filteredByAuditCount = toInsertFiltered.length;
+      }
+    }
+  }
+
   console.log(
-    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount} superseded_edge=${supersededEdgeEvaporatedCount} superseded_line=${supersededLineMovedCount} flipped=${flippedSideIgnoredCount}`,
+    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount} superseded_edge=${supersededEdgeEvaporatedCount} superseded_line=${supersededLineMovedCount} flipped=${flippedSideIgnoredCount} filtered_audit=${filteredByAuditCount}`,
   );
 
   return {
@@ -1515,6 +1664,7 @@ export async function analyzeGames(
     supersededEdgeEvaporated: supersededEdgeEvaporatedCount,
     supersededLineMoved: supersededLineMovedCount,
     flippedSideIgnored: flippedSideIgnoredCount,
+    filteredByAudit: filteredByAuditCount,
     supersededList,
   };
 }

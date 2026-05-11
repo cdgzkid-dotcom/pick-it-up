@@ -10,7 +10,8 @@ export type PickStatus =
   | 'superseded_edge_evaporated'
   | 'superseded_flipped_side'
   | 'superseded_line_moved_against'
-  | 'superseded_legacy';
+  | 'superseded_legacy'
+  | 'filtered_quality_audit';
 
 export interface KeyStat {
   label: string;
@@ -72,6 +73,10 @@ export interface Pick {
   original_odds?: number | null;
   reanalysis_count?: number | null;
   lock_reason?: string | null;
+  // Quality-audit failures or warnings stored as string array. Picks with
+  // status='filtered_quality_audit' have failures here; healthy picks
+  // (status='pending') may have non-blocking warnings.
+  audit_failures?: string[] | null;
 }
 
 export interface Bet {

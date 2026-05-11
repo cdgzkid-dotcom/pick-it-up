@@ -23,10 +23,6 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 };
 
-// Sync bootstrap before first paint. Reads cached sunrise/sunset from
-// localStorage (set by ThemeWatcher on prior visits). Falls back to a
-// fixed 7am-8pm window. ThemeWatcher re-evaluates after mount + every 30
-// min using live data from sunrise-sunset.org for Guadalajara.
 const themeBootstrap = `(function(){try{
   var now=Date.now();var isLight;
   var raw=localStorage.getItem('pick-it-up:sun');
@@ -39,8 +35,9 @@ const themeBootstrap = `(function(){try{
     }
   }
   if(isLight===undefined){
-    var h=new Date().getHours();
-    isLight=h>=7&&h<20;
+    var cdmx=new Date(now-21600000);
+    var h=cdmx.getUTCHours()+cdmx.getUTCMinutes()/60;
+    isLight=h>=6.75&&h<19.25;
   }
   document.documentElement.classList.toggle('light',isLight);
 }catch(e){}})();`;

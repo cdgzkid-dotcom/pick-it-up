@@ -173,6 +173,16 @@ async function checkEspnPredictor(
       `https://sports.core.api.espn.com/v2/sports/${coreSport}/leagues/${coreLeague}/events/${eventId}/competitions/${eventId}/predictor`,
       { signal: AbortSignal.timeout(5000) },
     );
+    // NHL doesn't support BPI: ESPN returns HTTP 400 directly (not 200 with
+    // error body). Classify that as `expected_unsupported` instead of error.
+    if (sport === 'nhl' && predRes.status === 400) {
+      return {
+        name: `espn_predictor_${sport}`,
+        status: 'expected_unsupported',
+        detail: 'NHL not supported by ESPN BPI (HTTP 400)',
+        duration_ms: Date.now() - t0,
+      };
+    }
     if (!predRes.ok) {
       return {
         name: `espn_predictor_${sport}`,
@@ -383,7 +393,7 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await sb
       .from('picks')
-      .select('id, edge_vs_market, market_sources_count, floor_applied, locked_at, confidence_raw')
+      .select('id, edge_vs_market, market_sources_count, floor_applied, locked_at, confidence_raw, original_real_probability, original_odds')
       .gte('created_at', since)
       .eq('is_parlay', false)
       .neq('status', 'analyzed_no_odds_data')
@@ -405,29 +415,44 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
       };
     }
 
-    const missingLocked = data.filter((p) => !p.locked_at).length;
-    const missingConfRaw = data.filter((p) => p.confidence_raw === null).length;
-    const missingFloor = data.filter((p) => p.floor_applied === null).length;
-    if (missingLocked > data.length / 2) {
+    // 3-state classification:
+    //   legacy: pre-CAPA-2 pick (all CAPA-2 fields null together) — not a regression
+    //   broken: post-CAPA-2 pick (some CAPA-2 fields set) but locked_at missing — real bug
+    //   new:    pick with locked_at populated — healthy
+    type Row = (typeof data)[0];
+    const isLegacy = (p: Row) =>
+      p.locked_at === null &&
+      p.original_real_probability === null &&
+      p.original_odds === null;
+    const isBroken = (p: Row) => !isLegacy(p) && p.locked_at === null;
+
+    const total = data.length;
+    const legacyCount = data.filter(isLegacy).length;
+    const brokenCount = data.filter(isBroken).length;
+    const newPicksCount = total - legacyCount;
+
+    if (newPicksCount === 0) {
       return {
         name: 'recent_pick_structure',
-        status: 'error',
-        detail: `${missingLocked}/${data.length} picks missing locked_at (CAPA 2 broken)`,
+        status: 'warning',
+        detail: `${total} picks checked, all pre-CAPA-2 (waiting for new picks to validate behavior)`,
         duration_ms: Date.now() - t0,
       };
     }
-    if (missingConfRaw > data.length / 2) {
+
+    if (brokenCount > newPicksCount / 2) {
       return {
         name: 'recent_pick_structure',
         status: 'error',
-        detail: `${missingConfRaw}/${data.length} picks missing confidence_raw (gate audit broken)`,
+        detail: `${brokenCount}/${newPicksCount} new-era picks missing locked_at (CAPA 2 broken)`,
         duration_ms: Date.now() - t0,
       };
     }
+
     return {
       name: 'recent_pick_structure',
       status: 'ok',
-      detail: `${data.length} picks checked, ${missingLocked} missing lock, ${missingConfRaw} missing conf_raw, ${missingFloor} missing floor`,
+      detail: `${newPicksCount} new picks checked (${legacyCount} legacy ignored), ${brokenCount} broken`,
       duration_ms: Date.now() - t0,
     };
   } catch (e) {

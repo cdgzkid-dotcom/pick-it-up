@@ -75,7 +75,13 @@ export default async function StatsPage() {
   const byType = groupBy(settled, (b) => b.bet_type);
   const byTier = groupBy(settled, (b) => b.tier ?? 'unknown');
 
-  const eloBySport = groupBy(elo, (e) => e.sport);
+  const ELO_MIN_GAMES = 20;
+  const eloBySport: Record<string, EloRow[]> = {};
+  for (const [sport, list] of Object.entries(groupBy(elo, (e) => e.sport))) {
+    if (list.some((e) => Number(e.games_played) >= ELO_MIN_GAMES)) {
+      eloBySport[sport] = list;
+    }
+  }
 
   return (
     <div className="space-y-6">

@@ -352,7 +352,7 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     const isTotal = betType === 'total' || betType === 'over' || betType === 'under' || betType.startsWith('o/u');
     if (!isML && !isSpread && !isTotal) continue;
 
-    const status = await fetchEventStatus(bet.sport, bet.espn_event_id);
+    const status = await fetchEventStatus(bet.sport, bet.espn_event_id, bet.game_start_time);
     if (!status || !status.completed) continue;
     if (status.home_score == null || status.away_score == null) continue;
 

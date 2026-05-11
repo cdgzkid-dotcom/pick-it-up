@@ -362,51 +362,129 @@ export async function fetchInjuriesForSports(
   return Object.fromEntries(results);
 }
 
-export async function fetchEventStatus(sport: string, eventId: string): Promise<EventStatus | null> {
+// ── Event status resolution ────────────────────────────────────────────────
+// IMPORTANT: the previous implementation hit
+//   sports.core.api.espn.com/v2/sports/.../events/{id}
+// which returns `$ref` URLs (HATEOAS-style) instead of inline data for
+// `status`, `competitions`, `competitors`, and `score`. The code expected
+// inline objects, so `compStatus?.completed` always came back undefined and
+// `fetchEventStatus` returned `completed: false` for every game — leaving
+// every pending bet stuck forever. No Telegram results, no bankroll updates,
+// no W/L stats.
+//
+// Fix: use the site scoreboard endpoint indexed by date
+//   site.api.espn.com/apis/site/v2/sports/{path}/scoreboard?dates=YYYYMMDD
+// which returns everything inline. We look up the event id across a small
+// date window so bets up to ~2 days stale still resolve.
+//
+// In-memory cache keyed by `${sport}|${ymd}` avoids re-fetching the same
+// scoreboard during a single cron run that resolves multiple bets.
+
+function ymdUTC(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
+
+interface ScoreboardEventLite {
+  id: string;
+  status?: { type?: { state?: string; completed?: boolean } };
+  competitions?: Array<{
+    status?: { type?: { state?: string; completed?: boolean } };
+    competitors?: Array<{
+      homeAway?: 'home' | 'away';
+      score?: string | number | { value?: number; displayValue?: string };
+      team?: { displayName?: string };
+    }>;
+  }>;
+}
+
+const scoreboardCache = new Map<string, ScoreboardEventLite[]>();
+
+async function fetchScoreboardByDate(sport: string, ymd: string): Promise<ScoreboardEventLite[]> {
+  const cfg = SPORTS[sport];
+  if (!cfg) return [];
+  const key = `${sport}|${ymd}`;
+  const cached = scoreboardCache.get(key);
+  if (cached) return cached;
+  const data = await fetchJson<{ events?: ScoreboardEventLite[] }>(
+    `https://site.api.espn.com/apis/site/v2/sports/${cfg.scoreboardPath}/scoreboard?dates=${ymd}`,
+  );
+  const events = data?.events ?? [];
+  scoreboardCache.set(key, events);
+  return events;
+}
+
+export async function fetchEventStatus(
+  sport: string,
+  eventId: string,
+  gameStartTime?: string | null,
+): Promise<EventStatus | null> {
   const cfg = SPORTS[sport];
   if (!cfg) return null;
 
-  const data = await fetchJson<{
-    competitions?: Array<{
-      competitors?: Array<{
-        homeAway?: 'home' | 'away';
-        score?: { value?: number; displayValue?: string } | string;
-        team?: { displayName?: string };
-      }>;
-      status?: { type?: { state?: string; completed?: boolean } };
-    }>;
-    status?: { type?: { state?: string; completed?: boolean } };
-  }>(
-    `https://sports.core.api.espn.com/v2/sports/${cfg.coreSport}/leagues/${cfg.coreLeague}/events/${eventId}`,
-  );
-  if (!data) return null;
-
-  const comp = data.competitions?.[0];
-  const compStatus = comp?.status?.type ?? data.status?.type;
-  const state = compStatus?.state ?? 'unknown';
-  const completed = compStatus?.completed === true || state === 'post';
-
-  let home_score: number | undefined;
-  let away_score: number | undefined;
-  let home_team: string | undefined;
-  let away_team: string | undefined;
-
-  for (const c of comp?.competitors ?? []) {
-    const score =
-      typeof c.score === 'object' && c.score
-        ? Number((c.score.value ?? c.score.displayValue) as number | string)
-        : c.score != null
-        ? Number(c.score)
-        : NaN;
-    const teamName = c.team?.displayName;
-    if (c.homeAway === 'home') {
-      if (Number.isFinite(score)) home_score = score;
-      home_team = teamName;
-    } else if (c.homeAway === 'away') {
-      if (Number.isFinite(score)) away_score = score;
-      away_team = teamName;
+  // Build candidate date list. Prefer the actual game start date ±1 day so
+  // we don't waste calls; otherwise fall back to a now-2 .. now+1 window so
+  // stuck bets up to two days old still get resolved.
+  const dates: string[] = [];
+  const seen = new Set<string>();
+  const push = (d: Date) => {
+    const ymd = ymdUTC(d);
+    if (!seen.has(ymd)) {
+      seen.add(ymd);
+      dates.push(ymd);
+    }
+  };
+  if (gameStartTime) {
+    const start = new Date(gameStartTime);
+    if (!Number.isNaN(start.getTime())) {
+      push(start);
+      push(new Date(start.getTime() + 86_400_000));
+      push(new Date(start.getTime() - 86_400_000));
     }
   }
+  const now = new Date();
+  push(now);
+  push(new Date(now.getTime() - 86_400_000));
+  push(new Date(now.getTime() - 2 * 86_400_000));
+  push(new Date(now.getTime() + 86_400_000));
 
-  return { completed, state, home_score, away_score, home_team, away_team };
+  for (const ymd of dates) {
+    const events = await fetchScoreboardByDate(sport, ymd);
+    const ev = events.find((e) => String(e.id) === String(eventId));
+    if (!ev) continue;
+
+    const comp = ev.competitions?.[0];
+    const compStatus = comp?.status?.type ?? ev.status?.type;
+    const state = compStatus?.state ?? 'unknown';
+    const completed = compStatus?.completed === true || state === 'post';
+
+    let home_score: number | undefined;
+    let away_score: number | undefined;
+    let home_team: string | undefined;
+    let away_team: string | undefined;
+
+    for (const c of comp?.competitors ?? []) {
+      const raw = c.score;
+      const score =
+        typeof raw === 'object' && raw
+          ? Number(raw.value ?? raw.displayValue)
+          : raw != null
+            ? Number(raw)
+            : NaN;
+      const teamName = c.team?.displayName;
+      if (c.homeAway === 'home') {
+        if (Number.isFinite(score)) home_score = score;
+        home_team = teamName;
+      } else if (c.homeAway === 'away') {
+        if (Number.isFinite(score)) away_score = score;
+        away_team = teamName;
+      }
+    }
+
+    return { completed, state, home_score, away_score, home_team, away_team };
+  }
+
+  return null;
 }

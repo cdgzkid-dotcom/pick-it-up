@@ -4,7 +4,20 @@ import { fetchEventStatus } from '@/lib/espn';
 import { potentialWin } from '@/lib/units';
 import { applyResult as applyEloResult } from '@/lib/elo';
 import { updateFactorPerformance } from '@/lib/learning';
+import { sendTelegramMessage, formatResultsMessage } from '@/lib/telegram';
+import { computeStats } from '@/lib/stats';
 import type { Bet } from '@/lib/types';
+
+type ToNotify = {
+  bet_id: string;
+  pick: string;
+  result: 'win' | 'loss';
+  pl: number;
+  is_parlay: boolean;
+  final_score?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+};
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,10 +74,10 @@ export async function POST() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Don't early-return on bets.length === 0 — we still want the retroactive
+  // Telegram catch-up block below to flush any previously resolved-but-not-
+  // notified bets (e.g. when the cron resolved them but the send failed).
   const bets = (pendingBets as Bet[]) ?? [];
-  if (bets.length === 0) {
-    return NextResponse.json({ checked: 0, resolved: 0, resolutions: [] });
-  }
 
   const resolutions: Resolution[] = [];
 
@@ -76,7 +89,7 @@ export async function POST() {
     const isTotal = betType === 'total' || betType === 'over' || betType === 'under' || betType.startsWith('o/u');
     if (!isML && !isSpread && !isTotal) continue; // skip props/parlays/etc
 
-    const status = await fetchEventStatus(bet.sport, bet.espn_event_id);
+    const status = await fetchEventStatus(bet.sport, bet.espn_event_id, bet.game_start_time);
     if (!status || !status.completed) continue;
     if (status.home_score == null || status.away_score == null) continue;
 
@@ -229,9 +242,82 @@ export async function POST() {
     });
   }
 
+  // ── Telegram notification (manual button + retroactive catch-up) ─────────
+  // formatResultsMessage handles win/loss only — push/cashout/early_payout
+  // aren't part of the daily results template, so we filter them out.
+  const toNotify: ToNotify[] = resolutions.map((r) => ({
+    bet_id: r.bet_id,
+    pick: r.pick,
+    result: r.result,
+    pl: r.pl,
+    is_parlay: r.is_parlay,
+    final_score: `${r.away_score}-${r.home_score}`,
+    home_team: r.home_team,
+    away_team: r.away_team,
+  }));
+
+  // Also catch up any previously resolved bets that never made it to Telegram
+  // (e.g., resolved manually before the notification path existed).
+  const { data: unnotified } = await supabase
+    .from('bets')
+    .select('*')
+    .in('result', ['win', 'loss'])
+    .is('result_notified_at', null);
+  for (const b of (unnotified as Bet[]) ?? []) {
+    if (toNotify.some((r) => r.bet_id === b.id)) continue;
+    const amount = Number(b.amount);
+    const payout = Number(b.payout ?? 0);
+    toNotify.push({
+      bet_id: b.id,
+      pick: b.pick,
+      result: b.result === 'win' ? 'win' : 'loss',
+      pl: payout - amount,
+      is_parlay: (b.bet_type as string) === 'Parlay',
+      final_score: b.final_score ?? null,
+      home_team: b.home_team,
+      away_team: b.away_team,
+    });
+  }
+
+  let notified = 0;
+  if (toNotify.length > 0) {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('bankroll_current')
+      .eq('id', 1)
+      .single();
+    const { data: allBets } = await supabase
+      .from('bets')
+      .select('*')
+      .order('created_at', { ascending: false });
+    const stats = computeStats((allBets as Bet[]) ?? []);
+    const todayPl = toNotify.reduce((s, r) => s + r.pl, 0);
+    const bankrollNow = Number(settings?.bankroll_current ?? 0);
+    const bankrollBefore = bankrollNow - todayPl;
+    const text = formatResultsMessage(toNotify, {
+      bankrollCurrent: bankrollNow,
+      bankrollBefore,
+      todayPl,
+      record: { wins: stats.wins, losses: stats.losses },
+      roi: stats.roi,
+    });
+    const send = await sendTelegramMessage(text);
+    if (send.ok) {
+      const ids = toNotify.map((r) => r.bet_id);
+      await supabase
+        .from('bets')
+        .update({ result_notified_at: new Date().toISOString() })
+        .in('id', ids);
+      notified = toNotify.length;
+    } else {
+      console.error('[check-results] telegram send failed', send.error);
+    }
+  }
+
   return NextResponse.json({
     checked: bets.length,
     resolved: resolutions.length,
+    notified,
     resolutions,
   });
 }

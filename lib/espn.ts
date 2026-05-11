@@ -611,7 +611,9 @@ export async function fetchEspnGameOdds(
   if (!primary) return null;
   const homeAm = typeof primary.homeTeamOdds?.moneyLine === 'number' ? primary.homeTeamOdds.moneyLine : null;
   const awayAm = typeof primary.awayTeamOdds?.moneyLine === 'number' ? primary.awayTeamOdds.moneyLine : null;
-  if (homeAm == null && awayAm == null) return null;
+  // Both sides required — the downstream gate in pickGen rejects partial lines anyway,
+  // so collapse "one side present" into the same null outcome for diagnostic clarity.
+  if (homeAm == null || awayAm == null) return null;
   const name = primary.provider?.name ?? 'ESPN';
   return {
     source: name,

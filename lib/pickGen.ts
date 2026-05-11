@@ -715,10 +715,18 @@ export async function analyzeGames(
     const dkOdds = rdMatched.dk_odds as EspnOddsResult | undefined;
     const espnBpi = rdMatched.espn_bpi as EspnPredictor | undefined;
     if (!dkOdds || !dkOdds.home_ml_decimal || !dkOdds.away_ml_decimal) {
+      const missing = !dkOdds
+        ? 'no_dk_odds_object'
+        : !dkOdds.home_ml_decimal && !dkOdds.away_ml_decimal
+          ? 'both_sides_missing'
+          : !dkOdds.home_ml_decimal
+            ? 'home_ml_missing'
+            : 'away_ml_missing';
       console.log('[NO_DK_ODDS]', {
         teams: `${p.away_team}@${p.home_team}`,
         sport: p.sport,
-        reason: 'no DraftKings line available; cannot compute edge',
+        missing,
+        source: dkOdds?.source ?? null,
       });
       reasons.fail_no_dk_odds++;
       if (matchedGame.espn_event_id) {

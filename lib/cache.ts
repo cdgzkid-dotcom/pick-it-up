@@ -18,6 +18,31 @@ interface CacheRow<T = unknown> {
   expires_at: string;
 }
 
+// Maps are not JSON-serializable as own properties: JSON.stringify(new Map([[1,'a']]))
+// returns '{}', which Supabase then stores verbatim. On cache hit, the plain object
+// would be cast back to Map<...> and `.get()` would throw TypeError. Wrap Maps in a
+// small envelope so we can round-trip them through JSONB.
+const MAP_MARK = '__map__';
+
+function pack(value: unknown): unknown {
+  if (value instanceof Map) {
+    return { [MAP_MARK]: Array.from(value.entries()) };
+  }
+  return value;
+}
+
+function unpack<T>(value: unknown): T {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    MAP_MARK in (value as Record<string, unknown>)
+  ) {
+    const entries = (value as Record<string, unknown>)[MAP_MARK] as Array<[unknown, unknown]>;
+    return new Map(entries) as unknown as T;
+  }
+  return value as T;
+}
+
 export async function cached<T>(
   key: string,
   ttlMinutes: number,
@@ -31,7 +56,7 @@ export async function cached<T>(
       .eq('cache_key', key)
       .maybeSingle();
     if (row && new Date((row as CacheRow).expires_at) > new Date()) {
-      return (row as CacheRow<T>).data;
+      return unpack<T>((row as CacheRow).data);
     }
   } catch (e) {
     console.warn(`[cache] read failed for ${key}`, e);
@@ -42,7 +67,7 @@ export async function cached<T>(
   try {
     await supabase.from('data_cache').upsert({
       cache_key: key,
-      data: fresh,
+      data: pack(fresh),
       expires_at: new Date(Date.now() + ttlMinutes * 60_000).toISOString(),
     });
   } catch (e) {

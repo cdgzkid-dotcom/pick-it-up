@@ -59,8 +59,14 @@ export default function UpcomingGames({ games }: Props) {
         const hasLogos = g.away_team_abbr || g.home_team_abbr;
         const [awayName, homeName] = g.game_label.split(/\s+@\s+/);
         const minToStart = Math.round((new Date(g.start_time).getTime() - now) / 60_000);
-        const inWindow = minToStart >= 25 && minToStart <= 50;
-        const picksDueMin = minToStart - 30;
+        // Keep in sync with the cron analyze window in
+        // app/api/cron/analyze/route.ts (WINDOW_MIN_MINUTES /
+        // WINDOW_MAX_MINUTES). Fix A widened that window from 20-45 to 15-60
+        // to catch DK late-publishing; this UI was missed in that commit and
+        // showed "Pendiente" for games 15-24 min from start even though the
+        // cron was actively analyzing them.
+        const inWindow = minToStart >= 15 && minToStart <= 60;
+        const picksDueMin = minToStart - 60;
 
         return (
           <div key={g.espn_event_id} className="bg-card border border-line rounded p-3 space-y-2">

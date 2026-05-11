@@ -19,7 +19,37 @@ import type { SupersededPickForTg } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
+import { runHealthChecks, buildHealthSummary } from '@/lib/healthChecks';
+import type { SystemHealthSummary } from '@/lib/healthChecks';
 import type { Bet, Game } from '@/lib/types';
+
+/**
+ * Compute the system-health summary used as a visible indicator in every
+ * Telegram picks message (Auditoría 5). Bounded by a 5s timeout so a slow
+ * health check (ESPN BPI lag, Anthropic, etc.) NEVER blocks the user from
+ * receiving picks — if we time out, we still surface a yellow indicator
+ * saying so, which is more honest than dropping the indicator silently.
+ *
+ * Side note: runHealthChecks itself uses 5-10s per-check timeouts, but
+ * waiting for all 13 worst-cases would push past the cron's maxDuration.
+ */
+async function computeSystemHealthBounded(timeoutMs = 5000): Promise<SystemHealthSummary> {
+  const timeoutFallback: SystemHealthSummary = {
+    status: 'warning',
+    errors: 0,
+    warnings: 1,
+    errorNames: [],
+    warningNames: ['health_check_timeout'],
+    total: 13,
+    ok: 12,
+  };
+  return Promise.race<SystemHealthSummary>([
+    runHealthChecks().then(buildHealthSummary),
+    new Promise<SystemHealthSummary>((resolve) =>
+      setTimeout(() => resolve(timeoutFallback), timeoutMs),
+    ),
+  ]);
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -232,9 +262,12 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
           : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
       );
     if (supersededNotifiable.length > 0) {
+      // Auditoría 5: compute system health UNA vez aquí — este es uno de los
+      // dos caminos de notificación (el otro es el formatPicksMessage abajo).
+      const systemHealth = await computeSystemHealthBounded();
       const text = formatSupersededOnlyMessage(
         supersededNotifiable,
-        { bankrollCurrent: Number(settings.bankroll_current) },
+        { bankrollCurrent: Number(settings.bankroll_current), systemHealth },
       );
       await sendTelegramMessage(text);
       return {
@@ -258,6 +291,9 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   // Build context (bankroll + record + ROI) for header/footer of the message
   const { data: allBets } = await supabase.from('bets').select('*');
   const stats = computeStats((allBets as Bet[]) ?? []);
+  // Auditoría 5: visible system-health indicator. Bounded by 5s so a stuck
+  // health check never blocks the user from receiving picks.
+  const systemHealth = await computeSystemHealthBounded();
   const ctx = {
     bankrollCurrent: Number(settings.bankroll_current),
     record: { wins: stats.wins, losses: stats.losses },
@@ -279,6 +315,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
             }
           : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
       ),
+    systemHealth,
   };
 
   // Run Monte Carlo on the slate (singles only — parlays already have their

@@ -2,6 +2,8 @@
 // Token + chat id come from env. Uses Markdown legacy parse mode (the simpler
 // variant — no need to escape every punctuation character like MarkdownV2).
 
+import type { SystemHealthSummary } from '@/lib/healthChecks';
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://pick-it-up.vercel.app';
 
 interface SendOptions {
@@ -178,6 +180,33 @@ interface PicksContext {
    * undefined → no block.
    */
   supersededPicks?: SupersededPickForTg[];
+  /** Auditoría 5: visible system health semaphore. If present, rendered as
+   * a coloured line just before the /picks link. The user can decide at
+   * read time whether to trust the picks or check /api/health first.
+   * Omitted → no indicator (used for unit/test paths). */
+  systemHealth?: SystemHealthSummary;
+}
+
+/**
+ * Render the system-health line shown to the user in every Telegram picks
+ * message. Goal: the user must SEE that something is wrong without having
+ * to proactively check /api/health. Names of failing checks are surfaced
+ * (capped at 2 to avoid bloating the message) so the user knows which area
+ * is degraded.
+ *
+ * Layout always starts with `\n\n` so the indicator sits visually separated
+ * from whatever line precedes it (footer bits or supersede block).
+ */
+function renderHealthIndicator(h: SystemHealthSummary): string {
+  if (h.errors > 0) {
+    const details = h.errorNames.slice(0, 2).join(', ');
+    return `\n\n🔴 Sistema crítico: ${details}\n⚠️ NO apostar sin verificar.`;
+  }
+  if (h.warnings > 0) {
+    const details = h.warningNames.slice(0, 2).join(', ');
+    return `\n\n🟡 Sistema degradado: ${details}`;
+  }
+  return `\n\n🟢 Sistema OK (${h.ok}/${h.total} checks)`;
 }
 
 const TIER_LABEL: Record<string, string> = {
@@ -257,6 +286,10 @@ export function formatPicksMessage(
     lines.push(...renderSupersededBlock(ctx.supersededPicks));
   }
 
+  if (ctx.systemHealth) {
+    lines.push(renderHealthIndicator(ctx.systemHealth));
+  }
+
   lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
 
   return lines.join('\n');
@@ -309,7 +342,7 @@ function renderSupersededBlock(items: SupersededPickForTg[]): string[] {
  */
 export function formatSupersededOnlyMessage(
   superseded: SupersededPickForTg[],
-  ctx: { bankrollCurrent?: number } = {},
+  ctx: { bankrollCurrent?: number; systemHealth?: SystemHealthSummary } = {},
 ): string {
   const lines: string[] = [];
   lines.push('⚠️ *PICKS RETIRADOS*');
@@ -320,6 +353,9 @@ export function formatSupersededOnlyMessage(
   if (ctx.bankrollCurrent != null) {
     lines.push('');
     lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)}`);
+  }
+  if (ctx.systemHealth) {
+    lines.push(renderHealthIndicator(ctx.systemHealth));
   }
   lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
   return lines.join('\n');

@@ -56,7 +56,6 @@ export function evaluateBetLive(
       bet.away_team,
     );
     if (!side) return 'unknown';
-    if (homeScore === awayScore) return 'push';
     const winning =
       (side === 'home' && homeScore > awayScore) ||
       (side === 'away' && awayScore > homeScore);

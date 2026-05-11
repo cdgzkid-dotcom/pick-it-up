@@ -196,14 +196,27 @@ export interface AnalyzeResult {
   kellyByKey: Record<string, number>;
   withEdge: number;
   parlayCount: number;
-  /** CAPA-2 counters for the lock-in flow. */
+  /** CAPA-2 + CAPA-3 counters for the lock-in flow. */
   supersededEdgeEvaporated: number;
+  supersededLineMoved: number;
   flippedSideIgnored: number;
   /** Detail of each superseded pick — used by cron to send a standalone
    * Telegram alert when the only thing that happened was a supersede AND
-   * at least one was previously notified. */
-  supersededList: Array<{ pick: string; tier: string | null; was_notified: boolean }>;
+   * at least one was previously notified. Discriminated by `reason`. */
+  supersededList: Array<
+    | { pick: string; tier: string | null; was_notified: boolean; reason: 'edge_evaporated' }
+    | {
+        pick: string;
+        tier: string | null;
+        was_notified: boolean;
+        reason: 'line_moved_against';
+        original_odds: number;
+        current_odds: number;
+      }
+  >;
 }
+/** Convenience alias for one entry in AnalyzeResult.supersededList. */
+export type SupersededEntry = AnalyzeResult['supersededList'][number];
 
 interface PickRow {
   id?: string;
@@ -1127,7 +1140,12 @@ export async function analyzeGames(
   let insertedCount = 0;
   let updatedCount = 0;
   let supersededEdgeEvaporatedCount = 0;
+  let supersededLineMovedCount = 0;
   let flippedSideIgnoredCount = 0;
+  // Accumulator for the supersede list — populated by both the in-loop
+  // CAPA-3 line-moved branch (Rail 3) and the post-loop CAPA-2 orphaned
+  // pass (Rail 4). Declared up here so Rail 3 can push into it.
+  const supersededList: AnalyzeResult['supersededList'] = [];
   const insertedSinglesOut: PickRow[] = [];
   const insertedParlaysOut: PickRow[] = [];
   // Track which espn_event_ids the lock-in flow touched so the supersede
@@ -1184,26 +1202,37 @@ export async function analyzeGames(
   }
 
   // ── Rail 3: lockable singles ML — applyLockIn per row. ─────────────────
-  // Lock-in semantics (CAPA-2):
+  // Lock-in semantics (CAPA-2 + CAPA-3):
   //   • First analysis of an espn_event_id → INSERT with locked_at=now,
   //     original_real_probability=row.real_probability, original_odds=row.odds_decimal,
   //     reanalysis_count=0, lock_reason='first_analysis'.
-  //   • Subsequent analysis SAME SIDE → UPDATE odds/edge/consensus/tier/kelly
-  //     but NEVER touch: pick, real_probability, original_*, locked_at, status.
-  //     Increment reanalysis_count. lock_reason='updated'.
+  //   • Subsequent analysis SAME SIDE → CAPA-3 anti-chase check FIRST:
+  //     if movement_pp_adverse > 0.05 AND edge_anti_chase < 0.02 →
+  //     status='superseded_line_moved_against'. Otherwise UPDATE only
+  //     odds/edge/consensus/tier/kelly; NEVER touch pick, real_probability,
+  //     original_*, locked_at, status. Increment reanalysis_count.
   //   • Subsequent analysis OTHER SIDE → LOG and skip. Locked pick stays.
   //   • status='bet' picks are never modified by lock-in (out of scope).
   type LockAction =
     | { action: 'insert'; row: PickRow }
     | { action: 'update'; existingId: string; row: PickRow }
     | { action: 'skip_flipped'; existingId: string; lockedSide: string; proposedSide: string }
-    | { action: 'skip_already_bet'; existingId: string };
+    | { action: 'skip_already_bet'; existingId: string }
+    | {
+        action: 'superseded_line_moved';
+        existingId: string;
+        lockedSide: string;
+        tier: string | null;
+        originalOdds: number;
+        currentOdds: number;
+        wasNotified: boolean;
+      };
 
   async function applyLockIn(row: PickRow): Promise<LockAction> {
     if (!row.espn_event_id) return { action: 'insert', row };
     const { data: existingPicks } = await supabase
       .from('picks')
-      .select('id, pick, real_probability, original_real_probability, original_odds, status, locked_at, reanalysis_count')
+      .select('id, pick, tier, real_probability, original_real_probability, original_odds, status, locked_at, reanalysis_count, telegram_notified_at')
       .eq('espn_event_id', row.espn_event_id)
       .eq('bet_type', row.bet_type)
       .eq('is_parlay', false)
@@ -1214,8 +1243,38 @@ export async function analyzeGames(
     if (existing.status === 'bet') {
       return { action: 'skip_already_bet', existingId: existing.id };
     }
-    // Same-side update path.
+    // Same-side path: CAPA-3 anti-chase check first, then CAPA-2 update.
     if (existing.pick === row.pick) {
+      const originalOdds = Number(existing.original_odds);
+      const originalRealProb = Number(existing.original_real_probability);
+      const currentOdds = row.odds_decimal;
+      if (
+        Number.isFinite(originalOdds) && originalOdds > 1 &&
+        Number.isFinite(originalRealProb) &&
+        Number.isFinite(currentOdds) && currentOdds > 1
+      ) {
+        // movement_pp_adverse: how much the implied prob FOR OUR SIDE
+        // increased — i.e., book shortened our line, making the bet worse.
+        const originalImplied = 1 / originalOdds;
+        const currentImplied = 1 / currentOdds;
+        const movementPp = currentImplied - originalImplied;
+        // edge_anti_chase: edge of the FROZEN opinion against the CURRENT
+        // line. If frozen prob was 0.72 and DK now implies 0.67, we still
+        // have 5pp edge — fine. If DK shortened to imply 0.75, we have
+        // −3pp — superseded.
+        const edgeAntiChase = originalRealProb - currentImplied;
+        if (movementPp > 0.05 && edgeAntiChase < 0.02) {
+          return {
+            action: 'superseded_line_moved',
+            existingId: existing.id,
+            lockedSide: existing.pick,
+            tier: (existing.tier as string | null) ?? null,
+            originalOdds,
+            currentOdds,
+            wasNotified: !!existing.telegram_notified_at,
+          };
+        }
+      }
       return { action: 'update', existingId: existing.id, row };
     }
     // Flipped side.
@@ -1330,6 +1389,57 @@ export async function analyzeGames(
         proposed_side: decision.proposedSide,
         proposed_real_prob: row.real_probability,
       });
+    } else if (decision.action === 'superseded_line_moved') {
+      // CAPA-3 anti-chase. The DK line has shortened against our locked
+      // side and the frozen probability no longer clears 2pp edge against
+      // the current implied. We mark the pick superseded so the user
+      // doesn't blindly chase the original conviction at worse prices.
+      const { error } = await supabase
+        .from('picks')
+        .update({
+          status: 'superseded_line_moved_against',
+          lock_reason: 'line_moved_against_in_reanalysis',
+          odds_decimal: decision.currentOdds,
+          edge: row.edge,
+          edge_vs_market: row.edge_vs_market,
+          updated_at: now,
+        })
+        .eq('id', decision.existingId);
+      if (error) {
+        console.error('[pickGen] supersede_line_moved update failed', error);
+      } else {
+        // Bump reanalysis_count via two-step read+write (supabase-js has
+        // no atomic increment; this field is audit-only).
+        const { data: cur } = await supabase
+          .from('picks')
+          .select('reanalysis_count')
+          .eq('id', decision.existingId)
+          .single();
+        await supabase
+          .from('picks')
+          .update({ reanalysis_count: (cur?.reanalysis_count ?? 0) + 1 })
+          .eq('id', decision.existingId);
+        supersededLineMovedCount++;
+        supersededList.push({
+          pick: decision.lockedSide,
+          tier: decision.tier,
+          was_notified: decision.wasNotified,
+          reason: 'line_moved_against',
+          original_odds: decision.originalOdds,
+          current_odds: decision.currentOdds,
+        });
+        if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
+        const movementPp = 1 / decision.currentOdds - 1 / decision.originalOdds;
+        console.log('[LOCK_SUPERSEDED_LINE_MOVED]', {
+          pick_id: decision.existingId,
+          pick: decision.lockedSide,
+          espn_event_id: row.espn_event_id,
+          original_odds: decision.originalOdds,
+          current_odds: decision.currentOdds,
+          movement_pp: Number(movementPp.toFixed(4)),
+          was_notified: decision.wasNotified,
+        });
+      }
     } else {
       // skip_already_bet — pick is already a placed bet, untouched.
       if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
@@ -1350,7 +1460,6 @@ export async function analyzeGames(
     games.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x)),
   );
   const orphanedEventIds = Array.from(analyzedEventIds).filter((id) => !touchedEventIds.has(id));
-  const supersededList: AnalyzeResult['supersededList'] = [];
   if (orphanedEventIds.length > 0) {
     // Capture pick + tier + telegram_notified_at BEFORE the update so the
     // cron knows whether each supersede needs a standalone Telegram alert.
@@ -1378,6 +1487,7 @@ export async function analyzeGames(
         pick: o.pick,
         tier: (o.tier as string | null) ?? null,
         was_notified: !!o.telegram_notified_at,
+        reason: 'edge_evaporated',
       });
       console.log('[LOCK_SUPERSEDED_EDGE_EVAPORATED]', {
         pick_id: o.id,
@@ -1391,7 +1501,7 @@ export async function analyzeGames(
   }
 
   console.log(
-    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount} superseded=${supersededEdgeEvaporatedCount} flipped=${flippedSideIgnoredCount}`,
+    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount} superseded_edge=${supersededEdgeEvaporatedCount} superseded_line=${supersededLineMovedCount} flipped=${flippedSideIgnoredCount}`,
   );
 
   return {
@@ -1403,6 +1513,7 @@ export async function analyzeGames(
     withEdge: enrichedSingles.length,
     parlayCount: enrichedParlays.length,
     supersededEdgeEvaporated: supersededEdgeEvaporatedCount,
+    supersededLineMoved: supersededLineMovedCount,
     flippedSideIgnored: flippedSideIgnoredCount,
     supersededList,
   };

@@ -15,6 +15,7 @@ import { fetchGames, fetchInjuriesForSports, fetchEventStatus } from '@/lib/espn
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
 import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines, formatSupersededOnlyMessage } from '@/lib/telegram';
+import type { SupersededPickForTg } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
@@ -216,10 +217,23 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     // already saw in Telegram, we MUST notify — otherwise they might bet on
     // something the system just pulled. Filter to picks that had a non-null
     // telegram_notified_at before the supersede UPDATE (captured upstream).
-    const supersededNotifiable = result.supersededList.filter((s) => s.was_notified);
+    // Pass the full discriminated entry so the message subgroups by reason.
+    const supersededNotifiable = result.supersededList
+      .filter((s) => s.was_notified)
+      .map((s): SupersededPickForTg =>
+        s.reason === 'line_moved_against'
+          ? {
+              pick: s.pick,
+              tier: s.tier,
+              reason: 'line_moved_against',
+              original_odds: s.original_odds,
+              current_odds: s.current_odds,
+            }
+          : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
+      );
     if (supersededNotifiable.length > 0) {
       const text = formatSupersededOnlyMessage(
-        supersededNotifiable.map((s) => ({ pick: s.pick, tier: s.tier })),
+        supersededNotifiable,
         { bankrollCurrent: Number(settings.bankroll_current) },
       );
       await sendTelegramMessage(text);
@@ -250,10 +264,21 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     roi: stats.roi,
     // Only render supersede block inside the normal picks message when at
     // least one of the superseded picks was previously notified — otherwise
-    // the user doesn't know what we're warning about.
+    // the user doesn't know what we're warning about. Discriminated by
+    // reason so the message subgroups (line_moved_against carries odds).
     supersededPicks: result.supersededList
       .filter((s) => s.was_notified)
-      .map((s) => ({ pick: s.pick, tier: s.tier })),
+      .map((s): SupersededPickForTg =>
+        s.reason === 'line_moved_against'
+          ? {
+              pick: s.pick,
+              tier: s.tier,
+              reason: 'line_moved_against',
+              original_odds: s.original_odds,
+              current_odds: s.current_odds,
+            }
+          : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
+      ),
   };
 
   // Run Monte Carlo on the slate (singles only — parlays already have their

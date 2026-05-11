@@ -8,7 +8,8 @@ export type PickStatus =
   | 'analyzed_no_edge'
   | 'analyzed_no_odds_data'
   | 'superseded_edge_evaporated'
-  | 'superseded_flipped_side';
+  | 'superseded_flipped_side'
+  | 'superseded_line_moved_against';
 
 export interface KeyStat {
   label: string;

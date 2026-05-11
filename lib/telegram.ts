@@ -157,15 +157,27 @@ function formatTimeMx(iso?: string | null): string {
   });
 }
 
+/** CAPA-2/3 superseded-pick entry. Discriminated by `reason` so the
+ * line-moved branch carries the odds for display. */
+export type SupersededPickForTg =
+  | { pick: string; tier?: string | null; reason: 'edge_evaporated' }
+  | {
+      pick: string;
+      tier?: string | null;
+      reason: 'line_moved_against';
+      original_odds: number;
+      current_odds: number;
+    };
+
 interface PicksContext {
   bankrollCurrent?: number;
   record?: { wins: number; losses: number };
   roi?: number;
-  /** CAPA-2: picks whose edge evaporated in this cron run (status flipped
-   * to superseded_edge_evaporated). Rendered as a bulleted warning block
-   * before the /picks link so the user sees WHICH picks the system pulled.
+  /** CAPA-2/3: picks the lock-in flow retired this run. Rendered as a
+   * subgrouped warning block before the /picks link. Empty array or
+   * undefined → no block.
    */
-  supersededPicks?: Array<{ pick: string; tier?: string | null }>;
+  supersededPicks?: SupersededPickForTg[];
 }
 
 const TIER_LABEL: Record<string, string> = {
@@ -242,16 +254,47 @@ export function formatPicksMessage(
   if (footerBits.length > 0) lines.push(footerBits.join(' · '));
 
   if (ctx.supersededPicks && ctx.supersededPicks.length > 0) {
-    lines.push('⚠️ Edge evaporó en reanálisis:');
-    for (const s of ctx.supersededPicks) {
-      const tag = s.tier ? ` (era ${TIER_LABEL[s.tier] ?? s.tier.toUpperCase()})` : '';
-      lines.push(`• ${s.pick}${tag}`);
-    }
+    lines.push(...renderSupersededBlock(ctx.supersededPicks));
   }
 
   lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
 
   return lines.join('\n');
+}
+
+function tierTag(tier?: string | null): string {
+  if (!tier) return '';
+  return ` (era ${TIER_LABEL[tier] ?? tier.toUpperCase()}`;
+}
+
+/**
+ * Shared render of the superseded-picks block. Used inline by
+ * formatPicksMessage and as the body of formatSupersededOnlyMessage.
+ * Subgroups by reason:
+ *   "Línea se movió en contra:" lists picks with original→current odds
+ *   "Edge evaporó:"             lists picks without odds (irrelevant)
+ */
+function renderSupersededBlock(items: SupersededPickForTg[]): string[] {
+  const lineMoved = items.filter((s): s is Extract<SupersededPickForTg, { reason: 'line_moved_against' }> => s.reason === 'line_moved_against');
+  const edgeEvap = items.filter((s) => s.reason === 'edge_evaporated');
+  const lines: string[] = ['⚠️ Picks retirados:'];
+  if (lineMoved.length > 0) {
+    lines.push('Línea se movió en contra:');
+    for (const s of lineMoved) {
+      const tag = tierTag(s.tier);
+      const closer = tag ? `${tag}, ${s.original_odds.toFixed(2)} → ${s.current_odds.toFixed(2)})` : ` (${s.original_odds.toFixed(2)} → ${s.current_odds.toFixed(2)})`;
+      lines.push(`• ${s.pick}${closer}`);
+    }
+  }
+  if (edgeEvap.length > 0) {
+    lines.push('Edge evaporó:');
+    for (const s of edgeEvap) {
+      const tag = tierTag(s.tier);
+      const closer = tag ? `${tag})` : '';
+      lines.push(`• ${s.pick}${closer}`);
+    }
+  }
+  return lines;
 }
 
 /**
@@ -260,18 +303,18 @@ export function formatPicksMessage(
  * pick. Without this message the user could place a bet on a pick they saw
  * in Telegram minutes ago, unaware the system pulled it. Filtering of
  * already-notified picks happens upstream — this helper just renders.
+ *
+ * Subgroups by reason (line_moved_against vs edge_evaporated) so the user
+ * understands WHY the pick was pulled.
  */
 export function formatSupersededOnlyMessage(
-  superseded: Array<{ pick: string; tier?: string | null }>,
+  superseded: SupersededPickForTg[],
   ctx: { bankrollCurrent?: number } = {},
 ): string {
   const lines: string[] = [];
-  lines.push('⚠️ *PICKS RETIRADOS* — el edge se evaporó en reanálisis');
+  lines.push('⚠️ *PICKS RETIRADOS*');
   lines.push('');
-  for (const s of superseded) {
-    const tag = s.tier ? ` (era ${TIER_LABEL[s.tier] ?? s.tier.toUpperCase()})` : '';
-    lines.push(`❌ ${s.pick}${tag}`);
-  }
+  lines.push(...renderSupersededBlock(superseded));
   lines.push('');
   lines.push('No apostar a estos picks — el sistema cambió de opinión basado en datos más frescos.');
   if (ctx.bankrollCurrent != null) {

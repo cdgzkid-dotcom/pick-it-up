@@ -15,6 +15,8 @@ import { buildNhlGameContext } from './nhlStats';
 import { buildNbaGameContext } from './nbaStats';
 import { fetchMultiOdds, fetchPlayerProps, findOddsForGame, bestMoneylineByBook, sharpAnalysis } from './oddsApi';
 import type { PropLine } from './oddsApi';
+import { captureOrLoadOpening, computeMovement } from './lineMovement';
+import type { MovementSignal } from './lineMovement';
 import type { Game, Tier } from './types';
 
 const BATCH_SIZE = 2;
@@ -312,21 +314,39 @@ export async function analyzeGames(
       }
 
       // Player props — attach to real_data when available so Claude can
-      // suggest prop bets with actual odds from Odds API.
+      // suggest prop bets with actual odds from Odds API. For MLB we filter
+      // by pitcher name (we know who's starting); for NHL/NBA we filter by
+      // event (props are tagged with the home/away team on the event).
       const props = propsBySport[g.sport];
       if (props && props.length > 0) {
-        // Filter to props relevant to this game's teams (pitcher name matching)
         const rd = g.real_data as Record<string, unknown>;
-        const homePitcher = (rd.homePitcher as { name?: string } | undefined)?.name?.toLowerCase();
-        const awayPitcher = (rd.awayPitcher as { name?: string } | undefined)?.name?.toLowerCase();
-        const relevant = props.filter((p) => {
-          const pn = p.player.toLowerCase();
-          if (homePitcher && pn.includes(homePitcher.split(' ').pop() ?? '')) return true;
-          if (awayPitcher && pn.includes(awayPitcher.split(' ').pop() ?? '')) return true;
-          return false;
-        });
+        const homeLast = g.home_team.toLowerCase().split(/\s+/).pop() ?? '';
+        const awayLast = g.away_team.toLowerCase().split(/\s+/).pop() ?? '';
+        const matchesEvent = (p: PropLine) => {
+          if (!p.event_home || !p.event_away) return false;
+          const eh = p.event_home.toLowerCase();
+          const ea = p.event_away.toLowerCase();
+          return (eh.includes(homeLast) || homeLast.includes(eh.split(' ').pop() ?? ''))
+            && (ea.includes(awayLast) || awayLast.includes(ea.split(' ').pop() ?? ''));
+        };
+
+        let relevant: PropLine[];
+        if (g.sport === 'MLB') {
+          const homePitcher = (rd.homePitcher as { name?: string } | undefined)?.name?.toLowerCase();
+          const awayPitcher = (rd.awayPitcher as { name?: string } | undefined)?.name?.toLowerCase();
+          relevant = props.filter((p) => {
+            if (matchesEvent(p)) return true;
+            const pn = p.player.toLowerCase();
+            if (homePitcher && pn.includes(homePitcher.split(' ').pop() ?? '')) return true;
+            if (awayPitcher && pn.includes(awayPitcher.split(' ').pop() ?? '')) return true;
+            return false;
+          });
+        } else {
+          relevant = props.filter(matchesEvent);
+        }
+
         if (relevant.length > 0) {
-          rd.player_props = relevant.map((p) => ({
+          rd.player_props = relevant.slice(0, 20).map((p) => ({
             player: p.player,
             market: p.market,
             line: p.over_line,
@@ -334,7 +354,43 @@ export async function analyzeGames(
             under_odds: p.under_odds,
             books: p.books.slice(0, 4),
           }));
-          console.log(`[DATA][PROPS] ${g.game_label} ${relevant.length} player props attached`);
+          console.log(`[DATA][PROPS] ${g.sport} ${g.game_label} ${relevant.length} player props attached`);
+        }
+      }
+
+      // ── RLM / line-movement signal ──────────────────────────────────────
+      // Capture opening odds on first sight; compare current vs opening on
+      // subsequent runs. Stored in line_openings table per espn_event_id.
+      if (g.espn_event_id) {
+        const ml = g.odds?.moneyline;
+        const sp = g.odds?.spread;
+        const tot = g.odds?.total;
+        try {
+          const opening = await captureOrLoadOpening(supabase, {
+            espn_event_id: g.espn_event_id,
+            sport: g.sport,
+            game_label: g.game_label,
+            home_team: g.home_team,
+            away_team: g.away_team,
+            home_ml_now: ml?.home ?? null,
+            away_ml_now: ml?.away ?? null,
+            spread_line: sp?.home_line ?? null,
+            spread_home_odds: sp?.home_odds ?? null,
+            total_line: tot?.line ?? null,
+            over_odds: tot?.over ?? null,
+            under_odds: tot?.under ?? null,
+          });
+          if (opening && ml?.home && ml?.away) {
+            const sig = computeMovement(opening, ml.home, ml.away);
+            if (sig) {
+              (g.real_data as Record<string, unknown>).line_movement = sig;
+              console.log(
+                `[DATA][RLM] ${g.game_label} rlm=${sig.rlm} steam=${sig.steam_side ?? '∅'} trap_side=${sig.rlm_trap_side ?? '∅'} home Δ=${(sig.home_delta ?? 0 * 100).toFixed(1)}% away Δ=${(sig.away_delta ?? 0 * 100).toFixed(1)}%`,
+              );
+            }
+          }
+        } catch (e) {
+          console.warn(`[pickGen] line movement capture failed for ${g.game_label}`, e);
         }
       }
     }),
@@ -476,9 +532,26 @@ export async function analyzeGames(
       }
     }
 
+    // Server-side RLM trap override. If the line moved against the public on
+    // the OTHER side (sharps on dog) and we're picking the favorite side that
+    // got the public action, flag this pick as a possible trap regardless of
+    // what Claude said. We never *clear* an existing trap_warning, only add.
+    let rlmTrapNote: string | null = null;
+    const lm = (matchedGameForOdds?.real_data as Record<string, unknown> | undefined)?.line_movement as MovementSignal | undefined;
+    if (lm && lm.rlm && lm.rlm_trap_side) {
+      if ((isHome && lm.rlm_trap_side === 'home') || (isAway && lm.rlm_trap_side === 'away')) {
+        rlmTrapNote = `Reverse line movement: dinero sharp en el otro lado — línea se movió ${
+          lm.rlm_trap_side === 'home'
+            ? `${lm.away_ml_open?.toFixed(2)}→${lm.away_ml_now.toFixed(2)} (visitante)`
+            : `${lm.home_ml_open?.toFixed(2)}→${lm.home_ml_now.toFixed(2)} (local)`
+        }`;
+      }
+    }
+    const mergedTrap = [p.trap_warning, rlmTrapNote].filter(Boolean).join(' · ') || null;
+
     const baseTier: Tier = tierFromConfidence(conf);
     const adjustedTier = tierForOdds(baseTier, odds);
-    const hasTrap = !!p.trap_warning;
+    const hasTrap = !!mergedTrap;
     const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
     const score = adjustedEdgeScore(p.real_probability, odds);
     const homeAbbr =
@@ -494,6 +567,7 @@ export async function analyzeGames(
     );
     return {
       ...p,
+      trap_warning: mergedTrap,
       confidence: conf, // floor-adjusted (overrides Claude's timidity)
       home_team_abbr: homeAbbr,
       away_team_abbr: awayAbbr,

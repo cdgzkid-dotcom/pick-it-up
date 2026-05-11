@@ -134,63 +134,98 @@ export function bestMoneylineByBook(rows: MultiOddsRow[]): { home?: BestOdds; aw
 export interface PropLine {
   player: string;
   market: string;
+  /** Home team name of the event this prop belongs to — used to join with games. */
+  event_home?: string;
+  event_away?: string;
   over_line?: number;
   over_odds?: number;
   under_odds?: number;
   books: Array<{ source: string; over_odds?: number; under_odds?: number; line?: number }>;
 }
 
-const MLB_PROP_MARKETS = [
-  'pitcher_strikeouts',
-  'batter_home_runs',
-  'batter_hits',
-  'batter_total_bases',
-];
+const PROP_MARKETS_BY_SPORT: Record<string, string[]> = {
+  MLB: ['pitcher_strikeouts', 'batter_home_runs', 'batter_hits', 'batter_total_bases'],
+  NHL: ['player_shots_on_goal', 'player_goals', 'player_assists', 'player_points'],
+  NBA: ['player_points', 'player_rebounds', 'player_assists', 'player_threes'],
+};
 
 export async function fetchPlayerProps(sport: string): Promise<PropLine[] | null> {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) return null;
   const sportKey = SPORT_KEYS[sport];
-  if (!sportKey || sport !== 'MLB') return null;
+  const markets = PROP_MARKETS_BY_SPORT[sport];
+  if (!sportKey || !markets) return null;
 
   return cached(`props:${sportKey}`, 5, async () => {
     try {
-      const markets = MLB_PROP_MARKETS.join(',');
-      const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds?apiKey=${apiKey}&regions=us&markets=${markets}&oddsFormat=decimal`;
-      const r = await fetch(url, { next: { revalidate: 300 } });
-      if (!r.ok) {
-        console.warn(`[odds/props] ${sport} ${r.status}`);
+      // Most sportsbooks expose props per-event, not on the season-wide
+      // /odds endpoint. We need to: (1) list events to get IDs, (2) hit
+      // each event's /odds with the prop markets.
+      const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}`;
+      const evRes = await fetch(eventsUrl, { next: { revalidate: 300 } });
+      if (!evRes.ok) {
+        console.warn(`[odds/props] ${sport} events list ${evRes.status}`);
         return null;
       }
-      const events = (await r.json()) as OddsApiEvent[];
-      if (!events || events.length === 0) return null;
+      const eventList = (await evRes.json()) as Array<{ id: string; home_team: string; away_team: string }>;
+      if (!eventList || eventList.length === 0) return null;
 
+      // Cap to 8 events so we don't burn through quota on slow days.
+      const targets = eventList.slice(0, 8);
       const lines: PropLine[] = [];
-      for (const ev of events) {
-        for (const bm of ev.bookmakers) {
-          for (const m of bm.markets) {
-            if (!MLB_PROP_MARKETS.includes(m.key)) continue;
-            const byPlayer = new Map<string, { over?: { price: number; point?: number }; under?: { price: number; point?: number } }>();
-            for (const o of m.outcomes) {
-              const existing = byPlayer.get(o.name) ?? {};
-              const desc = ((o as Record<string, unknown>).description as string | undefined)?.toLowerCase();
-              if (desc === 'over') existing.over = { price: o.price, point: o.point };
-              else if (desc === 'under') existing.under = { price: o.price, point: o.point };
-              byPlayer.set(o.name, existing);
-            }
-            byPlayer.forEach((sides, player) => {
-              let line = lines.find((l) => l.player === player && l.market === m.key);
-              if (!line) {
-                line = { player, market: m.key, over_line: sides.over?.point, over_odds: sides.over?.price, under_odds: sides.under?.price, books: [] };
-                lines.push(line);
+
+      await Promise.all(
+        targets.map(async (evMeta) => {
+          try {
+            const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${evMeta.id}/odds?apiKey=${apiKey}&regions=us&markets=${markets.join(',')}&oddsFormat=decimal`;
+            const r = await fetch(url, { next: { revalidate: 300 } });
+            if (!r.ok) return;
+            const ev = (await r.json()) as OddsApiEvent;
+            for (const bm of ev.bookmakers ?? []) {
+              for (const m of bm.markets) {
+                if (!markets.includes(m.key)) continue;
+                const byPlayer = new Map<string, { over?: { price: number; point?: number }; under?: { price: number; point?: number } }>();
+                for (const o of m.outcomes) {
+                  // The Odds API per-event format: outcome.name is "Over"/"Under",
+                  // description is the player name. Fall back to legacy shape too.
+                  const desc = ((o as Record<string, unknown>).description as string | undefined) ?? '';
+                  const player = desc || o.name;
+                  const sideName = (desc ? o.name : ((o as Record<string, unknown>).description as string | undefined) ?? '').toLowerCase();
+                  const existing = byPlayer.get(player) ?? {};
+                  if (sideName.includes('over') || (!desc && o.name.toLowerCase().includes('over'))) {
+                    existing.over = { price: o.price, point: o.point };
+                  } else if (sideName.includes('under') || (!desc && o.name.toLowerCase().includes('under'))) {
+                    existing.under = { price: o.price, point: o.point };
+                  }
+                  byPlayer.set(player, existing);
+                }
+                byPlayer.forEach((sides, player) => {
+                  let line = lines.find((l) => l.player === player && l.market === m.key && l.event_home === evMeta.home_team);
+                  if (!line) {
+                    line = {
+                      player,
+                      market: m.key,
+                      event_home: evMeta.home_team,
+                      event_away: evMeta.away_team,
+                      over_line: sides.over?.point,
+                      over_odds: sides.over?.price,
+                      under_odds: sides.under?.price,
+                      books: [],
+                    };
+                    lines.push(line);
+                  }
+                  line.books.push({ source: bm.title, over_odds: sides.over?.price, under_odds: sides.under?.price, line: sides.over?.point ?? sides.under?.point });
+                });
               }
-              line.books.push({ source: bm.title, over_odds: sides.over?.price, under_odds: sides.under?.price, line: sides.over?.point ?? sides.under?.point });
-            });
+            }
+          } catch (e) {
+            console.warn(`[odds/props] ${sport} event ${evMeta.id} failed`, e);
           }
-        }
-      }
+        }),
+      );
+
       if (lines.length > 0) {
-        console.log(`[odds/props] ${sport} found ${lines.length} prop lines`);
+        console.log(`[odds/props] ${sport} found ${lines.length} prop lines across ${targets.length} events`);
       }
       return lines.length > 0 ? lines : null;
     } catch (e) {

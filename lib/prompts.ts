@@ -246,15 +246,35 @@ mínimo 70 (server-side, después de tu respuesta). Mejor calibrar tú.
 Cuando el input incluye "player_props" en real_data con momios reales:
 - Evaluar props como picks formales con bet_type="Prop"
 - Calcular edge: sharp_prob vs implied del momio del prop
-- Ejemplo: pitcher con K/9 10.2 vs equipo que poncha 25.5%, line Over 5.5 @ 1.85
+- MLB: pitcher_strikeouts, batter_home_runs, batter_hits, batter_total_bases
+  Ejemplo: pitcher con K/9 10.2 vs equipo que poncha 25.5%, line Over 5.5 @ 1.85
   → prob real ~62%, implied 54% → edge +8% → PICK formal
-- Incluir en picks[] con odds_decimal del prop y pick como "Steele Over 5.5 K"
+- NHL: player_shots_on_goal, player_goals, player_points, player_assists
+  Usar shotsForPerGame del equipo + posición del jugador (top-line forward
+  vs 4th line). Goalie con sv% .910 vs equipo top-5 ofensivo = under shots OK.
+- NBA: player_points, player_rebounds, player_assists, player_threes
+  Usar ritmo del juego (pace), uso esperado del jugador, matchup defensivo
+  (defRtg del rival). Star vs equipo bottom-5 def_rtg → over points OK.
+- Incluir en picks[] con odds_decimal del prop y pick como "McDavid Over 4.5 SOG"
 
 Cuando NO hay momios de props en el input:
 - Si pitcher tiene K/9 > 9.0 vs lineup con strikeout rate > 23%, sugerir
   en analysis: "Prop sugerido: <pitcher> strikeouts Over <line> — verificar
   momio en Draftea"
 - NO como pick formal (sin momio no podemos calcular edge)
+
+== REVERSE LINE MOVEMENT (RLM) ==
+Cuando el input incluye "line_movement" en real_data con rlm=true:
+- Significa que la línea se movió a favor del underdog (sharps en el dog
+  contra la opinión pública).
+- El campo rlm_trap_side indica qué lado es la posible trampa (el favorito
+  que recibió el dinero público).
+- Si tu pick coincide con rlm_trap_side, OBLIGATORIO poner trap_warning
+  citando el movimiento de línea. El servidor también lo añade
+  automáticamente pero tu narrativa debe reconocerlo.
+- Si tu pick coincide con el lado opuesto (el sharp side), es señal extra
+  de calidad — menciónalo en analysis: "Sharps están con nosotros (línea
+  se movió X.XX → Y.YY)".
 
 == CALIBRACIÓN DE CONFIDENCE — NO SEAS TÍMIDO ==
 Históricamente has estado pegado en 55-65% para todo. Eso es indecisión. Calibra:

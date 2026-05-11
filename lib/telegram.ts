@@ -53,7 +53,8 @@ interface PickForMessage {
   bet_type: string;
   odds_decimal: number;
   edge?: number | null;
-  edge_vs_sharp?: number | null;
+  edge_vs_market?: number | null;
+  market_sources_count?: number | null;
   recommended_amount?: number | null;
   kelly_fraction?: number | null;
   trap_warning?: string | null;
@@ -185,16 +186,18 @@ export function formatPicksMessage(
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
     const edgePct = p.edge != null ? `${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : null;
     const realPct = p.real_probability != null ? `${Math.round(p.real_probability * 100)}%` : null;
-    const sharpTag =
-      p.edge_vs_sharp != null && p.edge_vs_sharp > 0 ? ' vs Pinnacle' : '';
+    const marketTag =
+      p.edge_vs_market != null && p.edge_vs_market > 0 && (p.market_sources_count ?? 0) >= 2
+        ? ' vs mercado'
+        : '';
     const bookTag = p.best_odds_source ? ` (${p.best_odds_source})` : '';
 
     lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
     lines.push(`${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
     if (edgePct && realPct) {
-      lines.push(`📊 Edge: ${edgePct}${sharpTag} · Prob: ${realPct}`);
+      lines.push(`📊 Edge: ${edgePct}${marketTag} · Prob: ${realPct}`);
     } else if (edgePct) {
-      lines.push(`📊 Edge: ${edgePct}${sharpTag}`);
+      lines.push(`📊 Edge: ${edgePct}${marketTag}`);
     }
     if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
     if (p.odds_comparison && p.odds_comparison.length >= 2) {

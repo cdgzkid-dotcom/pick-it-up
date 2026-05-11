@@ -76,8 +76,9 @@ export function extractFactors(pick: PickWithFactors): FactorMap {
     pitcher_era_under_4: statMatch(stats, 'ERA', (v) => v < 4.0),
     pitcher_k9_over_9: statMatch(stats, 'K/9', (v) => v > 9.0),
 
-    sharp_confirms:
-      edge > 0.03 && pick.best_odds_source != null && pick.best_odds_source !== 'pinnacle',
+    // Renamed from sharp_confirms (Pinnacle-based, dead). Now reflects whether
+    // both market sources (DraftKings ML + ESPN BPI) agreed on the edge.
+    market_consensus_ok: (pick.market_sources_count ?? 0) >= 2,
     edge_over_5: edge > 0.05,
     edge_over_7: edge > 0.07,
 

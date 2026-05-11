@@ -573,3 +573,94 @@ export async function fetchLiveStatus(
   }
   return null;
 }
+
+// ── Market consensus sources ──────────────────────────────────────────────
+// Two zero-key, zero-quota inputs used by the floor-promotion gate:
+//   (1) DraftKings moneyline via ESPN /odds — market proxy
+//   (2) ESPN BPI gameProjection via /predictor — analytical proxy
+// Both consumed by lib/edge.computeMarketConsensus and the gate in pickGen.
+
+/** Normalize ESPN provider names to a stable slug. "Draft Kings" → "draftkings". */
+function normalizeProviderSlug(name: string | undefined): string {
+  if (!name) return 'unknown';
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+export interface EspnOddsResult {
+  source: string; // raw provider name e.g. "Draft Kings"
+  source_slug: string; // normalized e.g. "draftkings"
+  home_ml_american: number | null;
+  away_ml_american: number | null;
+  home_ml_decimal: number | null;
+  away_ml_decimal: number | null;
+}
+
+/**
+ * Fetch moneyline odds from ESPN /odds. ESPN's response inlines provider,
+ * homeTeamOdds.moneyLine, awayTeamOdds.moneyLine at the list level — no
+ * $ref-follow needed. Reuses the existing fetchCoreOdds helper and picks
+ * the first non-live provider with valid ML.
+ */
+export async function fetchEspnGameOdds(
+  sport: string,
+  eventId: string,
+): Promise<EspnOddsResult | null> {
+  const items = await fetchCoreOdds(sport, eventId, eventId);
+  if (items.length === 0) return null;
+  const primary = pickPrimaryOdds(items);
+  if (!primary) return null;
+  const homeAm = typeof primary.homeTeamOdds?.moneyLine === 'number' ? primary.homeTeamOdds.moneyLine : null;
+  const awayAm = typeof primary.awayTeamOdds?.moneyLine === 'number' ? primary.awayTeamOdds.moneyLine : null;
+  if (homeAm == null && awayAm == null) return null;
+  const name = primary.provider?.name ?? 'ESPN';
+  return {
+    source: name,
+    source_slug: normalizeProviderSlug(name),
+    home_ml_american: homeAm,
+    away_ml_american: awayAm,
+    home_ml_decimal: americanToDecimal(homeAm),
+    away_ml_decimal: americanToDecimal(awayAm),
+  };
+}
+
+export interface EspnPredictor {
+  home_win_prob: number; // 0-100
+  away_win_prob: number; // 0-100
+}
+
+/**
+ * ESPN BPI game projection (NBA, MLB, NFL). NHL returns
+ * `{error:{message:"Predictor is not supported..."}}` — we treat that as
+ * null and let the gate fall back to single-source behavior. One side may
+ * be missing in the response (common in NBA); we derive the other as
+ * `100 - given`.
+ */
+export async function fetchEspnPredictor(
+  sport: string,
+  eventId: string,
+): Promise<EspnPredictor | null> {
+  const cfg = SPORTS[sport];
+  if (!cfg) return null;
+
+  const data = await fetchJson<{
+    error?: unknown;
+    homeTeam?: { statistics?: Array<{ name?: string; value?: number }> };
+    awayTeam?: { statistics?: Array<{ name?: string; value?: number }> };
+  }>(
+    `https://sports.core.api.espn.com/v2/sports/${cfg.coreSport}/leagues/${cfg.coreLeague}/events/${eventId}/competitions/${eventId}/predictor`,
+  );
+  if (!data || data.error) return null;
+
+  const findProj = (team?: { statistics?: Array<{ name?: string; value?: number }> }) => {
+    const stat = team?.statistics?.find((s) => s.name === 'gameProjection');
+    return typeof stat?.value === 'number' ? stat.value : null;
+  };
+
+  let homeProb = findProj(data.homeTeam);
+  let awayProb = findProj(data.awayTeam);
+  if (homeProb == null && awayProb == null) return null;
+  if (homeProb != null && awayProb == null) awayProb = 100 - homeProb;
+  else if (awayProb != null && homeProb == null) homeProb = 100 - awayProb;
+  if (homeProb == null || awayProb == null) return null;
+  return { home_win_prob: homeProb, away_win_prob: awayProb };
+}

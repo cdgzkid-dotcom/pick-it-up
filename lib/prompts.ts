@@ -21,14 +21,14 @@ PARA CADA JUEGO DEBES ANALIZAR TODO LO SIGUIENTE:
 - Record como favorito vs como underdog esta temporada
 - Primer juego de road trip vs último juego (fatiga acumulada)
 
-== ANÁLISIS SHARP (PINNACLE) ==
-Cuando el input incluye un campo "sharp" en real_data:
-- Pinnacle es la casa más sharp del mundo (límites altos, margin baja). Su precio = consenso del dinero inteligente.
-- "sharp_prob_home" / "sharp_prob_away" son las probabilidades reales que ESPN/Vegas implícitamente cree.
-- Si tu análisis de stats COINCIDE con Pinnacle → ALTA confianza, súbele al tier.
-- Si tu análisis DIFIERE mucho de Pinnacle (>5% diferencia en prob) → probablemente te falta data; BÁJALE confidence o descártalo.
-- "best_home" / "best_away" indican qué casa pública paga más que Pinnacle (edge vs sharp). Si es >3%, considéralo bonus al edge total.
-- Recomendar apostar en la casa con mejor línea, no necesariamente la primera disponible.
+== CONTEXTO DE MERCADO ==
+Cuando el input incluye "dk_odds" (DraftKings ML) o "espn_bpi" (ESPN BPI gameProjection) en real_data:
+- DraftKings ML refleja el precio actual del mercado público; su prob implícita es lo que la casa cree.
+- ESPN BPI gameProjection es un modelo analítico independiente (no de mercado); su prob es complementaria.
+- Si tu prob real COINCIDE con AMBAS (≤2pp diferencia) → alta confianza, sistema promueve tier server-side automáticamente cuando edge >5% Y edge_vs_market ≥2%.
+- Si tu prob real DIFIERE >5pp de ambas → probablemente te falta data; baja confidence o descarta.
+- Si SOLO ESPN BPI está (NHL): el sistema bloquea promoción automática — tier saldrá de tu confidence orgánico únicamente.
+- NO inventes ni asumas un análisis "sharp" — esos datos ya no se pasan al prompt.
 
 == MERCADOS DISPONIBLES ==
 Mercados a considerar: ML (moneyline), Spread/Run Line, Total Over/Under.
@@ -243,25 +243,13 @@ automático: edge>7% sin trap fuerza mínimo 85, edge>5% sin trap fuerza
 mínimo 70 (server-side, después de tu respuesta). Mejor calibrar tú.
 
 == PLAYER PROPS ==
-Cuando el input incluye "player_props" en real_data con momios reales:
-- Evaluar props como picks formales con bet_type="Prop"
-- Calcular edge: sharp_prob vs implied del momio del prop
-- MLB: pitcher_strikeouts, batter_home_runs, batter_hits, batter_total_bases
-  Ejemplo: pitcher con K/9 10.2 vs equipo que poncha 25.5%, line Over 5.5 @ 1.85
-  → prob real ~62%, implied 54% → edge +8% → PICK formal
-- NHL: player_shots_on_goal, player_goals, player_points, player_assists
-  Usar shotsForPerGame del equipo + posición del jugador (top-line forward
-  vs 4th line). Goalie con sv% .910 vs equipo top-5 ofensivo = under shots OK.
-- NBA: player_points, player_rebounds, player_assists, player_threes
-  Usar ritmo del juego (pace), uso esperado del jugador, matchup defensivo
-  (defRtg del rival). Star vs equipo bottom-5 def_rtg → over points OK.
-- Incluir en picks[] con odds_decimal del prop y pick como "McDavid Over 4.5 SOG"
-
-Cuando NO hay momios de props en el input:
-- Si pitcher tiene K/9 > 9.0 vs lineup con strikeout rate > 23%, sugerir
-  en analysis: "Prop sugerido: <pitcher> strikeouts Over <line> — verificar
-  momio en Draftea"
-- NO como pick formal (sin momio no podemos calcular edge)
+Los momios de props ya no se traen al input (The Odds API se descartó).
+- NO devolver picks formales con bet_type="Prop"; sin momio real no hay edge.
+- SÍ usar el analysis para sugerir props cuando un factor lo justifique:
+  · MLB: pitcher con K/9 > 9.0 vs lineup con strikeout rate > 23% → sugerir
+    "Prop sugerido: <pitcher> strikeouts Over <line> — verificar momio en Draftea"
+  · NBA: star vs equipo bottom-5 defRtg → sugerir "over points"
+  · NHL: top-line forward vs goalie con sv% débil → sugerir "shots on goal Over"
 
 == REVERSE LINE MOVEMENT (RLM) ==
 Cuando el input incluye "line_movement" en real_data con rlm=true:

@@ -36,6 +36,12 @@ export interface Pick {
   real_probability?: number | null;
   implied_probability?: number | null;
   edge?: number | null;
+  edge_vs_market?: number | null;
+  market_consensus_implied?: number | null;
+  market_sources_count?: number | null;
+  market_sources?: string[] | null;
+  floor_applied?: 'lock' | 'strong' | 'none' | null;
+  confidence_raw?: number | null;
   recommended_amount?: number | null;
   analysis?: string | null;
   risk_factors?: string | null;

@@ -5,8 +5,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { callClaudeJson } from './claude';
-import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from './prompts';
-import { adjustedEdgeScore, edgeOf, impliedProbability, computeMarketConsensus } from './edge';
+import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SUNSET } from './prompts';
+import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
 import type { MarketSource } from './edge';
 import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence } from './units';
 import { getRatingsForGames } from './elo';
@@ -35,6 +35,31 @@ const KeyStatSchema = z.object({
   flag: z.enum(['green', 'yellow', 'red']).optional().nullable(),
 });
 
+// CAPA 1: schema where Claude returns probabilities for BOTH sides and lets
+// the server pick the actual side / compute edge / assign tier.
+const ClaudeProbabilitySchema = z.object({
+  sport: z.string(),
+  league: z.string().optional().nullable(),
+  home_team: z.string(),
+  away_team: z.string(),
+  home_team_abbr: z.string().optional().nullable(),
+  away_team_abbr: z.string().optional().nullable(),
+  real_probability_home: z.coerce.number().min(0).max(1),
+  real_probability_away: z.coerce.number().min(0).max(1),
+  confidence: z.coerce.number().int().min(0).max(100),
+  analysis: z.string().optional().nullable(),
+  risk_factors: z.string().optional().nullable(),
+  injuries: z.string().optional().nullable(),
+  key_stats: z.array(KeyStatSchema).optional().nullable(),
+  regression_flags: z.string().optional().nullable(),
+  trap_warning: z.string().optional().nullable(),
+  line_movement_note: z.string().optional().nullable(),
+});
+export type ClaudeProbabilityPick = z.infer<typeof ClaudeProbabilitySchema>;
+
+// LEGACY: schema where Claude returned a single pick text + odds_decimal.
+// Kept only for backward-compatibility during transition. Trips an explicit
+// throw after `LEGACY_SCHEMA_SUNSET` so we don't carry it forever.
 const ClaudePickSchema = z.object({
   sport: z.string(),
   league: z.string().optional().nullable(),
@@ -80,12 +105,82 @@ const ClaudeParlaySchema = z.object({
   analysis: z.string().optional().nullable(),
 });
 
+// CAPA 1 response wrapper. Claude only returns `picks`; counts and parlays
+// are derived server-side (counts are logged from the audit pass, parlays
+// are generated post-mapping). Removing analyzed_count/discarded_count from
+// the contract avoids Claude hallucinating numbers or pre-filtering picks
+// that should reach the server.
+const ClaudeProbabilityResponseSchema = z.object({
+  picks: z.array(ClaudeProbabilitySchema).default([]),
+});
+
+// Legacy response shape — kept for fallback parsing only.
 const ClaudeResponseSchema = z.object({
   analyzed_count: z.coerce.number().int().optional(),
   discarded_count: z.coerce.number().int().optional(),
   picks: z.array(ClaudePickSchema).default([]),
   parlays: z.array(ClaudeParlaySchema).optional().default([]),
 });
+
+/**
+ * Parse Claude's response, preferring the new probability schema. If parse
+ * fails, attempts to adapt a legacy {pick, odds_decimal} response into the
+ * new shape — but ONLY if the sunset date hasn't passed. After sunset, an
+ * explicit error is thrown so the legacy compatibility branch can't silently
+ * keep masking a regressed prompt.
+ */
+function parseClaudeResponse(claudeOutput: unknown, batchIdx: number): ClaudeProbabilityPick[] | null {
+  const newAttempt = ClaudeProbabilityResponseSchema.safeParse(claudeOutput);
+  if (newAttempt.success) return newAttempt.data.picks;
+
+  // Try legacy schema as fallback.
+  const legacyAttempt = ClaudeResponseSchema.safeParse(claudeOutput);
+  if (!legacyAttempt.success) {
+    console.error(
+      `[AUDIT][batch ${batchIdx}] VALIDATION FAILED — neither new nor legacy schema matched`,
+      JSON.stringify(newAttempt.error.flatten()),
+    );
+    return null;
+  }
+
+  const now = new Date();
+  if (now >= LEGACY_SCHEMA_SUNSET) {
+    throw new Error(
+      `Legacy Claude schema detected after sunset ${LEGACY_SCHEMA_SUNSET.toISOString()}. ` +
+        `Prompt regressed — fix prompts.ts so Claude returns the CAPA-1 probability schema.`,
+    );
+  }
+  const daysUntilSunset = Math.ceil((LEGACY_SCHEMA_SUNSET.getTime() - now.getTime()) / 86_400_000);
+  console.warn(
+    `[SCHEMA_FALLBACK] batch ${batchIdx} parsed via legacy schema. ${legacyAttempt.data.picks.length} picks adapted. days_until_sunset=${daysUntilSunset}`,
+  );
+
+  // Adapt legacy → new: derive home/away probabilities from the picked side.
+  return legacyAttempt.data.picks.map((p) => {
+    const pickLower = p.pick.toLowerCase();
+    const homeLast = p.home_team.split(/\s+/).pop()?.toLowerCase() ?? '';
+    const isHome = homeLast.length >= 3 && pickLower.includes(homeLast);
+    const home = isHome ? p.real_probability : 1 - p.real_probability;
+    return {
+      sport: p.sport,
+      league: p.league ?? null,
+      home_team: p.home_team,
+      away_team: p.away_team,
+      home_team_abbr: p.home_team_abbr ?? null,
+      away_team_abbr: p.away_team_abbr ?? null,
+      real_probability_home: home,
+      real_probability_away: 1 - home,
+      confidence: p.confidence,
+      analysis: p.analysis ?? null,
+      risk_factors: p.risk_factors ?? null,
+      injuries: p.injuries ?? null,
+      key_stats: p.key_stats ?? null,
+      regression_flags: p.regression_flags ?? null,
+      trap_warning: p.trap_warning ?? null,
+      line_movement_note: p.line_movement_note ?? null,
+    };
+  });
+}
 
 export interface AnalyzeOpts {
   bankroll: number;
@@ -374,40 +469,33 @@ export async function analyzeGames(
             buildPickGenerationUserPrompt(b) + learnedWeights,
             { retry: false, maxTokens: 4096 },
           );
-          const validated = ClaudeResponseSchema.safeParse(claudeOutput);
-          if (!validated.success) {
-            console.error(`[AUDIT][batch ${i}] VALIDATION FAILED`, JSON.stringify(validated.error.flatten()));
+          const parsedPicks = parseClaudeResponse(claudeOutput, i);
+          if (parsedPicks == null) {
             console.error(`[AUDIT][batch ${i}] raw output sample:`, JSON.stringify(claudeOutput).slice(0, 1500));
-            return { picks: [], parlays: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
+            return { picks: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
           }
-          // AUDIT: log every pick Claude returned for this batch with raw fields
           console.log(
-            `[AUDIT][batch ${i}] input games=${b.length} (${b.map((g) => `${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(',')}) → claude returned ${validated.data.picks.length} picks ${validated.data.parlays.length} parlays in ${Date.now() - tStart}ms`,
+            `[AUDIT][batch ${i}] input games=${b.length} (${b.map((g) => `${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(',')}) → claude returned ${parsedPicks.length} picks in ${Date.now() - tStart}ms`,
           );
-          for (const p of validated.data.picks) {
+          for (const p of parsedPicks) {
             console.log(
-              `[AUDIT][batch ${i}] pick raw: ${p.pick} (${p.sport}) tier=${p.tier ?? '∅'} conf=${p.confidence} real=${(p.real_probability * 100).toFixed(1)}% odds=${p.odds_decimal} claude_edge=${p.edge ?? '∅'} trap=${p.trap_warning ? 'YES' : 'no'}`,
+              `[AUDIT][batch ${i}] pick raw: ${p.away_team} @ ${p.home_team} (${p.sport}) conf=${p.confidence} home_p=${(p.real_probability_home * 100).toFixed(1)}% away_p=${(p.real_probability_away * 100).toFixed(1)}% trap=${p.trap_warning ? 'YES' : 'no'}`,
             );
           }
-          for (const par of validated.data.parlays) {
-            console.log(
-              `[AUDIT][batch ${i}] parlay raw: ${par.legs.map((l) => l.pick).join('+')} odds=${par.combined_odds} prob=${(par.combined_probability * 100).toFixed(1)}% conf=${par.confidence ?? '∅'}`,
-            );
-          }
-          return { picks: validated.data.picks, parlays: validated.data.parlays, dropped: 0, idx: i, ms: Date.now() - tStart };
+          return { picks: parsedPicks, dropped: 0, idx: i, ms: Date.now() - tStart };
         } catch (err) {
           console.error(`[pickGen] batch ${i} failed`, err);
-          return { picks: [], parlays: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
+          return { picks: [], dropped: b.length, idx: i, ms: Date.now() - tStart };
         }
       })(),
-      new Promise<{ picks: never[]; parlays: never[]; dropped: number; idx: number; ms: number; timedOut: true }>((resolve) =>
-        setTimeout(() => resolve({ picks: [], parlays: [], dropped: b.length, idx: i, ms: PER_BATCH_TIMEOUT_MS, timedOut: true }), PER_BATCH_TIMEOUT_MS),
+      new Promise<{ picks: ClaudeProbabilityPick[]; dropped: number; idx: number; ms: number; timedOut: true }>((resolve) =>
+        setTimeout(() => resolve({ picks: [], dropped: b.length, idx: i, ms: PER_BATCH_TIMEOUT_MS, timedOut: true }), PER_BATCH_TIMEOUT_MS),
       ),
     ]),
   );
 
   const settled = await Promise.allSettled(batchPromises);
-  const batchResults = settled.map((s) => (s.status === 'fulfilled' ? s.value : { picks: [], parlays: [], dropped: 0, idx: -1, ms: 0 }));
+  const batchResults = settled.map((s) => (s.status === 'fulfilled' ? s.value : { picks: [] as ClaudeProbabilityPick[], dropped: 0, idx: -1, ms: 0 }));
 
   const totalDropped = batchResults.reduce((acc, r) => acc + ('dropped' in r ? r.dropped : 0), 0);
   const timedOutBatches = batchResults.filter((r) => 'timedOut' in r && r.timedOut).map((r) => r.idx);
@@ -417,7 +505,6 @@ export async function analyzeGames(
 
   const raw = {
     picks: batchResults.flatMap((r) => r.picks),
-    parlays: batchResults.flatMap((r) => r.parlays),
   };
 
   const gameByMatchup = new Map<string, Game>();
@@ -429,7 +516,7 @@ export async function analyzeGames(
   }
 
   console.log(
-    `[AUDIT] total raw from claude: ${raw.picks.length} picks + ${raw.parlays.length} parlays (across ${batches.length} batches)`,
+    `[AUDIT] total raw from claude: ${raw.picks.length} picks (across ${batches.length} batches). parlays generated server-side post-mapping.`,
   );
 
   // Per-sport Kelly multiplier learned from history. Defaults to 0.5 (= half
@@ -444,95 +531,226 @@ export async function analyzeGames(
     }),
   );
 
-  const mapped = raw.picks.map((p) => {
-    const odds = p.odds_decimal;
-    const implied = impliedProbability(odds);
-    const e = edgeOf(p.real_probability, odds);
+  // CAPA-1 server-side processing of Claude's probability estimates.
+  // For each game Claude evaluated:
+  //   1. Match game by exact home_team + away_team. Discard on mismatch.
+  //   2. Read dk_odds from real_data. Without it we can't compute edge.
+  //   3. Normalize probabilities (Claude must produce sum ≈ 1.0).
+  //   4. Compute edge for both sides against the DraftKings line.
+  //   5. Pick the side with greater positive edge. If neither side has
+  //      edge ≥ 2%, discard.
+  //   6. Build pick text "<team> ML" + bet_type "ML" server-side.
+  //   7. Run the existing market-consensus floor gate (unchanged).
+  type MappedRow = {
+    sport: string;
+    league: string | null;
+    home_team: string;
+    away_team: string;
+    home_team_abbr: string | null;
+    away_team_abbr: string | null;
+    espn_event_id: string | null;
+    game_start_time: string | null;
+    side: 'home' | 'away';
+    pick: string;
+    pick_detail: string | null;
+    bet_type: 'ML';
+    odds_decimal: number;
+    real_probability: number; // for the picked side, post-normalization
+    implied_probability: number;
+    edge: number;
+    confidence: number; // floor-adjusted
+    confidence_raw: number; // pre-floor snapshot
+    tier: Tier;
+    trap_warning: string | null;
+    risk_factors: string | null;
+    injuries: string | null;
+    key_stats: ClaudeProbabilityPick['key_stats'];
+    regression_flags: string | null;
+    line_movement_note: string | null;
+    analysis: string | null;
+    recommended_amount: number;
+    kelly_fraction: number;
+    best_odds_source: string | null;
+    odds_comparison: Array<{ source: string; ml: number }> | null;
+    edge_vs_market: number | null;
+    market_consensus_implied: number | null;
+    market_sources_count: number;
+    market_sources: MarketSource[] | null;
+    floor_applied: 'lock' | 'strong' | 'none';
+    _score: number;
+  };
 
-    // Determine which side Claude picked (home/away/neither) via team name
-    // last-word match so we can attribute multi-book best line + sharp edge.
-    const homeLast = p.home_team.split(/\s+/).pop()?.toLowerCase() ?? '';
-    const awayLast = p.away_team.split(/\s+/).pop()?.toLowerCase() ?? '';
-    const pickLower = p.pick.toLowerCase();
-    const isHome = homeLast.length >= 3 && pickLower.includes(homeLast);
-    const isAway = !isHome && awayLast.length >= 3 && pickLower.includes(awayLast);
+  const reasons: Record<string, number> = {
+    pass: 0,
+    fail_mismatch: 0,
+    fail_prob_sum: 0,
+    fail_no_dk_odds: 0,
+    fail_no_positive_edge: 0,
+    fail_edge_below_threshold: 0,
+    fail_confidence: 0,
+    fail_kelly_zero: 0,
+    fail_culero_low_edge: 0,
+  };
 
-    const matchedGameForOdds = gameByMatchup.get(`${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`);
+  // Side channel: games that reached the mapping but had no DraftKings line
+  // available. We insert marker rows (status='analyzed_no_odds_data') so the
+  // cron's dedup guard skips them on subsequent runs within the next 10 min —
+  // avoids burning Claude tokens on games that structurally can't generate
+  // a pick under CAPA-1. Resets implicitly when the cron query window rolls
+  // forward and the marker falls outside the "today" filter.
+  const noOddsDataMarkers: Array<{
+    sport: string;
+    league: string | null;
+    home_team: string;
+    away_team: string;
+    home_team_abbr: string | null;
+    away_team_abbr: string | null;
+    espn_event_id: string;
+    game_start_time: string | null;
+  }> = [];
 
-    // Pull market-consensus inputs from Phase 3 enrichment.
-    const rdMatched = (matchedGameForOdds?.real_data ?? {}) as Record<string, unknown>;
+  const mapped: MappedRow[] = raw.picks.flatMap((p): MappedRow[] => {
+    // (1) Game match — exact home_team / away_team (case-insensitive).
+    const matchedGame = gameByMatchup.get(`${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`);
+    if (!matchedGame) {
+      console.log('[SCHEMA_MISMATCH]', {
+        claude_home: p.home_team,
+        claude_away: p.away_team,
+        claude_sport: p.sport,
+        reason: 'no matching game in batch input',
+      });
+      reasons.fail_mismatch++;
+      return [];
+    }
+    if (matchedGame.sport !== p.sport) {
+      console.log('[SCHEMA_MISMATCH]', {
+        claude_sport: p.sport,
+        actual_sport: matchedGame.sport,
+        teams: `${p.away_team}@${p.home_team}`,
+        reason: 'sport mismatch',
+      });
+      reasons.fail_mismatch++;
+      return [];
+    }
+
+    // (2) Probability sum validation. Server tolerance is ±0.03 (the prompt
+    // asks for ±0.02 — stricter — leaving 0.01 slack for honest rounding).
+    // Beyond ±0.03 we discard outright; do not normalize garbage values.
+    const sum = p.real_probability_home + p.real_probability_away;
+    if (Math.abs(sum - 1.0) > 0.03) {
+      console.log('[PROB_SUM_INVALID]', {
+        teams: `${p.away_team}@${p.home_team}`,
+        home: p.real_probability_home,
+        away: p.real_probability_away,
+        sum: Number(sum.toFixed(4)),
+        reason: 'Claude probabilities do not sum to ~1.0 (±0.03 tolerance)',
+      });
+      reasons.fail_prob_sum++;
+      return [];
+    }
+    // Light normalization for the residual rounding noise inside ±0.03.
+    const homeProb = p.real_probability_home / sum;
+    const awayProb = p.real_probability_away / sum;
+
+    // (3) DraftKings odds — required to compute edge under CAPA-1.
+    const rdMatched = (matchedGame.real_data ?? {}) as Record<string, unknown>;
     const dkOdds = rdMatched.dk_odds as EspnOddsResult | undefined;
     const espnBpi = rdMatched.espn_bpi as EspnPredictor | undefined;
-
-    let marketBookImplied: number | null = null;
-    let marketBookDecimal: number | null = null;
-    let marketBookSlug: string | null = null;
-    if (dkOdds) {
-      const dec = isHome ? dkOdds.home_ml_decimal : isAway ? dkOdds.away_ml_decimal : null;
-      if (dec && dec > 1.01) {
-        marketBookImplied = 1 / dec;
-        marketBookDecimal = dec;
-        marketBookSlug = dkOdds.source_slug ?? null;
-        // ESPN rotates providers between seasons (Caesars, BetMGM, etc.).
-        // We keep the implied prob — never reject — but flag non-default
-        // sources so the audit trail explains why a pick's `market_sources`
-        // says 'other_book_ml' instead of 'draftkings_ml'.
-        if (marketBookSlug && marketBookSlug !== 'draftkings') {
-          console.log('[MARKET] non-default provider used:', dkOdds.source, `(slug=${marketBookSlug})`);
-        }
+    if (!dkOdds || !dkOdds.home_ml_decimal || !dkOdds.away_ml_decimal) {
+      console.log('[NO_DK_ODDS]', {
+        teams: `${p.away_team}@${p.home_team}`,
+        sport: p.sport,
+        reason: 'no DraftKings line available; cannot compute edge',
+      });
+      reasons.fail_no_dk_odds++;
+      if (matchedGame.espn_event_id) {
+        noOddsDataMarkers.push({
+          sport: p.sport,
+          league: p.league ?? null,
+          home_team: p.home_team,
+          away_team: p.away_team,
+          home_team_abbr: p.home_team_abbr ?? null,
+          away_team_abbr: p.away_team_abbr ?? null,
+          espn_event_id: matchedGame.espn_event_id,
+          game_start_time: matchedGame.start_time ?? null,
+        });
       }
+      return [];
     }
+    if (dkOdds.source_slug && dkOdds.source_slug !== 'draftkings') {
+      console.log('[MARKET] non-default provider used:', dkOdds.source, `(slug=${dkOdds.source_slug})`);
+    }
+
+    // (4) Edge per side against DK line.
+    const homeOdds = dkOdds.home_ml_decimal;
+    const awayOdds = dkOdds.away_ml_decimal;
+    const edgeHome = homeProb - 1 / homeOdds;
+    const edgeAway = awayProb - 1 / awayOdds;
+
+    // (5) Pick the side with the larger positive edge.
+    const EDGE_THRESHOLD = 0.02;
+    if (edgeHome <= 0 && edgeAway <= 0) {
+      console.log('[NO_POSITIVE_EDGE]', {
+        teams: `${p.away_team}@${p.home_team}`,
+        edge_home: Number(edgeHome.toFixed(4)),
+        edge_away: Number(edgeAway.toFixed(4)),
+      });
+      reasons.fail_no_positive_edge++;
+      return [];
+    }
+    const side: 'home' | 'away' = edgeHome >= edgeAway ? 'home' : 'away';
+    const bestEdge = side === 'home' ? edgeHome : edgeAway;
+    if (bestEdge < EDGE_THRESHOLD) {
+      console.log('[EDGE_BELOW_THRESHOLD]', {
+        teams: `${p.away_team}@${p.home_team}`,
+        side,
+        edge: Number(bestEdge.toFixed(4)),
+        threshold: EDGE_THRESHOLD,
+      });
+      reasons.fail_edge_below_threshold++;
+      return [];
+    }
+
+    // (6) Build pick text server-side.
+    const pickedTeam = side === 'home' ? p.home_team : p.away_team;
+    const pickText = `${pickedTeam} ML`;
+    const pickedProb = side === 'home' ? homeProb : awayProb;
+    const pickedOdds = side === 'home' ? homeOdds : awayOdds;
+    const implied = impliedProbability(pickedOdds);
+    const e = bestEdge;
+
+    // Consensus: market book + ESPN BPI for the picked side.
     let bpiImplied: number | null = null;
     if (espnBpi) {
-      const bpiPct = isHome ? espnBpi.home_win_prob : isAway ? espnBpi.away_win_prob : null;
+      const bpiPct = side === 'home' ? espnBpi.home_win_prob : espnBpi.away_win_prob;
       if (bpiPct != null && bpiPct > 0 && bpiPct < 100) bpiImplied = bpiPct / 100;
     }
-    const consensus = computeMarketConsensus(marketBookImplied, marketBookSlug, bpiImplied, p.real_probability);
+    const marketBookImplied = 1 / pickedOdds;
+    const marketBookSlug = dkOdds.source_slug ?? null;
+    const consensus = computeMarketConsensus(marketBookImplied, marketBookSlug, bpiImplied, pickedProb);
     const edgeVsMarket = consensus?.edge_vs_market ?? null;
     const sourcesCount = consensus?.sources_count ?? 0;
     const consensusImplied = consensus?.avg_implied_prob ?? null;
     const sourcesList: MarketSource[] = consensus?.sources ?? [];
 
-    // Small comparator for display: the market-book line for the picked side.
-    let bestOddsSource: string | null = null;
-    let oddsComparison: Array<{ source: string; ml: number }> | null = null;
-    if (marketBookDecimal) {
-      bestOddsSource = dkOdds?.source ?? 'DraftKings';
-      oddsComparison = [{ source: bestOddsSource, ml: marketBookDecimal }];
-    }
+    const bestOddsSource = dkOdds.source ?? 'DraftKings';
+    const oddsComparison: Array<{ source: string; ml: number }> = [{ source: bestOddsSource, ml: pickedOdds }];
 
-    // Server-side RLM trap override. Computed BEFORE the floor gate so the
-    // gate's `noTrap` check evaluates the merged trap, not just Claude's.
+    // (7) RLM trap merge + market-consensus floor gate. UNCHANGED logic, just
+    // sourced from `side` instead of isHome/isAway booleans.
     let rlmTrapNote: string | null = null;
-    const lm = (matchedGameForOdds?.real_data as Record<string, unknown> | undefined)?.line_movement as MovementSignal | undefined;
-    if (lm && lm.rlm && lm.rlm_trap_side) {
-      if ((isHome && lm.rlm_trap_side === 'home') || (isAway && lm.rlm_trap_side === 'away')) {
-        rlmTrapNote = `Reverse line movement: dinero sharp en el otro lado — línea se movió ${
-          lm.rlm_trap_side === 'home'
-            ? `${lm.away_ml_open?.toFixed(2)}→${lm.away_ml_now.toFixed(2)} (visitante)`
-            : `${lm.home_ml_open?.toFixed(2)}→${lm.home_ml_now.toFixed(2)} (local)`
-        }`;
-      }
+    const lm = rdMatched.line_movement as MovementSignal | undefined;
+    if (lm && lm.rlm && lm.rlm_trap_side === side) {
+      const otherWasOpen = side === 'home' ? lm.away_ml_open : lm.home_ml_open;
+      const otherIsNow = side === 'home' ? lm.away_ml_now : lm.home_ml_now;
+      rlmTrapNote = `Reverse line movement: dinero sharp en el otro lado — línea se movió ${otherWasOpen?.toFixed(2)}→${otherIsNow.toFixed(2)} (${side === 'home' ? 'visitante' : 'local'})`;
     }
     const mergedTrap = [p.trap_warning, rlmTrapNote].filter(Boolean).join(' · ') || null;
 
-    // CONFIDENCE FLOOR — math overrides Claude's timidity, BUT only when
-    // TWO independent market sources confirm our model's optimism. Post-
-    // mortem of 2026-05-10 losses showed the old floor (edge>5% → conf≥70)
-    // promoted bets with CLV=0 to STRONG. ODDS_API_KEY / Pinnacle path is
-    // dead; this gate now consumes DraftKings ML (ESPN /odds) + ESPN BPI
-    // gameProjection (ESPN /predictor). Both required for the floor to fire.
-    //
-    // Test mental:
-    //   edge 8%, dk+bpi consensus, edge_vs_market 4% → LOCK (floor a 85)
-    //   edge 6%, dk+bpi consensus, edge_vs_market 3% → STRONG (floor a 70)
-    //   edge 6%, dk+bpi consensus, edge_vs_market 1% → no floor (market_below_threshold)
-    //   edge 6%, solo DK (NHL típicamente)           → no floor (partial_consensus_*)
-    //   edge 6%, ninguna fuente                      → no floor (no_market_data)
-    const confRaw = p.confidence; // snapshot pre-floor for audit
+    const confRaw = p.confidence;
     let conf = p.confidence;
     let floorApplied: 'lock' | 'strong' | 'none' = 'none';
-    const oddsOk = odds > 1.5;
+    const oddsOk = pickedOdds > 1.5;
     const noTrap = !mergedTrap;
     const fullConsensus = sourcesCount >= 2;
     const lockMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.03;
@@ -544,23 +762,29 @@ export async function analyzeGames(
     } else if (e > 0.05 && oddsOk && noTrap && strongMarketOk) {
       conf = Math.max(conf, 70);
       floorApplied = 'strong';
-    } else if (e > 0.05 && oddsOk && noTrap) {
+    } else if (e > 0.05 && noTrap) {
+      // Edge clears the bracket but at least one gate condition failed.
+      // Audit the exact blocker so post-mortems can distinguish "no sharp
+      // confirmation" from "odds too thin for floor". oddsOk = pickedOdds>1.5
+      // is an intentional economic rule (don't promote heavy favorites where
+      // edges tend to be illusory); we report it explicitly here.
       let reason: string;
-      if (sourcesCount === 0) reason = 'no_market_data';
+      if (!oddsOk) reason = 'odds_too_low_for_floor';
+      else if (sourcesCount === 0) reason = 'no_market_data';
       else if (sourcesCount === 1) reason = `partial_consensus_${sourcesList[0]}`;
       else reason = 'market_below_threshold';
       console.log('[FLOOR_BLOCKED]', {
-        pick: p.pick,
+        pick: pickText,
         edge: Number(e.toFixed(4)),
         edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
+        odds: pickedOdds,
         sources: sourcesList,
         reason,
       });
     }
-
     if (floorApplied !== 'none') {
       console.log('[FLOOR_APPLIED]', {
-        pick: p.pick,
+        pick: pickText,
         tier_promoted_to: floorApplied,
         edge: Number(e.toFixed(4)),
         edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
@@ -569,39 +793,47 @@ export async function analyzeGames(
     }
 
     const baseTier: Tier = tierFromConfidence(conf);
-    const adjustedTier = tierForOdds(baseTier, odds);
+    const adjustedTier = tierForOdds(baseTier, pickedOdds);
     const hasTrap = !!mergedTrap;
-    const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
-    // Scale by learned per-sport multiplier (defaults to 0.5 = no change).
+    const k = kellyAmount(opts.bankroll, pickedProb, pickedOdds, { conservative: hasTrap });
     const learnedMult = kellyMultipliers[p.sport] ?? 0.5;
     if (learnedMult !== 0.5 && k.amount > 0) {
       const scale = learnedMult / 0.5;
       k.amount = Math.max(1, Math.round(k.amount * scale));
       k.fraction = Math.min(0.1, k.fraction * scale);
     }
-    const score = adjustedEdgeScore(p.real_probability, odds);
-    const homeAbbr =
-      p.home_team_abbr?.toLowerCase() ??
-      teamAbbrByName.get(p.home_team.toLowerCase()) ??
-      null;
-    const awayAbbr =
-      p.away_team_abbr?.toLowerCase() ??
-      teamAbbrByName.get(p.away_team.toLowerCase()) ??
-      null;
-    const matchedGame = gameByMatchup.get(
-      `${p.home_team.toLowerCase()}|${p.away_team.toLowerCase()}`,
-    );
-    return {
-      ...p,
-      trap_warning: mergedTrap,
-      confidence: conf, // floor-adjusted (overrides Claude's timidity)
+    const score = adjustedEdgeScore(pickedProb, pickedOdds);
+
+    const homeAbbr = p.home_team_abbr?.toLowerCase() ?? teamAbbrByName.get(p.home_team.toLowerCase()) ?? null;
+    const awayAbbr = p.away_team_abbr?.toLowerCase() ?? teamAbbrByName.get(p.away_team.toLowerCase()) ?? null;
+
+    return [{
+      sport: p.sport,
+      league: p.league ?? null,
+      home_team: p.home_team,
+      away_team: p.away_team,
       home_team_abbr: homeAbbr,
       away_team_abbr: awayAbbr,
-      espn_event_id: matchedGame?.espn_event_id ?? null,
-      game_start_time: matchedGame?.start_time ?? null,
+      espn_event_id: matchedGame.espn_event_id ?? null,
+      game_start_time: matchedGame.start_time ?? null,
+      side,
+      pick: pickText,
+      pick_detail: null,
+      bet_type: 'ML',
+      odds_decimal: pickedOdds,
+      real_probability: pickedProb,
       implied_probability: implied,
       edge: e,
+      confidence: conf,
+      confidence_raw: confRaw,
       tier: adjustedTier,
+      trap_warning: mergedTrap,
+      risk_factors: p.risk_factors ?? null,
+      injuries: p.injuries ?? null,
+      key_stats: p.key_stats ?? null,
+      regression_flags: p.regression_flags ?? null,
+      line_movement_note: p.line_movement_note ?? null,
+      analysis: p.analysis ?? null,
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
       best_odds_source: bestOddsSource,
@@ -611,38 +843,29 @@ export async function analyzeGames(
       market_sources_count: sourcesCount,
       market_sources: sourcesList.length > 0 ? sourcesList : null,
       floor_applied: floorApplied,
-      confidence_raw: confRaw,
       _score: score,
-    };
+    }];
   });
 
-  // AUDIT: per-pick filter result (which filter rejected it, if any)
-  const reasons: Record<string, number> = {
-    pass: 0,
-    fail_edge: 0,
-    fail_confidence: 0,
-    fail_kelly_zero: 0,
-    fail_culero_low_edge: 0,
-  };
+  // Post-mapping filter: kelly>0, confidence>=55, plus the historical
+  // "culero" guard (heavy favorites with thin edge).
   const enrichedSingles = mapped
     .filter((p) => {
       const reasons_for_this: string[] = [];
-      if (!(p.edge > 0)) reasons_for_this.push('edge<=0');
       if (!(p.confidence >= 55)) reasons_for_this.push(`conf<55 (${p.confidence})`);
       if (!(p.recommended_amount > 0)) reasons_for_this.push('kelly=0');
       if (p.odds_decimal < 1.4 && p.edge < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
       if (reasons_for_this.length > 0) {
         console.log(
-          `[AUDIT] DISCARD ${p.pick} (${p.sport}) — reasons: ${reasons_for_this.join('; ')} | conf=${p.confidence} odds=${p.odds_decimal} real=${(p.real_probability * 100).toFixed(1)}% computed_edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount}`,
+          `[AUDIT] DISCARD ${p.pick} (${p.sport}) — reasons: ${reasons_for_this.join('; ')} | conf=${p.confidence} odds=${p.odds_decimal} real=${(p.real_probability * 100).toFixed(1)}% edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount}`,
         );
-        if (!(p.edge > 0)) reasons.fail_edge++;
-        else if (!(p.confidence >= 55)) reasons.fail_confidence++;
+        if (!(p.confidence >= 55)) reasons.fail_confidence++;
         else if (!(p.recommended_amount > 0)) reasons.fail_kelly_zero++;
         else reasons.fail_culero_low_edge++;
         return false;
       }
       console.log(
-        `[AUDIT] KEEP ${p.pick} (${p.sport}) — tier=${p.tier} conf=${p.confidence} odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount} (${(p.kelly_fraction * 100).toFixed(1)}%)`,
+        `[AUDIT] KEEP ${p.pick} (${p.sport}) — tier=${p.tier} conf=${p.confidence} odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount} (${(p.kelly_fraction * 100).toFixed(1)}%) floor=${p.floor_applied}`,
       );
       reasons.pass++;
       return true;
@@ -651,36 +874,101 @@ export async function analyzeGames(
 
   console.log(`[AUDIT] filter summary: ${JSON.stringify(reasons)}`);
 
-  const enrichedParlays = raw.parlays.map((par) => {
-    const odds = par.combined_odds;
-    const implied = par.implied_probability ?? impliedProbability(odds);
-    const realProb = par.combined_probability;
-    const e = par.edge ?? realProb - implied;
-    const conf = par.confidence ?? Math.round(realProb * 100);
-    // Parlays use half-Kelly too — typically smaller than singles because
-    // the combined probability is lower.
+  // ── Server-side parlay generation ───────────────────────────────────────
+  // Replaces Claude-side parlays. Rules (D1):
+  //   • Only legs with edge ≥ 3% AND floor_applied ≠ 'none' (STRONG/LOCK)
+  //   • Max 3 legs per parlay
+  //   • Different espn_event_id required between legs
+  //   • combined_edge ≥ 5% to keep
+  //   • Cap to top 5 parlays by combined_edge
+  const parlayCandidates = enrichedSingles.filter(
+    (p) => p.edge >= 0.03 && p.floor_applied !== 'none' && p.espn_event_id,
+  );
+  type GeneratedParlay = {
+    pick: string;
+    pick_detail: string;
+    odds_decimal: number;
+    real_probability: number;
+    implied_probability: number;
+    edge: number;
+    confidence: number;
+    recommended_amount: number;
+    kelly_fraction: number;
+    analysis: string | null;
+    parlay_legs: Array<{ game: string; pick: string; odds_decimal: number; real_probability: number; espn_event_id: string }>;
+  };
+  const generatedParlays: GeneratedParlay[] = [];
+  const seen = new Set<string>();
+  const legKey = (leg: MappedRow) => `${leg.espn_event_id}|${leg.pick}`;
+  const buildParlay = (legs: MappedRow[]): GeneratedParlay | null => {
+    const odds = legs.reduce((a, l) => a * l.odds_decimal, 1);
+    const realProb = legs.reduce((a, l) => a * l.real_probability, 1);
+    const implied = 1 / odds;
+    const edge = realProb - implied;
+    if (edge < 0.05) return null;
     const k = kellyAmount(opts.bankroll, realProb, odds);
+    if (k.amount <= 0) return null;
+    const conf = Math.round(realProb * 100);
+    const pickText = legs.map((l) => l.pick).join(' + ');
     return {
-      pick: par.legs.map((l) => l.pick).join(' + '),
-      pick_detail: par.legs.map((l) => `${l.game}: ${l.pick}`).join(' | '),
+      pick: pickText,
+      pick_detail: legs.map((l) => `${l.away_team} @ ${l.home_team}: ${l.pick}`).join(' | '),
       odds_decimal: odds,
       real_probability: realProb,
       implied_probability: implied,
-      edge: e,
+      edge,
       confidence: conf,
-      tier: 'parlay' as Tier,
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
-      analysis: par.analysis ?? null,
-      parlay_legs: par.legs,
+      analysis: `Parlay server-side de ${legs.length} legs con consenso de mercado: ${legs.map((l) => `${l.pick} (edge ${(l.edge * 100).toFixed(1)}%, ${l.floor_applied})`).join(', ')}.`,
+      parlay_legs: legs.map((l) => ({
+        game: `${l.away_team} @ ${l.home_team}`,
+        pick: l.pick,
+        odds_decimal: l.odds_decimal,
+        real_probability: l.real_probability,
+        espn_event_id: l.espn_event_id!,
+      })),
     };
-  }).filter((par) => par.recommended_amount > 0 && par.edge > 0);
+  };
+  for (let i = 0; i < parlayCandidates.length; i++) {
+    for (let j = i + 1; j < parlayCandidates.length; j++) {
+      const a = parlayCandidates[i];
+      const b = parlayCandidates[j];
+      if (a.espn_event_id === b.espn_event_id) continue;
+      const par = buildParlay([a, b]);
+      if (par) {
+        const key = [legKey(a), legKey(b)].sort().join('::');
+        if (!seen.has(key)) {
+          seen.add(key);
+          generatedParlays.push(par);
+        }
+      }
+      for (let k2 = j + 1; k2 < parlayCandidates.length; k2++) {
+        const c = parlayCandidates[k2];
+        if (c.espn_event_id === a.espn_event_id || c.espn_event_id === b.espn_event_id) continue;
+        const par3 = buildParlay([a, b, c]);
+        if (par3) {
+          const key = [legKey(a), legKey(b), legKey(c)].sort().join('::');
+          if (!seen.has(key)) {
+            seen.add(key);
+            generatedParlays.push(par3);
+          }
+        }
+      }
+    }
+  }
+  const enrichedParlays = generatedParlays
+    .sort((a, b) => b.edge - a.edge)
+    .slice(0, 5);
+  console.log(
+    `[AUDIT] server parlays: ${enrichedParlays.length} kept from ${generatedParlays.length} candidates (${parlayCandidates.length} eligible singles)`,
+  );
 
   const now = new Date().toISOString();
 
   const singleRows: PickRow[] = enrichedSingles.map((p) => ({
     sport: p.sport,
-    league: p.league ?? null,
+    league: p.league,
     game: `${p.away_team} @ ${p.home_team}`,
     home_team: p.home_team,
     away_team: p.away_team,
@@ -688,33 +976,33 @@ export async function analyzeGames(
     away_team_abbr: p.away_team_abbr,
     espn_event_id: p.espn_event_id,
     pick: p.pick,
-    pick_detail: p.pick_detail ?? null,
+    pick_detail: p.pick_detail,
     bet_type: p.bet_type,
     odds_decimal: p.odds_decimal,
     best_odds: p.odds_decimal,
-    best_odds_source: (p as { best_odds_source?: string | null }).best_odds_source ?? null,
-    odds_comparison: (p as { odds_comparison?: unknown }).odds_comparison ?? null,
-    edge_vs_market: (p as { edge_vs_market?: number | null }).edge_vs_market ?? null,
-    market_consensus_implied: (p as { market_consensus_implied?: number | null }).market_consensus_implied ?? null,
-    market_sources_count: (p as { market_sources_count?: number | null }).market_sources_count ?? null,
-    market_sources: (p as { market_sources?: MarketSource[] | null }).market_sources ?? null,
-    floor_applied: (p as { floor_applied?: 'lock' | 'strong' | 'none' }).floor_applied ?? null,
+    best_odds_source: p.best_odds_source,
+    odds_comparison: p.odds_comparison,
+    edge_vs_market: p.edge_vs_market,
+    market_consensus_implied: p.market_consensus_implied,
+    market_sources_count: p.market_sources_count,
+    market_sources: p.market_sources,
+    floor_applied: p.floor_applied,
     confidence: p.confidence,
-    confidence_raw: (p as { confidence_raw?: number | null }).confidence_raw ?? null,
+    confidence_raw: p.confidence_raw,
     tier: p.tier,
     real_probability: p.real_probability,
     implied_probability: p.implied_probability,
     edge: p.edge,
     recommended_amount: p.recommended_amount,
-    analysis: p.analysis ?? null,
-    risk_factors: p.risk_factors ?? null,
-    injuries: p.injuries ?? null,
-    key_stats: p.key_stats ?? null,
-    early_payout_eligible: p.early_payout_eligible ?? false,
-    early_payout_threshold: p.early_payout_threshold ?? null,
-    line_movement_note: p.line_movement_note ?? null,
-    regression_flags: p.regression_flags ?? null,
-    trap_warning: p.trap_warning ?? null,
+    analysis: p.analysis,
+    risk_factors: p.risk_factors,
+    injuries: p.injuries,
+    key_stats: p.key_stats,
+    early_payout_eligible: false,
+    early_payout_threshold: null,
+    line_movement_note: p.line_movement_note,
+    regression_flags: p.regression_flags,
+    trap_warning: p.trap_warning,
     status: 'pending',
     is_parlay: false,
     parlay_legs: null,
@@ -761,12 +1049,59 @@ export async function analyzeGames(
     trap_warning: null,
     status: 'pending',
     is_parlay: true,
-    parlay_legs: par.parlay_legs,
+    parlay_legs: par.parlay_legs as unknown as PickRow['parlay_legs'],
     game_start_time: null,
     updated_at: now,
   }));
 
-  const allRows: PickRow[] = [...singleRows, ...parlayRows];
+  // Marker rows for games whose Phase 3 enrichment didn't yield DK odds —
+  // inserted alongside real picks so the cron's dedup query (which includes
+  // status='analyzed_no_odds_data') skips them on subsequent runs.
+  const noOddsDataRows: PickRow[] = noOddsDataMarkers.map((m) => ({
+    sport: m.sport,
+    league: m.league,
+    game: `${m.away_team} @ ${m.home_team}`,
+    home_team: m.home_team,
+    away_team: m.away_team,
+    home_team_abbr: m.home_team_abbr,
+    away_team_abbr: m.away_team_abbr,
+    espn_event_id: m.espn_event_id,
+    pick: '—',
+    pick_detail: null,
+    bet_type: 'ML',
+    odds_decimal: 1,
+    best_odds: null,
+    best_odds_source: null,
+    odds_comparison: null,
+    edge_vs_market: null,
+    market_consensus_implied: null,
+    market_sources_count: null,
+    market_sources: null,
+    floor_applied: null,
+    confidence: 0,
+    confidence_raw: null,
+    tier: 'value',
+    real_probability: 0,
+    implied_probability: 1,
+    edge: 0,
+    recommended_amount: 0,
+    analysis: null,
+    risk_factors: null,
+    injuries: null,
+    key_stats: null,
+    early_payout_eligible: false,
+    early_payout_threshold: null,
+    line_movement_note: null,
+    regression_flags: null,
+    trap_warning: null,
+    status: 'analyzed_no_odds_data',
+    is_parlay: false,
+    parlay_legs: null,
+    game_start_time: m.game_start_time,
+    updated_at: now,
+  }));
+
+  const allRows: PickRow[] = [...singleRows, ...parlayRows, ...noOddsDataRows];
 
   // Build a lookup of kelly fractions per pick — caller (cron) passes this to
   // telegram so the message can show "Kelly 10.7%".

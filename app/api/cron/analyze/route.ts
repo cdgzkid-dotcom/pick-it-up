@@ -121,7 +121,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   const { data: blockedPicks } = await supabase
     .from('picks')
     .select('espn_event_id, status, telegram_notified_at')
-    .or('status.in.(pending,bet,analyzed_no_edge),telegram_notified_at.not.is.null')
+    .or('status.in.(pending,bet,analyzed_no_edge,analyzed_no_odds_data),telegram_notified_at.not.is.null')
     .in('espn_event_id', eventIds);
 
   const alreadyDone = new Set((blockedPicks ?? []).map((p) => p.espn_event_id));

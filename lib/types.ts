@@ -1,7 +1,7 @@
 export type Tier = 'lock' | 'strong' | 'value' | 'parlay';
 export type BetType = 'ML' | 'Spread' | 'O-U' | 'Prop' | 'Parlay';
 export type BetResult = 'pending' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout';
-export type PickStatus = 'pending' | 'bet' | 'skipped';
+export type PickStatus = 'pending' | 'bet' | 'skipped' | 'analyzed_no_edge' | 'analyzed_no_odds_data';
 
 export interface KeyStat {
   label: string;

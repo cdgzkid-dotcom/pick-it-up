@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import StatsChart from '@/components/StatsChart';
 import WeeklyChart from '@/components/WeeklyChart';
+import BetHistoryTable from '@/components/BetHistoryTable';
 import { SportLogo } from '@/components/Logo';
 import {
   computeStats,
@@ -45,10 +46,29 @@ export default async function StatsPage() {
     Number(settings?.unit_percentage ?? 5),
   );
 
-  const chartData = logs.map((l) => ({
+  const pendingBets = bets.filter((b) => b.result === 'pending');
+  const enRiesgo = pendingBets.reduce((s, b) => s + Number(b.amount || 0), 0);
+  const gananciaPotencial = pendingBets.reduce(
+    (s, b) => s + Number(b.amount || 0) * (Number(b.odds_decimal || 1) - 1),
+    0,
+  );
+  const bankrollActual = Number(settings?.bankroll_current ?? 0);
+  const siGanasTodo = bankrollActual + gananciaPotencial;
+  const siPierdesTodo = bankrollActual - enRiesgo;
+  const totalApostado = bets.reduce((s, b) => s + Number(b.amount || 0), 0);
+
+  const baseChart = logs.map((l) => ({
     x: new Date(l.created_at).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' }),
     y: Number(l.balance_after),
   }));
+  const efectivo = bankrollActual - enRiesgo;
+  const chartData =
+    baseChart.length === 0
+      ? [
+          { x: 'INICIO', y: bankrollActual },
+          { x: 'AHORA', y: efectivo },
+        ]
+      : [...baseChart, { x: 'AHORA', y: efectivo }];
 
   const settled = bets.filter((b) => b.result !== 'pending');
   const bySport = groupBy(settled, (b) => b.sport);
@@ -63,6 +83,47 @@ export default async function StatsPage() {
         <h1 className="text-xl font-bold">STATS</h1>
       </header>
 
+      {pendingBets.length > 0 && (
+        <section className="space-y-2">
+          <div className="text-[10px] text-muted uppercase tracking-wider">
+            En juego ahora
+          </div>
+          <div className="bg-card border border-line rounded p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <Mini2 label="Apuestas activas" value={String(pendingBets.length)} />
+              <Mini2 label="En riesgo" value={`$${Math.round(enRiesgo)}`} color="yellow" />
+              <Mini2
+                label="Ganancia potencial"
+                value={`+$${Math.round(gananciaPotencial)}`}
+                color="green"
+              />
+              <Mini2
+                label="Bankroll actual"
+                value={`$${Math.round(bankrollActual)}`}
+              />
+            </div>
+            <div className="border-t border-line pt-2 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="bg-green/10 border border-green/30 rounded p-2">
+                <div className="text-[9px] text-muted uppercase tracking-wider">
+                  Si ganas todo
+                </div>
+                <div className="text-green font-bold text-base">
+                  ${Math.round(siGanasTodo)}
+                </div>
+              </div>
+              <div className="bg-red/10 border border-red/30 rounded p-2">
+                <div className="text-[9px] text-muted uppercase tracking-wider">
+                  Si pierdes todo
+                </div>
+                <div className="text-red font-bold text-base">
+                  ${Math.round(siPierdesTodo)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {chartData.length > 0 && <StatsChart data={chartData} />}
 
       <div className="grid grid-cols-2 gap-2">
@@ -73,7 +134,7 @@ export default async function StatsPage() {
           good={stats.win_rate >= 53}
         />
         <KPI label="P/L" value={`${stats.pl >= 0 ? '+' : ''}$${Math.round(stats.pl)}`} good={stats.pl >= 0} />
-        <KPI label="Apostado" value={`$${Math.round(stats.total_staked)}`} />
+        <KPI label="Apostado" value={`$${Math.round(totalApostado)}`} />
         <KPI
           label="Racha actual"
           value={
@@ -199,6 +260,8 @@ export default async function StatsPage() {
       <BreakdownTable title="Por tipo" data={byType} />
       <BreakdownTable title="Por tier (AI accuracy)" data={byTier} />
 
+      <BetHistoryTable bets={bets} />
+
       {/* ELO Rankings */}
       {Object.keys(eloBySport).length > 0 && (
         <section className="space-y-2">
@@ -251,6 +314,31 @@ function KPI({
     <div className="bg-card border border-line rounded p-3">
       <div className="text-[10px] text-muted uppercase tracking-wider">{label}</div>
       <div className={`text-lg font-bold mt-0.5 ${c}`}>{value}</div>
+    </div>
+  );
+}
+
+function Mini2({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string;
+  color?: 'green' | 'red' | 'yellow';
+}) {
+  const c =
+    color === 'green'
+      ? 'text-green'
+      : color === 'red'
+        ? 'text-red'
+        : color === 'yellow'
+          ? 'text-yellow'
+          : 'text-fg';
+  return (
+    <div>
+      <div className="text-[10px] text-muted uppercase tracking-wider">{label}</div>
+      <div className={`text-base font-bold mt-0.5 ${c}`}>{value}</div>
     </div>
   );
 }

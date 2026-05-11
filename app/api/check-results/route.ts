@@ -160,17 +160,44 @@ export async function POST() {
       .single();
     const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
-    // CLV: odds_at_close = the moneyline at the moment we observed completion.
-    // For ML, we approximate with the post-game decimal odds we have on hand
-    // (no live moneyline once a game ends — Vegas pulls the line). Better
-    // sources would be an opening line snapshot vs closing snapshot, but
-    // ESPN doesn't expose that, so we record the at-bet odds vs the
-    // last-known odds we tracked. CLV stays accurate when odds_at_bet was
-    // captured pre-game and odds_at_close is updated on game start instead
-    // of completion — that's the next iteration.
+    // CLV (Closing Line Value) — convention: implied probability difference.
+    //
+    //   clv = (1/odds_at_close) - (1/odds_at_bet)
+    //
+    // Positive clv means the implied prob at close was higher than at bet
+    // time — the line shortened in our favor, i.e. the market moved
+    // toward our side (sharp confirmation of edge).
+    //
+    // odds_at_close approximation: picks.odds_decimal is refreshed by the
+    // cron on every analyze run for the same locked side, so the last
+    // stored value before the game starts is the closest free-tier proxy
+    // for the actual closing line. When no pick is associated or no
+    // refresh occurred, we fall back to odds_at_bet which yields clv=0
+    // (no observed movement — a valid statement, not a bug).
     const oddsAtBet = bet.odds_at_bet != null ? Number(bet.odds_at_bet) : Number(bet.odds_decimal);
-    const oddsAtClose = Number(bet.odds_decimal); // best-effort
-    const clv = oddsAtBet - oddsAtClose;
+    let oddsAtClose: number | null = null;
+    if (bet.pick_id) {
+      const { data: pickRow } = await supabase
+        .from('picks')
+        .select('odds_decimal')
+        .eq('id', bet.pick_id)
+        .single();
+      if (pickRow?.odds_decimal) {
+        oddsAtClose = Number(pickRow.odds_decimal);
+      }
+    }
+    if (oddsAtClose === null) {
+      oddsAtClose = oddsAtBet;
+    }
+    const clv = (1 / oddsAtClose) - (1 / oddsAtBet);
+    console.log('[CLV_COMPUTED]', {
+      bet_id: bet.id,
+      pick_id: bet.pick_id,
+      odds_at_bet: oddsAtBet,
+      odds_at_close: oddsAtClose,
+      clv: Number(clv.toFixed(4)),
+      source: oddsAtClose === oddsAtBet ? 'fallback_no_movement' : 'pick_refresh',
+    });
 
     // Save final score for display in tracker history + Telegram message.
     // Format: "away-home" (e.g., "Royals 5 - Tigers 2" rendered from this).

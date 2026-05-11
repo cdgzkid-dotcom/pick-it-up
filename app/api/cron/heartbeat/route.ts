@@ -118,14 +118,12 @@ async function buildHeartbeat(): Promise<string> {
       );
     }
   }
-  const qualityAlertsBlock =
-    qualityAlerts.length > 0
-      ? `\n\n⚠️ *ALERTS:*\n` + qualityAlerts.map((a) => `• ${a}`).join('\n')
-      : '';
 
   const { data: bets24h } = await sb
     .from('bets')
-    .select('id, result, amount, payout')
+    .select(
+      'id, result, amount, payout, pick_id, created_at, game_start_time, odds_at_bet, odds_at_close, clv',
+    )
     .gte('created_at', since24h)
     .in('result', ['win', 'loss', 'push']);
   const wins = bets24h?.filter((b) => b.result === 'win').length ?? 0;
@@ -134,6 +132,90 @@ async function buildHeartbeat(): Promise<string> {
     (s, b) => s + (Number(b.payout ?? 0) - Number(b.amount ?? 0)),
     0,
   ) ?? 0;
+
+  // ── Decision quality 24h (Auditoría 4) ─────────────────────────────────
+  // CLV (Closing Line Value) per bet is already persisted with the implied-
+  // probability-difference convention. Here we average across resolved
+  // wins/losses + compute response-time gaps for the user behavior side.
+  const resolvedBets = bets24h?.filter((b) => b.result === 'win' || b.result === 'loss') ?? [];
+  const betsWithClv = resolvedBets.filter((b) => b.clv !== null && b.clv !== undefined);
+  const clvSum = betsWithClv.reduce((s, b) => s + Number(b.clv), 0);
+  const clvCount = betsWithClv.length;
+  const avgClv = clvCount > 0 ? clvSum / clvCount : null;
+
+  const pickIds = resolvedBets
+    .map((b) => b.pick_id)
+    .filter((x): x is string => Boolean(x));
+  let pickMap = new Map<string, { telegram_notified_at: string | null }>();
+  if (pickIds.length > 0) {
+    const { data: picks } = await sb
+      .from('picks')
+      .select('id, telegram_notified_at')
+      .in('id', pickIds);
+    pickMap = new Map(
+      (picks ?? []).map((p) => [p.id, { telegram_notified_at: p.telegram_notified_at ?? null }]),
+    );
+  }
+
+  let pickToBetGapSum = 0;
+  let pickToBetGapCount = 0;
+  let betToGameGapSum = 0;
+  let betToGameGapCount = 0;
+  for (const bet of resolvedBets) {
+    if (bet.pick_id) {
+      const p = pickMap.get(bet.pick_id);
+      if (p?.telegram_notified_at) {
+        const gap =
+          (new Date(bet.created_at).getTime() - new Date(p.telegram_notified_at).getTime()) /
+          60000;
+        // sanity: must be 0..24h. Negative would be bet-before-notify (rare,
+        // happens with manual bets); >24h is stale data.
+        if (gap >= 0 && gap < 24 * 60) {
+          pickToBetGapSum += gap;
+          pickToBetGapCount += 1;
+        }
+      }
+    }
+    if (bet.game_start_time) {
+      const gap =
+        (new Date(bet.game_start_time).getTime() - new Date(bet.created_at).getTime()) / 60000;
+      // sanity: 0..7d. Negative = bet after game start (shouldn't happen).
+      if (gap >= 0 && gap < 7 * 24 * 60) {
+        betToGameGapSum += gap;
+        betToGameGapCount += 1;
+      }
+    }
+  }
+  const avgPickToBetMin = pickToBetGapCount > 0 ? pickToBetGapSum / pickToBetGapCount : null;
+  const avgBetToGameMin = betToGameGapCount > 0 ? betToGameGapSum / betToGameGapCount : null;
+
+  // CLV alert: 5+ bets with negative avg → market consistently moved against
+  // us → system likely identifying false edges.
+  if (clvCount >= 5 && avgClv !== null && avgClv < -0.01) {
+    qualityAlerts.push(
+      `Avg CLV is ${(avgClv * 100).toFixed(1)}pp over ${clvCount} bets — market moved against us (system may not have edge)`,
+    );
+  }
+
+  let decisionQuality = '';
+  if (clvCount >= 1) {
+    const clvSign = avgClv !== null && avgClv >= 0 ? '+' : '';
+    const clvStr = avgClv !== null ? `${clvSign}${(avgClv * 100).toFixed(1)}pp` : 'n/a';
+    decisionQuality = `\n\n🎯 *Decision quality 24h:*\n`;
+    decisionQuality += `Avg CLV: ${clvStr} (${clvCount} bets)\n`;
+    if (avgPickToBetMin !== null) {
+      decisionQuality += `Avg pick → bet: ${avgPickToBetMin.toFixed(0)} min\n`;
+    }
+    if (avgBetToGameMin !== null) {
+      decisionQuality += `Avg bet → game: ${avgBetToGameMin.toFixed(0)} min`;
+    }
+  }
+
+  // Build alerts block AFTER all alert pushes (quality + CLV) finish.
+  const qualityAlertsBlock =
+    qualityAlerts.length > 0
+      ? `\n\n⚠️ *ALERTS:*\n` + qualityAlerts.map((a) => `• ${a}`).join('\n')
+      : '';
 
   const { data: settings } = await sb
     .from('settings')
@@ -174,7 +256,7 @@ Picks generated 24h: ${generated}
 Notified: ${notified} (${supersededStr})
 Bets resolved: ${wins}W-${losses}L (P/L ${plSign}$${pl.toFixed(2)})
 Bankroll: $${bankroll.toFixed(2)}
-System: ${healthSummary}${stuckLine}${alertLine}${qualityMetrics}${qualityAlertsBlock}`;
+System: ${healthSummary}${stuckLine}${alertLine}${qualityMetrics}${decisionQuality}${qualityAlertsBlock}`;
 }
 
 async function handle(req: Request) {

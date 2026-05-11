@@ -8,6 +8,8 @@ import { tierLabel } from '@/lib/units';
 import type { Bet, Tier } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+export const revalidate = 0;
 
 function dateLabel(iso: string): string {
   const d = new Date(iso);

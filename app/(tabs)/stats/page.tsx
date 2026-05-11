@@ -14,6 +14,8 @@ import {
 import type { Bet, BankrollLog, Settings } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+export const revalidate = 0;
 
 interface EloRow {
   sport: string;

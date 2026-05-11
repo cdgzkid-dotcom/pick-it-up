@@ -3,6 +3,8 @@ import PickCard from '@/components/PickCard';
 import type { Pick, Tier } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+export const revalidate = 0;
 
 const TIER_ORDER: Record<Tier, number> = {
   lock: 0,

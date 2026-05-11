@@ -562,7 +562,9 @@ export async function analyzeGames(
 
   const gameByMatchup = new Map<string, Game>();
   const teamAbbrByName = new Map<string, string>();
-  for (const g of games) {
+  // Iterate enriched (not games) so downstream lookups see real_data
+  // populated by the enrichment loop above. EnrichedGame extends Game.
+  for (const g of enriched) {
     gameByMatchup.set(`${g.home_team.toLowerCase()}|${g.away_team.toLowerCase()}`, g);
     if (g.home_team_abbr) teamAbbrByName.set(g.home_team.toLowerCase(), g.home_team_abbr);
     if (g.away_team_abbr) teamAbbrByName.set(g.away_team.toLowerCase(), g.away_team_abbr);

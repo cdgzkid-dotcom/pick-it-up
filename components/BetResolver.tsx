@@ -1,5 +1,5 @@
 'use client';
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { TeamLogo, SportLogo } from './Logo';
 import { tierLabel } from '@/lib/units';
@@ -9,11 +9,25 @@ interface Props {
   bet: Bet;
 }
 
+interface LiveStatus {
+  completed: boolean;
+  state: string;
+  home_score?: number;
+  away_score?: number;
+  period?: number;
+  display_clock?: string;
+  detail?: string;
+  short_detail?: string;
+}
+
+const POLL_INTERVAL_MS = 30_000;
+
 export default function BetResolver({ bet }: Props) {
   const [showCashout, setShowCashout] = useState(false);
   const [cashoutValue, setCashoutValue] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [isPending, start] = useTransition();
+  const [live, setLive] = useState<LiveStatus | null>(null);
   const router = useRouter();
 
   const amount = Number(bet.amount);
@@ -24,6 +38,58 @@ export default function BetResolver({ bet }: Props) {
   const gameStart = bet.game_start_time ? new Date(bet.game_start_time).getTime() : 0;
   const hoursAgo = gameStart > 0 ? (Date.now() - gameStart) / 3_600_000 : 0;
   const isStale = hoursAgo > 4;
+
+  // Poll live status. Only fetch if we have an espn_event_id and the game is
+  // close to starting (within 30 min) or already started.
+  useEffect(() => {
+    if (!bet.espn_event_id || !bet.sport) return;
+    if (gameStart > 0 && gameStart - Date.now() > 30 * 60_000) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/live-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            events: [
+              {
+                sport: bet.sport,
+                event_id: bet.espn_event_id,
+                game_start_time: bet.game_start_time,
+              },
+            ],
+          }),
+        });
+        if (!r.ok) return;
+        const data = (await r.json().catch(() => null)) as { statuses?: Record<string, LiveStatus> } | null;
+        const status = data?.statuses?.[bet.espn_event_id as string] ?? null;
+        if (cancelled) return;
+        setLive(status);
+        // Stop polling once game is done — the results checker will resolve it.
+        if (status?.completed || status?.state === 'post') return;
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bet.espn_event_id, bet.sport, bet.game_start_time, gameStart]);
+
+  const liveScore =
+    live && (live.home_score != null || live.away_score != null)
+      ? { home: live.home_score ?? 0, away: live.away_score ?? 0 }
+      : null;
+  const isLive = live?.state === 'in';
+  const isFinal = live?.completed || live?.state === 'post';
+  const statusLabel = live?.short_detail || live?.detail;
 
   const resolve = async (
     result: 'win' | 'loss' | 'push' | 'cashout' | 'early_payout',
@@ -79,6 +145,54 @@ export default function BetResolver({ bet }: Props) {
             {bet.home_team ?? ''}
           </span>
           <TeamLogo sport={bet.sport} abbr={bet.home_team_abbr} size={32} className="shrink-0" />
+        </div>
+      )}
+
+      {liveScore && (
+        <div
+          className={`flex items-center justify-between gap-2 px-2 py-2 rounded border ${
+            isLive
+              ? 'bg-green/10 border-green/40'
+              : isFinal
+                ? 'bg-line/30 border-line'
+                : 'bg-blue/10 border-blue/40'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-base font-bold">
+            <span className="text-muted text-[10px] uppercase">
+              {bet.away_team_abbr?.toUpperCase() ?? 'AWAY'}
+            </span>
+            <span
+              className={
+                liveScore.away > liveScore.home ? 'text-green' : 'text-fg'
+              }
+            >
+              {liveScore.away}
+            </span>
+            <span className="text-muted text-xs">—</span>
+            <span
+              className={
+                liveScore.home > liveScore.away ? 'text-green' : 'text-fg'
+              }
+            >
+              {liveScore.home}
+            </span>
+            <span className="text-muted text-[10px] uppercase">
+              {bet.home_team_abbr?.toUpperCase() ?? 'HOME'}
+            </span>
+          </div>
+          <div className="text-right">
+            {isLive && (
+              <span className="inline-block w-2 h-2 rounded-full bg-red animate-pulse mr-1 align-middle" />
+            )}
+            <span
+              className={`text-[11px] font-bold ${
+                isLive ? 'text-green' : isFinal ? 'text-muted' : 'text-blue'
+              }`}
+            >
+              {isFinal ? 'FINAL' : (statusLabel ?? (isLive ? 'EN VIVO' : 'PRÓXIMO'))}
+            </span>
+          </div>
         </div>
       )}
       <div className="flex justify-between items-start gap-2">

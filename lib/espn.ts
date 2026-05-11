@@ -291,6 +291,10 @@ export interface EventStatus {
   away_score?: number;
   home_team?: string;
   away_team?: string;
+  period?: number;
+  display_clock?: string;
+  detail?: string;
+  short_detail?: string;
 }
 
 export interface InjuryItem {
@@ -389,9 +393,17 @@ function ymdUTC(d: Date): string {
 
 interface ScoreboardEventLite {
   id: string;
-  status?: { type?: { state?: string; completed?: boolean } };
+  status?: {
+    type?: { state?: string; completed?: boolean; detail?: string; shortDetail?: string };
+    period?: number;
+    displayClock?: string;
+  };
   competitions?: Array<{
-    status?: { type?: { state?: string; completed?: boolean } };
+    status?: {
+      type?: { state?: string; completed?: boolean; detail?: string; shortDetail?: string };
+      period?: number;
+      displayClock?: string;
+    };
     competitors?: Array<{
       homeAway?: 'home' | 'away';
       score?: string | number | { value?: number; displayValue?: string };
@@ -414,6 +426,25 @@ async function fetchScoreboardByDate(sport: string, ymd: string): Promise<Scoreb
   const events = data?.events ?? [];
   scoreboardCache.set(key, events);
   return events;
+}
+
+async function fetchScoreboardByDateLive(sport: string, ymd: string): Promise<ScoreboardEventLite[]> {
+  const cfg = SPORTS[sport];
+  if (!cfg) return [];
+  try {
+    const res = await fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/${cfg.scoreboardPath}/scoreboard?dates=${ymd}`,
+      {
+        cache: 'no-store',
+        headers: { Accept: 'application/json', 'User-Agent': 'pick-it-up/1.0' },
+      },
+    );
+    if (!res.ok) return [];
+    const data = (await res.json()) as { events?: ScoreboardEventLite[] };
+    return data?.events ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchEventStatus(
@@ -454,37 +485,91 @@ export async function fetchEventStatus(
     const events = await fetchScoreboardByDate(sport, ymd);
     const ev = events.find((e) => String(e.id) === String(eventId));
     if (!ev) continue;
-
-    const comp = ev.competitions?.[0];
-    const compStatus = comp?.status?.type ?? ev.status?.type;
-    const state = compStatus?.state ?? 'unknown';
-    const completed = compStatus?.completed === true || state === 'post';
-
-    let home_score: number | undefined;
-    let away_score: number | undefined;
-    let home_team: string | undefined;
-    let away_team: string | undefined;
-
-    for (const c of comp?.competitors ?? []) {
-      const raw = c.score;
-      const score =
-        typeof raw === 'object' && raw
-          ? Number(raw.value ?? raw.displayValue)
-          : raw != null
-            ? Number(raw)
-            : NaN;
-      const teamName = c.team?.displayName;
-      if (c.homeAway === 'home') {
-        if (Number.isFinite(score)) home_score = score;
-        home_team = teamName;
-      } else if (c.homeAway === 'away') {
-        if (Number.isFinite(score)) away_score = score;
-        away_team = teamName;
-      }
-    }
-
-    return { completed, state, home_score, away_score, home_team, away_team };
+    return parseEventStatus(ev);
   }
 
+  return null;
+}
+
+function parseEventStatus(ev: ScoreboardEventLite): EventStatus {
+  const comp = ev.competitions?.[0];
+  const compStatus = comp?.status ?? ev.status;
+  const typeInfo = compStatus?.type;
+  const state = typeInfo?.state ?? 'unknown';
+  const completed = typeInfo?.completed === true || state === 'post';
+
+  let home_score: number | undefined;
+  let away_score: number | undefined;
+  let home_team: string | undefined;
+  let away_team: string | undefined;
+
+  for (const c of comp?.competitors ?? []) {
+    const raw = c.score;
+    const score =
+      typeof raw === 'object' && raw
+        ? Number(raw.value ?? raw.displayValue)
+        : raw != null
+          ? Number(raw)
+          : NaN;
+    const teamName = c.team?.displayName;
+    if (c.homeAway === 'home') {
+      if (Number.isFinite(score)) home_score = score;
+      home_team = teamName;
+    } else if (c.homeAway === 'away') {
+      if (Number.isFinite(score)) away_score = score;
+      away_team = teamName;
+    }
+  }
+
+  return {
+    completed,
+    state,
+    home_score,
+    away_score,
+    home_team,
+    away_team,
+    period: compStatus?.period,
+    display_clock: compStatus?.displayClock,
+    detail: typeInfo?.detail,
+    short_detail: typeInfo?.shortDetail,
+  };
+}
+
+export async function fetchLiveStatus(
+  sport: string,
+  eventId: string,
+  gameStartTime?: string | null,
+): Promise<EventStatus | null> {
+  const cfg = SPORTS[sport];
+  if (!cfg) return null;
+
+  const dates: string[] = [];
+  const seen = new Set<string>();
+  const push = (d: Date) => {
+    const ymd = ymdUTC(d);
+    if (!seen.has(ymd)) {
+      seen.add(ymd);
+      dates.push(ymd);
+    }
+  };
+  if (gameStartTime) {
+    const start = new Date(gameStartTime);
+    if (!Number.isNaN(start.getTime())) {
+      push(start);
+      push(new Date(start.getTime() + 86_400_000));
+      push(new Date(start.getTime() - 86_400_000));
+    }
+  }
+  const now = new Date();
+  push(now);
+  push(new Date(now.getTime() + 86_400_000));
+  push(new Date(now.getTime() - 86_400_000));
+
+  for (const ymd of dates) {
+    const events = await fetchScoreboardByDateLive(sport, ymd);
+    const ev = events.find((e) => String(e.id) === String(eventId));
+    if (!ev) continue;
+    return parseEventStatus(ev);
+  }
   return null;
 }

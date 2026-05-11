@@ -649,6 +649,20 @@ async function handle(req: Request) {
     console.error('[cron/analyze] orphan cleanup failed', e);
   }
 
+  // Heartbeat log: write one row to cron_runs per invocation so the health
+  // endpoint can verify the cron is actually firing every 10 min. Failure
+  // here MUST NOT block the response — it's audit telemetry, not behavior.
+  try {
+    await supabaseAdmin().from('cron_runs').insert({
+      workflow: 'analyze',
+      duration_ms: Date.now() - t0,
+      generated_picks: analyze?.generated ?? 0,
+      errors: Object.keys(errors).length > 0 ? errors : null,
+    });
+  } catch (e) {
+    console.error('[cron_runs insert failed]', e);
+  }
+
   return NextResponse.json({
     ok: Object.keys(errors).length === 0,
     duration_ms: Date.now() - t0,

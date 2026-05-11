@@ -14,7 +14,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { fetchGames, fetchInjuriesForSports, fetchEventStatus } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
-import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines } from '@/lib/telegram';
+import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines, formatSupersededOnlyMessage } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
@@ -211,7 +211,24 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     await sendTelegramMessage(lines.join('\n'));
   }
 
-  if (result.insertedPicks.length === 0 && result.insertedParlays.length === 0) {
+  if (result.insertedPicks.length === 0 && result.insertedParlays.length === 0 && result.updated === 0) {
+    // No new picks, no updates. But if we superseded picks that the user
+    // already saw in Telegram, we MUST notify — otherwise they might bet on
+    // something the system just pulled. Filter to picks that had a non-null
+    // telegram_notified_at before the supersede UPDATE (captured upstream).
+    const supersededNotifiable = result.supersededList.filter((s) => s.was_notified);
+    if (supersededNotifiable.length > 0) {
+      const text = formatSupersededOnlyMessage(
+        supersededNotifiable.map((s) => ({ pick: s.pick, tier: s.tier })),
+        { bankrollCurrent: Number(settings.bankroll_current) },
+      );
+      await sendTelegramMessage(text);
+      return {
+        generated: 0,
+        eventIds,
+        message: 'superseded_only_notified',
+      };
+    }
     return {
       generated: 0,
       eventIds,
@@ -231,6 +248,12 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     bankrollCurrent: Number(settings.bankroll_current),
     record: { wins: stats.wins, losses: stats.losses },
     roi: stats.roi,
+    // Only render supersede block inside the normal picks message when at
+    // least one of the superseded picks was previously notified — otherwise
+    // the user doesn't know what we're warning about.
+    supersededPicks: result.supersededList
+      .filter((s) => s.was_notified)
+      .map((s) => ({ pick: s.pick, tier: s.tier })),
   };
 
   // Run Monte Carlo on the slate (singles only — parlays already have their

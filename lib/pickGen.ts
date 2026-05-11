@@ -196,6 +196,13 @@ export interface AnalyzeResult {
   kellyByKey: Record<string, number>;
   withEdge: number;
   parlayCount: number;
+  /** CAPA-2 counters for the lock-in flow. */
+  supersededEdgeEvaporated: number;
+  flippedSideIgnored: number;
+  /** Detail of each superseded pick — used by cron to send a standalone
+   * Telegram alert when the only thing that happened was a supersede AND
+   * at least one was previously notified. */
+  supersededList: Array<{ pick: string; tier: string | null; was_notified: boolean }>;
 }
 
 interface PickRow {
@@ -241,6 +248,12 @@ interface PickRow {
   parlay_legs: unknown;
   game_start_time: string | null;
   updated_at: string;
+  // CAPA-2 lock-in fields (populated by applyLockIn).
+  locked_at?: string | null;
+  original_real_probability?: number | null;
+  original_odds?: number | null;
+  reanalysis_count?: number | null;
+  lock_reason?: string | null;
 }
 
 interface EnrichedGame extends Game {
@@ -1101,8 +1114,6 @@ export async function analyzeGames(
     updated_at: now,
   }));
 
-  const allRows: PickRow[] = [...singleRows, ...parlayRows, ...noOddsDataRows];
-
   // Build a lookup of kelly fractions per pick — caller (cron) passes this to
   // telegram so the message can show "Kelly 10.7%".
   const kellyByKey: Record<string, number> = {};
@@ -1115,84 +1126,272 @@ export async function analyzeGames(
 
   let insertedCount = 0;
   let updatedCount = 0;
+  let supersededEdgeEvaporatedCount = 0;
+  let flippedSideIgnoredCount = 0;
   const insertedSinglesOut: PickRow[] = [];
   const insertedParlaysOut: PickRow[] = [];
+  // Track which espn_event_ids the lock-in flow touched so the supersede
+  // pass below can skip them. Events analyzed but not touched get their
+  // pending picks marked superseded_edge_evaporated.
+  const touchedEventIds = new Set<string>();
 
-  if (allRows.length > 0) {
-    const { data: existing } = await supabase
+  // ── Rail 1: no-odds-data markers — direct insert, no lock-in. ──────────
+  if (noOddsDataRows.length > 0) {
+    const payload = noOddsDataRows.map((r) => ({ ...r, picks_generated_at: now }));
+    const { error } = await supabase.from('picks').insert(payload);
+    if (error) console.error('[pickGen] no-odds-data markers insert failed', error);
+    else {
+      for (const r of noOddsDataRows) {
+        if (r.espn_event_id) touchedEventIds.add(r.espn_event_id);
+      }
+    }
+  }
+
+  // ── Rail 2: parlays — keep the legacy dedup-by-key behavior, since
+  // parlays don't have a stable espn_event_id and lock-in semantics don't
+  // apply (server regenerates parlay combinations every run).
+  if (parlayRows.length > 0) {
+    const { data: existingParlays } = await supabase
       .from('picks')
       .select('id, sport, home_team, away_team, pick, bet_type')
-      .eq('status', 'pending');
-
-    const keyOf = (r: { sport: string; home_team: string; away_team: string; pick: string; bet_type: string }) =>
+      .eq('status', 'pending')
+      .eq('is_parlay', true);
+    const parlayKeyOf = (r: { sport: string; home_team: string; away_team: string; pick: string; bet_type: string }) =>
       `${r.sport}|${r.home_team}|${r.away_team}|${r.pick}|${r.bet_type}`;
-
-    const existingMap = new Map<string, string>();
-    for (const e of existing ?? []) existingMap.set(keyOf(e), e.id);
-
-    const toInsert: PickRow[] = [];
-    const toUpdate: { id: string; row: PickRow }[] = [];
-
-    for (const row of allRows) {
-      const id = existingMap.get(keyOf(row));
-      if (id) toUpdate.push({ id, row });
-      else toInsert.push(row);
+    const existingParlayMap = new Map<string, string>();
+    for (const e of existingParlays ?? []) existingParlayMap.set(parlayKeyOf(e), e.id);
+    for (const row of parlayRows) {
+      const id = existingParlayMap.get(parlayKeyOf(row));
+      if (id) {
+        const updateFields: Record<string, unknown> = { ...row };
+        delete updateFields.status;
+        const { error } = await supabase.from('picks').update(updateFields).eq('id', id);
+        if (error) console.error('[pickGen] parlay update failed', error);
+        else updatedCount++;
+      } else {
+        const { data: ins, error } = await supabase
+          .from('picks')
+          .insert([{ ...row, picks_generated_at: now }])
+          .select()
+          .single();
+        if (error) console.error('[pickGen] parlay insert failed', error);
+        else if (ins) {
+          insertedCount++;
+          insertedParlaysOut.push(ins as PickRow);
+        }
+      }
     }
+  }
 
-    if (toInsert.length > 0) {
-      const insertPayload = toInsert.map((r) => ({ ...r, picks_generated_at: now }));
-      const { data: insertedRows, error: insErr } = await supabase
+  // ── Rail 3: lockable singles ML — applyLockIn per row. ─────────────────
+  // Lock-in semantics (CAPA-2):
+  //   • First analysis of an espn_event_id → INSERT with locked_at=now,
+  //     original_real_probability=row.real_probability, original_odds=row.odds_decimal,
+  //     reanalysis_count=0, lock_reason='first_analysis'.
+  //   • Subsequent analysis SAME SIDE → UPDATE odds/edge/consensus/tier/kelly
+  //     but NEVER touch: pick, real_probability, original_*, locked_at, status.
+  //     Increment reanalysis_count. lock_reason='updated'.
+  //   • Subsequent analysis OTHER SIDE → LOG and skip. Locked pick stays.
+  //   • status='bet' picks are never modified by lock-in (out of scope).
+  type LockAction =
+    | { action: 'insert'; row: PickRow }
+    | { action: 'update'; existingId: string; row: PickRow }
+    | { action: 'skip_flipped'; existingId: string; lockedSide: string; proposedSide: string }
+    | { action: 'skip_already_bet'; existingId: string };
+
+  async function applyLockIn(row: PickRow): Promise<LockAction> {
+    if (!row.espn_event_id) return { action: 'insert', row };
+    const { data: existingPicks } = await supabase
+      .from('picks')
+      .select('id, pick, real_probability, original_real_probability, original_odds, status, locked_at, reanalysis_count')
+      .eq('espn_event_id', row.espn_event_id)
+      .eq('bet_type', row.bet_type)
+      .eq('is_parlay', false)
+      .in('status', ['pending', 'bet']);
+    const existing = (existingPicks ?? [])[0];
+    if (!existing) return { action: 'insert', row };
+    // Protect bet picks — never modified by lock-in.
+    if (existing.status === 'bet') {
+      return { action: 'skip_already_bet', existingId: existing.id };
+    }
+    // Same-side update path.
+    if (existing.pick === row.pick) {
+      return { action: 'update', existingId: existing.id, row };
+    }
+    // Flipped side.
+    return {
+      action: 'skip_flipped',
+      existingId: existing.id,
+      lockedSide: existing.pick,
+      proposedSide: row.pick,
+    };
+  }
+
+  for (const row of singleRows) {
+    const decision = await applyLockIn(row);
+    if (decision.action === 'insert') {
+      const insertPayload = {
+        ...row,
+        picks_generated_at: now,
+        locked_at: now,
+        original_real_probability: row.real_probability,
+        original_odds: row.odds_decimal,
+        reanalysis_count: 0,
+        lock_reason: 'first_analysis',
+      };
+      const { data: ins, error } = await supabase
         .from('picks')
-        .insert(insertPayload)
-        .select();
-      if (insErr) {
-        console.error('[pickGen] insert failed', insErr);
-        throw new Error(`DB insert failed: ${insErr.message}`);
+        .insert([insertPayload])
+        .select()
+        .single();
+      if (error) {
+        console.error('[pickGen] lock-in insert failed', error);
+        continue;
       }
-      insertedCount = toInsert.length;
-      for (const r of (insertedRows ?? []) as PickRow[]) {
-        if (r.is_parlay) insertedParlaysOut.push(r);
-        else insertedSinglesOut.push(r);
+      if (ins) {
+        insertedCount++;
+        insertedSinglesOut.push(ins as PickRow);
+        if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
+        if ((ins as PickRow).id) {
+          await recordPickFactors(supabase, {
+            id: (ins as PickRow).id!,
+            sport: row.sport,
+            pick: row.pick,
+            bet_type: row.bet_type,
+            odds_decimal: Number(row.odds_decimal),
+            home_team: row.home_team,
+            away_team: row.away_team,
+            league: row.league,
+            confidence: row.confidence,
+            tier: row.tier,
+            edge: Number(row.edge),
+            best_odds_source: row.best_odds_source,
+            trap_warning: row.trap_warning,
+            regression_flags: row.regression_flags,
+            line_movement_note: row.line_movement_note,
+            key_stats: row.key_stats as Pick['key_stats'],
+          });
+        }
       }
-      // Learning: record the factor fingerprint of every freshly-inserted
-      // single. Parlays are skipped (their legs are evaluated independently
-      // and the parlay row carries no key_stats). Failures are swallowed
-      // inside recordPickFactors so they never break the pick flow.
-      for (const r of insertedSinglesOut) {
-        if (!r.id) continue;
-        await recordPickFactors(supabase, {
-          id: r.id,
-          sport: r.sport,
-          pick: r.pick,
-          bet_type: r.bet_type,
-          odds_decimal: Number(r.odds_decimal),
-          home_team: r.home_team,
-          away_team: r.away_team,
-          league: r.league,
-          confidence: r.confidence,
-          tier: r.tier,
-          edge: Number(r.edge),
-          best_odds_source: r.best_odds_source,
-          trap_warning: r.trap_warning,
-          regression_flags: r.regression_flags,
-          line_movement_note: r.line_movement_note,
-          key_stats: r.key_stats as Pick['key_stats'],
+    } else if (decision.action === 'update') {
+      // Refresh only the volatile fields. Lock-in invariants stay frozen.
+      const refreshFields = {
+        odds_decimal: row.odds_decimal,
+        best_odds: row.best_odds,
+        best_odds_source: row.best_odds_source,
+        odds_comparison: row.odds_comparison,
+        edge: row.edge,
+        edge_vs_market: row.edge_vs_market,
+        market_consensus_implied: row.market_consensus_implied,
+        market_sources_count: row.market_sources_count,
+        market_sources: row.market_sources,
+        floor_applied: row.floor_applied,
+        confidence: row.confidence,
+        confidence_raw: row.confidence_raw,
+        tier: row.tier,
+        recommended_amount: row.recommended_amount,
+        lock_reason: 'updated',
+        updated_at: now,
+      };
+      const { error: updErr } = await supabase
+        .from('picks')
+        .update(refreshFields)
+        .eq('id', decision.existingId);
+      if (updErr) {
+        console.error('[pickGen] lock-in update failed', updErr);
+      } else {
+        // Two-step read+write to bump reanalysis_count — supabase-js doesn't
+        // expose atomic increment and this field is audit-only, not
+        // concurrency-critical (the cron runs once at a time per project).
+        const { data: cur } = await supabase
+          .from('picks')
+          .select('reanalysis_count')
+          .eq('id', decision.existingId)
+          .single();
+        await supabase
+          .from('picks')
+          .update({ reanalysis_count: (cur?.reanalysis_count ?? 0) + 1 })
+          .eq('id', decision.existingId);
+        updatedCount++;
+        if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
+        console.log('[LOCK_UPDATED]', {
+          espn_event_id: row.espn_event_id,
+          pick: row.pick,
+          new_odds: row.odds_decimal,
+          new_edge: Number(row.edge.toFixed(4)),
         });
       }
+    } else if (decision.action === 'skip_flipped') {
+      flippedSideIgnoredCount++;
+      if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
+      console.log('[LOCK_FLIPPED_SIDE_IGNORED]', {
+        espn_event_id: row.espn_event_id,
+        locked_side: decision.lockedSide,
+        proposed_side: decision.proposedSide,
+        proposed_real_prob: row.real_probability,
+      });
+    } else {
+      // skip_already_bet — pick is already a placed bet, untouched.
+      if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
+      console.log('[LOCK_SKIPPED_BET_PROTECTED]', {
+        espn_event_id: row.espn_event_id,
+        pick: row.pick,
+      });
     }
+  }
 
-    for (const u of toUpdate) {
-      const { id, row } = u;
-      const updateFields: Record<string, unknown> = { ...row };
-      delete updateFields.status;
-      const { error: updErr } = await supabase.from('picks').update(updateFields).eq('id', id);
-      if (updErr) console.error('[pickGen] update failed', updErr);
-      else updatedCount++;
+  // ── Rail 4: supersede orphaned pending picks ───────────────────────────
+  // A game we analyzed this run but didn't touch (no insert, no update, no
+  // flip-log) means Claude's edge for that event disappeared. Mark the
+  // existing pending pick as superseded_edge_evaporated so the UI hides it
+  // and the dedup query doesn't re-show it. Only pending picks — bet picks
+  // are protected.
+  const analyzedEventIds = new Set(
+    games.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x)),
+  );
+  const orphanedEventIds = Array.from(analyzedEventIds).filter((id) => !touchedEventIds.has(id));
+  const supersededList: AnalyzeResult['supersededList'] = [];
+  if (orphanedEventIds.length > 0) {
+    // Capture pick + tier + telegram_notified_at BEFORE the update so the
+    // cron knows whether each supersede needs a standalone Telegram alert.
+    const { data: orphanedPicks } = await supabase
+      .from('picks')
+      .select('id, pick, tier, espn_event_id, original_real_probability, telegram_notified_at')
+      .in('espn_event_id', orphanedEventIds)
+      .eq('status', 'pending')
+      .eq('is_parlay', false);
+    for (const o of orphanedPicks ?? []) {
+      const { error } = await supabase
+        .from('picks')
+        .update({
+          status: 'superseded_edge_evaporated',
+          lock_reason: 'edge_evaporated_in_reanalysis',
+          updated_at: now,
+        })
+        .eq('id', o.id);
+      if (error) {
+        console.error('[pickGen] supersede update failed', error);
+        continue;
+      }
+      supersededEdgeEvaporatedCount++;
+      supersededList.push({
+        pick: o.pick,
+        tier: (o.tier as string | null) ?? null,
+        was_notified: !!o.telegram_notified_at,
+      });
+      console.log('[LOCK_SUPERSEDED_EDGE_EVAPORATED]', {
+        pick_id: o.id,
+        pick: o.pick,
+        tier: o.tier,
+        was_notified: !!o.telegram_notified_at,
+        espn_event_id: o.espn_event_id,
+        original_real_prob: o.original_real_probability,
+      });
     }
   }
 
   console.log(
-    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount}`,
+    `[pickGen] done in ${Date.now() - t0}ms inserted=${insertedCount} updated=${updatedCount} superseded=${supersededEdgeEvaporatedCount} flipped=${flippedSideIgnoredCount}`,
   );
 
   return {
@@ -1203,5 +1402,8 @@ export async function analyzeGames(
     kellyByKey,
     withEdge: enrichedSingles.length,
     parlayCount: enrichedParlays.length,
+    supersededEdgeEvaporated: supersededEdgeEvaporatedCount,
+    flippedSideIgnored: flippedSideIgnoredCount,
+    supersededList,
   };
 }

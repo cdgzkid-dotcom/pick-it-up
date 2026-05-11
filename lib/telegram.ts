@@ -161,7 +161,19 @@ interface PicksContext {
   bankrollCurrent?: number;
   record?: { wins: number; losses: number };
   roi?: number;
+  /** CAPA-2: picks whose edge evaporated in this cron run (status flipped
+   * to superseded_edge_evaporated). Rendered as a bulleted warning block
+   * before the /picks link so the user sees WHICH picks the system pulled.
+   */
+  supersededPicks?: Array<{ pick: string; tier?: string | null }>;
 }
+
+const TIER_LABEL: Record<string, string> = {
+  lock: 'LOCK',
+  strong: 'STRONG',
+  value: 'VALUE',
+  parlay: 'PARLAY',
+};
 
 export function formatPicksMessage(
   picks: PickForMessage[],
@@ -229,8 +241,44 @@ export function formatPicksMessage(
   if (ctx.roi != null) footerBits.push(`ROI: ${ctx.roi >= 0 ? '+' : ''}${ctx.roi.toFixed(1)}%`);
   if (footerBits.length > 0) lines.push(footerBits.join(' · '));
 
+  if (ctx.supersededPicks && ctx.supersededPicks.length > 0) {
+    lines.push('⚠️ Edge evaporó en reanálisis:');
+    for (const s of ctx.supersededPicks) {
+      const tag = s.tier ? ` (era ${TIER_LABEL[s.tier] ?? s.tier.toUpperCase()})` : '';
+      lines.push(`• ${s.pick}${tag}`);
+    }
+  }
+
   lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
 
+  return lines.join('\n');
+}
+
+/**
+ * Standalone message for the case where the cron run produced ZERO new
+ * picks and ZERO updates but DID supersede at least one previously-notified
+ * pick. Without this message the user could place a bet on a pick they saw
+ * in Telegram minutes ago, unaware the system pulled it. Filtering of
+ * already-notified picks happens upstream — this helper just renders.
+ */
+export function formatSupersededOnlyMessage(
+  superseded: Array<{ pick: string; tier?: string | null }>,
+  ctx: { bankrollCurrent?: number } = {},
+): string {
+  const lines: string[] = [];
+  lines.push('⚠️ *PICKS RETIRADOS* — el edge se evaporó en reanálisis');
+  lines.push('');
+  for (const s of superseded) {
+    const tag = s.tier ? ` (era ${TIER_LABEL[s.tier] ?? s.tier.toUpperCase()})` : '';
+    lines.push(`❌ ${s.pick}${tag}`);
+  }
+  lines.push('');
+  lines.push('No apostar a estos picks — el sistema cambió de opinión basado en datos más frescos.');
+  if (ctx.bankrollCurrent != null) {
+    lines.push('');
+    lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)}`);
+  }
+  lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
   return lines.join('\n');
 }
 

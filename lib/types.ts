@@ -1,7 +1,14 @@
 export type Tier = 'lock' | 'strong' | 'value' | 'parlay';
 export type BetType = 'ML' | 'Spread' | 'O-U' | 'Prop' | 'Parlay';
 export type BetResult = 'pending' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout';
-export type PickStatus = 'pending' | 'bet' | 'skipped' | 'analyzed_no_edge' | 'analyzed_no_odds_data';
+export type PickStatus =
+  | 'pending'
+  | 'bet'
+  | 'skipped'
+  | 'analyzed_no_edge'
+  | 'analyzed_no_odds_data'
+  | 'superseded_edge_evaporated'
+  | 'superseded_flipped_side';
 
 export interface KeyStat {
   label: string;
@@ -55,6 +62,14 @@ export interface Pick {
   game_start_time?: string | null;
   picks_generated_at?: string | null;
   telegram_notified_at?: string | null;
+  // CAPA-2 lock-in: first run that produced a positive-edge pick freezes
+  // the side + real_probability. Subsequent runs only refresh odds/edge for
+  // the same side. See lib/pickGen.ts applyLockIn().
+  locked_at?: string | null;
+  original_real_probability?: number | null;
+  original_odds?: number | null;
+  reanalysis_count?: number | null;
+  lock_reason?: string | null;
 }
 
 export interface Bet {

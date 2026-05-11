@@ -18,11 +18,33 @@ async function buildHeartbeat(): Promise<string> {
 
   const { data: picks24h } = await sb
     .from('picks')
-    .select('id, status, telegram_notified_at')
+    .select('id, status, locked_at, telegram_notified_at')
     .gte('created_at', since24h);
   const generated = picks24h?.length ?? 0;
   const notified = picks24h?.filter((p) => p.telegram_notified_at).length ?? 0;
-  const superseded = picks24h?.filter((p) => p.status?.startsWith('superseded')).length ?? 0;
+  // Split CAPA-2/3 supersedes (real lock-in flow) from legacy bare 'superseded'
+  // (pre-CAPA-2 mechanism, kept around as 'superseded_legacy' for audit).
+  const supersededCapa = picks24h?.filter((p) =>
+    p.status === 'superseded_edge_evaporated' ||
+    p.status === 'superseded_line_moved_against' ||
+    p.status === 'superseded_flipped_side',
+  ).length ?? 0;
+  const supersededLegacy = picks24h?.filter((p) =>
+    p.status === 'superseded' || p.status === 'superseded_legacy',
+  ).length ?? 0;
+  // Auto-alert: only meaningful when we have a sample of post-CAPA-2 picks
+  // (locked_at populated). Threshold of 30% picked because 0-15% is normal
+  // and >30% is patological for a lock-in that's supposed to be sticky.
+  const totalNewPicks = picks24h?.filter((p) => p.locked_at !== null).length ?? 0;
+  const capaSupersedeRatio = totalNewPicks > 0 ? supersededCapa / totalNewPicks : 0;
+  const alertLine =
+    totalNewPicks >= 10 && capaSupersedeRatio > 0.30
+      ? `\n⚠️ ALERT: ${(capaSupersedeRatio * 100).toFixed(0)}% CAPA supersede ratio (${supersededCapa}/${totalNewPicks}). Investigate.`
+      : '';
+  const supersededStr =
+    supersededLegacy > 0
+      ? `${supersededCapa} CAPA, ${supersededLegacy} legacy`
+      : `${supersededCapa} superseded`;
 
   const { data: bets24h } = await sb
     .from('bets')
@@ -72,10 +94,10 @@ async function buildHeartbeat(): Promise<string> {
   return `📊 *Daily Health · ${today}*
 ─────────────────────
 Picks generated 24h: ${generated}
-Notified: ${notified} (${superseded} superseded)
+Notified: ${notified} (${supersededStr})
 Bets resolved: ${wins}W-${losses}L (P/L ${plSign}$${pl.toFixed(2)})
 Bankroll: $${bankroll.toFixed(2)}
-System: ${healthSummary}${stuckLine}`;
+System: ${healthSummary}${stuckLine}${alertLine}`;
 }
 
 async function handle(req: Request) {

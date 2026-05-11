@@ -43,35 +43,41 @@ export default function BankrollEditor({ initial, unitPercentage }: Props) {
     >
       <div className="text-[10px] text-muted uppercase tracking-wider">Bankroll</div>
       {editing ? (
-        <div className="mt-1 flex items-center gap-2">
-          <span className="text-2xl text-green">$</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            autoFocus
-            className="bg-transparent text-3xl font-bold text-green outline-none w-32"
-          />
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              save();
-            }}
-            className="ml-auto px-3 py-2 bg-green text-bg rounded font-bold text-xs"
-          >
-            OK
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setEditing(false);
-              setValue(String(initial));
-            }}
-            className="px-3 py-2 border border-line rounded text-xs text-muted"
-          >
-            X
-          </button>
+        <div className="mt-1 space-y-2" onClick={(e) => e.stopPropagation()}>
+          <div className="text-[10px] text-yellow bg-yellow/10 border border-yellow/30 rounded px-2 py-1.5 leading-snug">
+            ⚠️ Solo editar para depósitos o retiros en Draftea. Las apuestas
+            se descuentan automáticamente.
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-2xl text-green">$</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              autoFocus
+              className="bg-transparent text-3xl font-bold text-green outline-none w-32"
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                save();
+              }}
+              className="ml-auto px-3 py-2 bg-green text-bg rounded font-bold text-xs"
+            >
+              OK
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditing(false);
+                setValue(String(initial));
+              }}
+              className="px-3 py-2 border border-line rounded text-xs text-muted"
+            >
+              X
+            </button>
+          </div>
         </div>
       ) : (
         <div className="mt-1 flex items-baseline gap-2">

@@ -38,14 +38,31 @@ export default function PickCard({ pick, rank }: Props) {
 
   const [showForm, setShowForm] = useState(false);
   const [amountStr, setAmountStr] = useState(String(recommended));
+  const [oddsStr, setOddsStr] = useState(odds.toFixed(2));
   const [submitting, setSubmitting] = useState(false);
   const amountNum = Math.max(0, Number(amountStr) || 0);
-  const win = Math.round(amountNum * (odds - 1));
+  const oddsNum = Math.max(1.01, Number(oddsStr) || odds);
+  const win = Math.round(amountNum * (oddsNum - 1));
+  const oddsDelta = (oddsNum - odds) / odds; // negative = worse than pick
+  const draftaWorse = oddsDelta < -0.1;
+
+  // Recompute Kelly with the user's edited odds — half-Kelly capped 1-10%
+  const kellyPct = (() => {
+    const b = oddsNum - 1;
+    if (b <= 0 || !realProb) return 0;
+    const k = (realProb * b - (1 - realProb)) / b;
+    if (k <= 0) return 0;
+    return Math.max(0.01, Math.min(0.1, k / 2));
+  })();
 
   const confirmar = async () => {
     setErr(null);
     if (amountNum <= 0) {
       setErr('Monto inválido');
+      return;
+    }
+    if (oddsNum <= 1) {
+      setErr('Momio inválido');
       return;
     }
     setSubmitting(true);
@@ -63,7 +80,7 @@ export default function PickCard({ pick, rank }: Props) {
         espn_event_id: pick.espn_event_id ?? null,
         pick: pick.pick,
         bet_type: pick.bet_type,
-        odds_decimal: odds,
+        odds_decimal: oddsNum,
         amount: amountNum,
         tier,
       }),
@@ -327,33 +344,53 @@ export default function PickCard({ pick, rank }: Props) {
         </div>
       ) : (
         <div className="bg-bg/50 border border-line rounded-lg p-3 space-y-3">
-          <div>
-            <label className="text-[10px] text-muted uppercase tracking-wider">
-              Monto a apostar
-            </label>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-2xl text-green font-bold">$</span>
+          <div className="grid grid-cols-[1fr_auto] gap-3">
+            <div>
+              <label className="text-[10px] text-muted uppercase tracking-wider">
+                Monto
+              </label>
+              <div className="flex items-center gap-1 mt-1">
+                <span className="text-xl text-green font-bold">$</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={amountStr}
+                  onChange={(e) => setAmountStr(e.target.value)}
+                  autoFocus
+                  className="bg-transparent text-2xl font-bold text-fg outline-none w-full min-w-0"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] text-muted uppercase tracking-wider">
+                Momio (Draftea)
+              </label>
               <input
                 type="number"
                 inputMode="decimal"
-                value={amountStr}
-                onChange={(e) => setAmountStr(e.target.value)}
-                autoFocus
-                className="bg-transparent text-2xl font-bold text-fg outline-none flex-1 min-w-0"
+                step="0.01"
+                value={oddsStr}
+                onChange={(e) => setOddsStr(e.target.value)}
+                className="mt-1 bg-bg border border-line rounded px-2 py-1.5 text-xl font-bold text-blue outline-none w-24 text-right"
               />
             </div>
-            <div className="flex gap-1 mt-2">
-              {[recommended, recommended * 2, Math.round(recommended / 2), 100, 200, 500].map((v, i) => (
-                <button
-                  key={i}
-                  onClick={() => setAmountStr(String(v))}
-                  className="tap px-2 py-1 border border-line rounded text-[10px] text-muted hover:text-fg"
-                >
-                  ${v}
-                </button>
-              ))}
-            </div>
           </div>
+          <div className="flex gap-1 -mt-1">
+            {[recommended, recommended * 2, Math.round(recommended / 2), 100, 200, 500].map((v, i) => (
+              <button
+                key={i}
+                onClick={() => setAmountStr(String(v))}
+                className="tap px-2 py-1 border border-line rounded text-[10px] text-muted hover:text-fg"
+              >
+                ${v}
+              </button>
+            ))}
+          </div>
+          {draftaWorse && (
+            <div className="text-[11px] text-red bg-red/10 border border-red/30 rounded px-2 py-1.5 leading-snug">
+              ⚠️ Momio en Draftea ({oddsNum.toFixed(2)}) es {Math.abs(oddsDelta * 100).toFixed(0)}% peor que el del pick ({odds.toFixed(2)}) — el edge puede no existir
+            </div>
+          )}
           <div className="flex justify-between text-xs">
             <span className="text-muted">Ganancia potencial</span>
             <span className="text-yellow font-bold">+${win}</span>
@@ -362,13 +399,19 @@ export default function PickCard({ pick, rank }: Props) {
             <span className="text-muted">Total a recibir si gana</span>
             <span className="text-fg font-bold">${amountNum + win}</span>
           </div>
+          {kellyPct > 0 && (
+            <div className="flex justify-between text-[10px]">
+              <span className="text-muted">Kelly recalculado</span>
+              <span className="text-muted">{(kellyPct * 100).toFixed(1)}%</span>
+            </div>
+          )}
           <div className="flex gap-2 pt-1">
             <button
               onClick={confirmar}
               disabled={submitting || amountNum <= 0}
               className="tap flex-1 py-3 bg-green text-bg rounded font-bold text-sm disabled:opacity-50"
             >
-              {submitting ? 'APOSTANDO…' : `CONFIRMAR $${amountNum}`}
+              {submitting ? 'APOSTANDO…' : `CONFIRMAR $${amountNum} @ ${oddsNum.toFixed(2)}`}
             </button>
             <button
               onClick={() => {

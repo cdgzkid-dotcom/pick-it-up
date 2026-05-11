@@ -54,6 +54,7 @@ export default function ManualBetForm() {
   // Quick-bet from pending pick
   const [selectedPick, setSelectedPick] = useState<PendingPick | null>(null);
   const [amount, setAmount] = useState('');
+  const [oddsOverride, setOddsOverride] = useState('');
 
   // Manual entry
   const [manualPick, setManualPick] = useState('');
@@ -80,8 +81,13 @@ export default function ManualBetForm() {
     if (!selectedPick) return;
     setErr(null);
     const a = Number(amount);
+    const o = Number(oddsOverride) || Number(selectedPick.odds_decimal);
     if (!Number.isFinite(a) || a <= 0) {
       setErr('Monto inválido');
+      return;
+    }
+    if (!Number.isFinite(o) || o <= 1) {
+      setErr('Momio inválido (decimal > 1.00)');
       return;
     }
     setSubmitting(true);
@@ -99,7 +105,7 @@ export default function ManualBetForm() {
         espn_event_id: selectedPick.espn_event_id,
         pick: selectedPick.pick,
         bet_type: selectedPick.bet_type,
-        odds_decimal: Number(selectedPick.odds_decimal),
+        odds_decimal: o,
         amount: a,
         tier: selectedPick.tier,
       }),
@@ -113,6 +119,7 @@ export default function ManualBetForm() {
     setOpen(false);
     setSelectedPick(null);
     setAmount('');
+    setOddsOverride('');
     start(() => router.refresh());
   };
 
@@ -150,7 +157,8 @@ export default function ManualBetForm() {
     setSubmitting(false);
     if (!r.ok) {
       const j = await r.json().catch(() => null);
-      setErr(j?.error ?? 'Falló');
+      console.error('[ManualBetForm] submit failed', r.status, j);
+      setErr(`(${r.status}) ${j?.error ?? 'Falló'}${j?.detail ? ` · ${JSON.stringify(j.detail)}` : ''}`);
       return;
     }
     setManualPick('');
@@ -173,7 +181,11 @@ export default function ManualBetForm() {
 
   // STEP 2: monto para un pick pendiente
   if (selectedPick) {
-    const win = Math.round(Number(amount || 0) * (selectedPick.odds_decimal - 1));
+    const pickOdds = Number(selectedPick.odds_decimal);
+    const effectiveOdds = Number(oddsOverride) || pickOdds;
+    const win = Math.round(Number(amount || 0) * (effectiveOdds - 1));
+    const oddsDelta = (effectiveOdds - pickOdds) / pickOdds;
+    const draftaWorse = oddsDelta < -0.1;
     return (
       <div className="bg-card border border-line rounded-lg p-3 space-y-2">
         <div className="flex items-baseline justify-between">
@@ -186,20 +198,38 @@ export default function ManualBetForm() {
         </div>
         <div className="text-sm font-bold">{selectedPick.pick}</div>
         <div className="text-xs text-muted">{selectedPick.game}</div>
-        <div className="text-xs">
-          Momio: <span className="text-blue font-bold">{Number(selectedPick.odds_decimal).toFixed(2)}</span>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wider">Monto</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              autoFocus
+              className="w-full bg-bg border border-line rounded px-2 py-2 text-base mt-1"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wider">
+              Momio Draftea (sug: {pickOdds.toFixed(2)})
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              placeholder={pickOdds.toFixed(2)}
+              value={oddsOverride}
+              onChange={(e) => setOddsOverride(e.target.value)}
+              className="w-full bg-bg border border-line rounded px-2 py-2 text-base mt-1 text-blue font-bold"
+            />
+          </div>
         </div>
-        <div>
-          <label className="text-[10px] text-muted uppercase tracking-wider">Monto</label>
-          <input
-            type="number"
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            autoFocus
-            className="w-full bg-bg border border-line rounded px-2 py-2 text-base mt-1"
-          />
-        </div>
+        {draftaWorse && (
+          <div className="text-[10px] text-red bg-red/10 border border-red/30 rounded px-2 py-1.5 leading-snug">
+            ⚠️ Momio en Draftea ({effectiveOdds.toFixed(2)}) es {Math.abs(oddsDelta * 100).toFixed(0)}% peor — el edge puede no existir
+          </div>
+        )}
         <div className="text-xs text-muted">
           Ganancia: <span className="text-yellow font-bold">+${win}</span>
         </div>
@@ -210,7 +240,7 @@ export default function ManualBetForm() {
             disabled={submitting}
             className="tap flex-1 py-2 bg-green text-bg rounded font-bold text-xs"
           >
-            {submitting ? 'GUARDANDO…' : `CONFIRMAR $${Math.round(Number(amount) || 0)}`}
+            {submitting ? 'GUARDANDO…' : `CONFIRMAR $${Math.round(Number(amount) || 0)} @ ${effectiveOdds.toFixed(2)}`}
           </button>
           <button
             onClick={() => setOpen(false)}

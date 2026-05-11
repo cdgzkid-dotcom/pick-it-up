@@ -32,11 +32,13 @@ export async function POST(req: Request) {
   }
   const parsed = CreateBetSchema.safeParse(body);
   if (!parsed.success) {
+    console.error('[POST /api/bets] validation failed', JSON.stringify(parsed.error.flatten()), 'body:', JSON.stringify(body));
     return NextResponse.json(
       { error: 'Bad request', detail: parsed.error.flatten() },
       { status: 400 },
     );
   }
+  console.log(`[POST /api/bets] ${parsed.data.pick_id ? 'pick' : 'MANUAL'} ${parsed.data.pick} ${parsed.data.bet_type} @${parsed.data.odds_decimal} $${parsed.data.amount} (${parsed.data.sport})`);
 
   const supabase = supabaseAdmin();
   const { pick_id, ...fields } = parsed.data;

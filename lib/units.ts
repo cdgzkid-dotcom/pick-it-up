@@ -1,3 +1,4 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Tier } from './types';
 
 const TIER_UNITS: Record<Tier, number> = {
@@ -68,6 +69,39 @@ export const kellyAmount = (
 
 export const potentialWin = (amount: number, oddsDecimal: number): number =>
   Math.round(amount * (oddsDecimal - 1));
+
+/**
+ * Learned per-sport Kelly multiplier. Half Kelly is the baseline (0.5). When
+ * the system has 30+ resolved bets in a given sport, the multiplier is
+ * adjusted toward more aggressive (winning sport) or more conservative
+ * (losing sport). Defaults to half Kelly while data is thin.
+ */
+export async function sportKellyMultiplier(
+  supabase: SupabaseClient,
+  sport: string,
+): Promise<number> {
+  try {
+    const { data } = await supabase
+      .from('factor_performance')
+      .select('wins, losses')
+      .eq('factor_name', 'sport')
+      .eq('factor_value', sport)
+      .maybeSingle();
+    if (!data) return 0.5;
+    const wins = Number(data.wins ?? 0);
+    const losses = Number(data.losses ?? 0);
+    const total = wins + losses;
+    if (total < 30) return 0.5;
+    const wr = wins / total;
+    if (wr > 0.58) return 0.6;
+    if (wr > 0.53) return 0.5;
+    if (wr > 0.48) return 0.35;
+    return 0.25;
+  } catch (e) {
+    console.error('[units] sportKellyMultiplier threw', e);
+    return 0.5;
+  }
+}
 
 const TIER_RANGE: Record<Tier, string> = {
   lock: '85-100%',

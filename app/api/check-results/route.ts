@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { fetchEventStatus } from '@/lib/espn';
 import { potentialWin } from '@/lib/units';
 import { applyResult as applyEloResult } from '@/lib/elo';
+import { updateFactorPerformance } from '@/lib/learning';
 import type { Bet } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -201,6 +202,15 @@ export async function POST() {
         note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
       },
     ]);
+
+    // Learning: update per-factor performance now that this bet has a final
+    // result. recordPickFactors was called at pick-generation time, so the
+    // factor snapshot is already in pick_factors keyed by pick_id.
+    await updateFactorPerformance(supabase, {
+      ...bet,
+      result: won ? 'win' : 'loss',
+      payout,
+    });
 
     resolutions.push({
       bet_id: bet.id,

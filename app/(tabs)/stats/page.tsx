@@ -2,6 +2,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import StatsChart from '@/components/StatsChart';
 import WeeklyChart from '@/components/WeeklyChart';
 import BetHistoryTable from '@/components/BetHistoryTable';
+import LearningStats from '@/components/LearningStats';
 import { SportLogo } from '@/components/Logo';
 import {
   computeStats,
@@ -267,6 +268,8 @@ export default async function StatsPage() {
       <BreakdownTable title="Por tier (AI accuracy)" data={byTier} />
 
       <BetHistoryTable bets={bets} />
+
+      <LearningStats />
 
       {/* ELO Rankings */}
       {Object.keys(eloBySport).length > 0 && (

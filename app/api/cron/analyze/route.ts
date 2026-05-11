@@ -17,6 +17,7 @@ import { potentialWin } from '@/lib/units';
 import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
+import { updateFactorPerformance } from '@/lib/learning';
 import type { Bet, Game } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -432,6 +433,13 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
         note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
       },
     ]);
+
+    // Learning: roll this bet's outcome into per-factor performance.
+    await updateFactorPerformance(supabase, {
+      ...bet,
+      result: won ? 'win' : 'loss',
+      payout,
+    });
 
     newlyResolved.push({
       bet_id: bet.id,

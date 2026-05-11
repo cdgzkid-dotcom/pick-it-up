@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { callClaudeJson } from './claude';
 import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt } from './prompts';
 import { adjustedEdgeScore, edgeOf, impliedProbability } from './edge';
-import { kellyAmount, tierForOdds, tierFromConfidence } from './units';
+import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
@@ -17,7 +17,8 @@ import { fetchMultiOdds, fetchPlayerProps, findOddsForGame, bestMoneylineByBook,
 import type { PropLine } from './oddsApi';
 import { captureOrLoadOpening, computeMovement } from './lineMovement';
 import type { MovementSignal } from './lineMovement';
-import type { Game, Tier } from './types';
+import { recordPickFactors, getWeightsForPrompt } from './learning';
+import type { Game, Pick, Tier } from './types';
 
 const BATCH_SIZE = 2;
 
@@ -416,6 +417,8 @@ export async function analyzeGames(
   const batches = chunk(enriched, BATCH_SIZE);
   console.log(`[pickGen] launching ${batches.length} batches for ${games.length} games`);
 
+  const learnedWeights = await getWeightsForPrompt(supabase);
+
   // Promise.allSettled with per-batch timeout (55s) — partial slate is better
   // than failing the whole route at maxDuration=60.
   const PER_BATCH_TIMEOUT_MS = 55_000;
@@ -426,7 +429,7 @@ export async function analyzeGames(
         try {
           const claudeOutput = await callClaudeJson(
             PICK_GENERATION_SYSTEM,
-            buildPickGenerationUserPrompt(b),
+            buildPickGenerationUserPrompt(b) + learnedWeights,
             { retry: false, maxTokens: 4096 },
           );
           const validated = ClaudeResponseSchema.safeParse(claudeOutput);
@@ -485,6 +488,18 @@ export async function analyzeGames(
 
   console.log(
     `[AUDIT] total raw from claude: ${raw.picks.length} picks + ${raw.parlays.length} parlays (across ${batches.length} batches)`,
+  );
+
+  // Per-sport Kelly multiplier learned from history. Defaults to 0.5 (= half
+  // Kelly, matching the baseline divisor inside kellyAmount) until we have
+  // 30+ resolved bets in a given sport. We scale the kelly result by
+  // (multiplier / 0.5) so the existing kellyAmount function stays untouched.
+  const sportsForKelly = Array.from(new Set(raw.picks.map((p) => p.sport)));
+  const kellyMultipliers: Record<string, number> = {};
+  await Promise.all(
+    sportsForKelly.map(async (s) => {
+      kellyMultipliers[s] = await sportKellyMultiplier(supabase, s);
+    }),
   );
 
   const mapped = raw.picks.map((p) => {
@@ -553,6 +568,13 @@ export async function analyzeGames(
     const adjustedTier = tierForOdds(baseTier, odds);
     const hasTrap = !!mergedTrap;
     const k = kellyAmount(opts.bankroll, p.real_probability, odds, { conservative: hasTrap });
+    // Scale by learned per-sport multiplier (defaults to 0.5 = no change).
+    const learnedMult = kellyMultipliers[p.sport] ?? 0.5;
+    if (learnedMult !== 0.5 && k.amount > 0) {
+      const scale = learnedMult / 0.5;
+      k.amount = Math.max(1, Math.round(k.amount * scale));
+      k.fraction = Math.min(0.1, k.fraction * scale);
+    }
     const score = adjustedEdgeScore(p.real_probability, odds);
     const homeAbbr =
       p.home_team_abbr?.toLowerCase() ??
@@ -775,6 +797,31 @@ export async function analyzeGames(
       for (const r of (insertedRows ?? []) as PickRow[]) {
         if (r.is_parlay) insertedParlaysOut.push(r);
         else insertedSinglesOut.push(r);
+      }
+      // Learning: record the factor fingerprint of every freshly-inserted
+      // single. Parlays are skipped (their legs are evaluated independently
+      // and the parlay row carries no key_stats). Failures are swallowed
+      // inside recordPickFactors so they never break the pick flow.
+      for (const r of insertedSinglesOut) {
+        if (!r.id) continue;
+        await recordPickFactors(supabase, {
+          id: r.id,
+          sport: r.sport,
+          pick: r.pick,
+          bet_type: r.bet_type,
+          odds_decimal: Number(r.odds_decimal),
+          home_team: r.home_team,
+          away_team: r.away_team,
+          league: r.league,
+          confidence: r.confidence,
+          tier: r.tier,
+          edge: Number(r.edge),
+          best_odds_source: r.best_odds_source,
+          trap_warning: r.trap_warning,
+          regression_flags: r.regression_flags,
+          line_movement_note: r.line_movement_note,
+          key_stats: r.key_stats as Pick['key_stats'],
+        });
       }
     }
 

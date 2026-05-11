@@ -331,6 +331,57 @@ function renderSupersededBlock(items: SupersededPickForTg[]): string[] {
 }
 
 /**
+ * Fix C (no-odds slate alert): rendered when the cron analyzed at least
+ * one in-window game but ALL of them ended in the analyzed_no_odds_data
+ * branch. Without this message the user can't distinguish "DK is late"
+ * from "system is broken" — both look like Telegram silence. Anti-spam
+ * gating happens in the caller via system_notifications.
+ */
+export function formatNoOddsAlertMessage(
+  games: Array<{
+    sport: string;
+    home_team: string;
+    away_team: string;
+    game_start_time: string | null;
+  }>,
+  ctx: { systemHealth?: SystemHealthSummary } = {},
+): string {
+  const lines: string[] = [];
+  lines.push('🟡 *Pick It Up · Slate sin odds*');
+  lines.push('─────────────────────');
+  lines.push(`${games.length} juego(s) en ventana pero sin odds DK disponibles:`);
+  lines.push('');
+
+  for (const g of games.slice(0, 5)) {
+    const startTime = g.game_start_time
+      ? new Date(g.game_start_time).toLocaleTimeString('es-MX', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'America/Mexico_City',
+        })
+      : 'TBD';
+    lines.push(`• ${g.away_team} @ ${g.home_team} (${g.sport}, ${startTime})`);
+  }
+
+  if (games.length > 5) {
+    lines.push(`...y ${games.length - 5} más`);
+  }
+
+  lines.push('');
+  lines.push('Sistema OK, esperando que DK publique.');
+  lines.push('Reintento automático cada 10 min hasta 3 veces.');
+
+  if (ctx.systemHealth) {
+    lines.push(renderHealthIndicator(ctx.systemHealth));
+  }
+
+  lines.push('');
+  lines.push(`🔗 ${APP_URL.replace(/^https?:\/\//, '')}/picks`);
+
+  return lines.join('\n');
+}
+
+/**
  * Standalone message for the case where the cron run produced ZERO new
  * picks and ZERO updates but DID supersede at least one previously-notified
  * pick. Without this message the user could place a bet on a pick they saw

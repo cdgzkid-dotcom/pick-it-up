@@ -218,6 +218,21 @@ export interface AnalyzeResult {
         current_odds: number;
       }
   >;
+  /** Fix C (slate-without-odds notification): how many games in this run
+   * ended in the analyzed_no_odds_data branch (including re-attempts that
+   * UPDATED an existing marker). Used by cron/analyze to decide whether to
+   * fire the no_odds_alert Telegram. */
+  insertedNoOddsCount: number;
+  /** Metadata for the games behind insertedNoOddsCount. The cron passes
+   * this to formatNoOddsAlertMessage so the user sees which games are
+   * waiting on DK odds. */
+  noOddsEvents: Array<{
+    espn_event_id: string;
+    sport: string;
+    home_team: string;
+    away_team: string;
+    game_start_time: string | null;
+  }>;
 }
 /** Convenience alias for one entry in AnalyzeResult.supersededList. */
 export type SupersededEntry = AnalyzeResult['supersededList'][number];
@@ -274,6 +289,11 @@ interface PickRow {
   // Quality-audit findings (failures for Rail 5 rows, warnings for healthy
   // singleRows). Persists as jsonb in DB.
   audit_failures?: string[] | null;
+  // Fix B (no-odds retry): counts how many times the marker for an event
+  // has been re-evaluated. Bounded by the dedup guard in cron/analyze
+  // (currently retry_count<3 + age>20min). Only set on analyzed_no_odds_data
+  // rows in practice — other statuses leave it at the DB default (0).
+  retry_count?: number | null;
 }
 
 interface EnrichedGame extends Game {
@@ -1259,15 +1279,74 @@ export async function analyzeGames(
   // pending picks marked superseded_edge_evaporated.
   const touchedEventIds = new Set<string>();
 
-  // ── Rail 1: no-odds-data markers — direct insert, no lock-in. ──────────
+  // ── Rail 1: no-odds-data markers — UPSERT (Fix B). ─────────────────────
+  // When the same event hits this branch on a later run (DK still late),
+  // we UPDATE the existing marker incrementing retry_count and refreshing
+  // updated_at. The dedup guard in cron/analyze uses retry_count + age to
+  // decide whether to re-attempt. Cap is enforced upstream (retry_count<3).
+  //
+  // noOddsEvents accumulates metadata (including retries) so the caller
+  // (cron/analyze) can build the Fix-C "slate without odds" Telegram alert.
+  const noOddsEvents: AnalyzeResult['noOddsEvents'] = [];
+  let insertedNoOddsCount = 0;
   if (noOddsDataRows.length > 0) {
-    const payload = noOddsDataRows.map((r) => ({ ...r, picks_generated_at: now }));
-    const { error } = await supabase.from('picks').insert(payload);
-    if (error) console.error('[pickGen] no-odds-data markers insert failed', error);
-    else {
-      for (const r of noOddsDataRows) {
-        if (r.espn_event_id) touchedEventIds.add(r.espn_event_id);
+    for (const r of noOddsDataRows) {
+      if (!r.espn_event_id) {
+        // Defensive: shouldn't happen (we only push markers with event_id
+        // earlier in the flow), but stay safe — insert and move on.
+        const { error: insErr } = await supabase
+          .from('picks')
+          .insert({ ...r, picks_generated_at: now });
+        if (insErr) console.error('[pickGen] no-odds marker insert (no event_id) failed', insErr);
+        else insertedNoOddsCount++;
+        continue;
       }
+
+      const { data: existing } = await supabase
+        .from('picks')
+        .select('id, retry_count')
+        .eq('espn_event_id', r.espn_event_id)
+        .eq('status', 'analyzed_no_odds_data')
+        .maybeSingle();
+
+      if (existing) {
+        const newRetryCount = (existing.retry_count ?? 0) + 1;
+        const { error: updErr } = await supabase
+          .from('picks')
+          .update({
+            retry_count: newRetryCount,
+            updated_at: now,
+            picks_generated_at: now,
+          })
+          .eq('id', existing.id);
+        if (updErr) console.error('[pickGen] no-odds marker update failed', updErr);
+        else {
+          insertedNoOddsCount++;
+          console.log('[NO_ODDS_MARKER_UPDATED]', {
+            pick_id: existing.id,
+            espn_event_id: r.espn_event_id,
+            retry_count: newRetryCount,
+          });
+        }
+      } else {
+        const { error: insErr } = await supabase
+          .from('picks')
+          .insert({ ...r, picks_generated_at: now });
+        if (insErr) console.error('[pickGen] no-odds marker insert failed', insErr);
+        else {
+          insertedNoOddsCount++;
+          console.log('[NO_ODDS_MARKER_CREATED]', { espn_event_id: r.espn_event_id });
+        }
+      }
+
+      touchedEventIds.add(r.espn_event_id);
+      noOddsEvents.push({
+        espn_event_id: r.espn_event_id,
+        sport: r.sport,
+        home_team: r.home_team,
+        away_team: r.away_team,
+        game_start_time: r.game_start_time ?? null,
+      });
     }
   }
 
@@ -1666,5 +1745,7 @@ export async function analyzeGames(
     flippedSideIgnored: flippedSideIgnoredCount,
     filteredByAudit: filteredByAuditCount,
     supersededList,
+    insertedNoOddsCount,
+    noOddsEvents,
   };
 }

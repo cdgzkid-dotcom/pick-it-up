@@ -14,7 +14,14 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { fetchGames, fetchInjuriesForSports, fetchEventStatus } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
-import { sendTelegramMessage, formatPicksMessage, formatResultsMessage, formatMonteCarloLines, formatSupersededOnlyMessage } from '@/lib/telegram';
+import {
+  sendTelegramMessage,
+  formatPicksMessage,
+  formatResultsMessage,
+  formatMonteCarloLines,
+  formatSupersededOnlyMessage,
+  formatNoOddsAlertMessage,
+} from '@/lib/telegram';
 import type { SupersededPickForTg } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
@@ -55,14 +62,20 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-// Regular-season window: 20-45 min before game start. Cron every 10 min
+// Regular-season window: 15-60 min before game start. Cron every 10 min
 // gives multiple chances to catch each game. We want the FRESHEST data
 // (lineups, odds) — not 2.5 hours early when everything can still change.
-const WINDOW_MIN_MINUTES = 20;
-const WINDOW_MAX_MINUTES = 45;
-// Playoffs: same freshness principle — 20-60 min before, never earlier.
-// The dedup guard prevents re-analyzing the same event.
-const PLAYOFF_WINDOW_MIN_MINUTES = 20;
+//
+// Fix A (no-odds silence): bumped from 20-45 to 15-60 after diagnosing that
+// DK publishes MLB moneylines typically T-30..T-60 min. The old 20-45
+// window left us catching DK on the FIRST attempt sometimes — if DK was
+// 5 min late the marker stuck and we never retried. 15-60 means we have
+// up to 4-5 cron firings per game to land an attempt where DK is ready.
+const WINDOW_MIN_MINUTES = 15;
+const WINDOW_MAX_MINUTES = 60;
+// Playoffs: same widened window for consistency (the late-publishing problem
+// affects playoffs too). Was 20-60, now 15-60.
+const PLAYOFF_WINDOW_MIN_MINUTES = 15;
 const PLAYOFF_WINDOW_MAX_MINUTES = 60;
 
 /**
@@ -149,13 +162,51 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   // were ever notified via Telegram (telegram_notified_at), OR were marked
   // as 'analyzed_no_edge' (for playoff games we already looked at but
   // Claude found no edge — don't re-burn Claude tokens on the same game).
+  //
+  // Fix B (no-odds retry): analyzed_no_odds_data markers are NO LONGER a
+  // permanent block. If the marker is older than 20 min (measured from
+  // updated_at, fallback created_at) AND retry_count<3, we DO re-analyze.
+  // This covers DK publishing odds 30-60 min after our first attempt.
   const { data: blockedPicks } = await supabase
     .from('picks')
-    .select('espn_event_id, status, telegram_notified_at')
+    .select('espn_event_id, status, telegram_notified_at, created_at, updated_at, retry_count')
     .or('status.in.(pending,bet,analyzed_no_edge,analyzed_no_odds_data),telegram_notified_at.not.is.null')
     .in('espn_event_id', eventIds);
 
-  const alreadyDone = new Set((blockedPicks ?? []).map((p) => p.espn_event_id));
+  const alreadyDone = new Set(
+    (blockedPicks ?? [])
+      .filter((p) => {
+        // pending / bet / analyzed_no_edge: ALWAYS block (active picks, or
+        // Claude already decided no edge — won't change on retry).
+        if (p.status === 'pending' || p.status === 'bet' || p.status === 'analyzed_no_edge') {
+          return true;
+        }
+        // telegram_notified_at not null: ALWAYS block. The pick was shown to
+        // the user; we never want to re-bet or re-evaluate it silently.
+        if (p.telegram_notified_at) return true;
+
+        // analyzed_no_odds_data: allow retry if cool-off elapsed AND we
+        // haven't hit the retry ceiling. updated_at preferred over
+        // created_at so each retry resets the cool-off clock.
+        if (p.status === 'analyzed_no_odds_data') {
+          const lastAttempt = p.updated_at ?? p.created_at;
+          const ageMin = (Date.now() - new Date(lastAttempt).getTime()) / 60000;
+          const retryCount = p.retry_count ?? 0;
+          if (ageMin > 20 && retryCount < 3) {
+            console.log('[NO_ODDS_RETRY_ELIGIBLE]', {
+              espn_event_id: p.espn_event_id,
+              age_min: Math.round(ageMin),
+              retry_count: retryCount,
+            });
+            return false; // not blocked — let it through
+          }
+        }
+
+        // Default conservative behavior — block.
+        return true;
+      })
+      .map((p) => p.espn_event_id),
+  );
   const notifiedCount = (blockedPicks ?? []).filter((p) => p.telegram_notified_at).length;
   const fresh: Game[] = inWindow.filter((g) => g.espn_event_id && !alreadyDone.has(g.espn_event_id));
 
@@ -276,6 +327,47 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
         message: 'superseded_only_notified',
       };
     }
+
+    // Fix C — slate-without-odds alert. Triggered when the cron analyzed at
+    // least one in-window game and ALL of them ended in analyzed_no_odds_data
+    // (DK hasn't published). Anti-spam: skip if we already sent a no_odds
+    // alert in the last 2 hours (avoids one alert per cron run for the same
+    // slate).
+    if (result.insertedNoOddsCount > 0 && result.noOddsEvents.length > 0) {
+      const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const { data: recentNotif } = await supabase
+        .from('system_notifications')
+        .select('sent_at')
+        .eq('kind', 'no_odds_alert')
+        .gte('sent_at', cutoff)
+        .order('sent_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recentNotif) {
+        console.log('[NO_ODDS_ALERT_SUPPRESSED]', {
+          last_sent: recentNotif.sent_at,
+          reason: 'within_2h_window',
+        });
+      } else {
+        const systemHealth = await computeSystemHealthBounded();
+        const text = formatNoOddsAlertMessage(result.noOddsEvents, { systemHealth });
+        const sent = await sendTelegramMessage(text);
+        if (sent.ok) {
+          await supabase.from('system_notifications').insert({
+            kind: 'no_odds_alert',
+            payload: {
+              event_ids: result.noOddsEvents.map((g) => g.espn_event_id),
+              count: result.noOddsEvents.length,
+            },
+          });
+          console.log('[NO_ODDS_ALERT_SENT]', { count: result.noOddsEvents.length });
+        } else {
+          console.error('[NO_ODDS_ALERT_FAILED]', sent);
+        }
+      }
+    }
+
     return {
       generated: 0,
       eventIds,

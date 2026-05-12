@@ -8,6 +8,16 @@
 // Failures put the pick in DB with status='filtered_quality_audit' (visible
 // in /tracker for manual review) but DO NOT send Telegram.
 // Warnings are persisted to audit_failures but do not block notification.
+//
+// 2026-05-12 update — Lakers @ 5.25 LOCK hallucination post-mortem.
+// Added outlier-detection checks (#9-11) and escalated structural warnings
+// to FAIL when the tier asserts high conviction (LOCK / STRONG). The
+// pre-existing checks #1-5 only verified that DATA was present; they did
+// not verify that the data was REASONABLE. A LOCK pick on a +425 underdog
+// with edge_vs_market=27% (vs market consensus ≈25%) cleared every prior
+// check while being a textbook hallucination. The new checks attack that
+// pattern from three angles: statistical outlier, weak base signal, and
+// structural absurdity (long odds + LOCK tier).
 
 export interface AuditablePick {
   tier: string;
@@ -36,7 +46,7 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
   const failures: string[] = [];
   const warnings: string[] = [];
 
-  // ── CRITICAL CHECKS (fail = filter the pick) ───────────────────────────
+  // ── CRITICAL CHECKS — STRUCTURAL (fail = filter the pick) ──────────────
 
   // 1. Full market consensus required (DK ML + ESPN BPI both contributed).
   if ((row.market_sources_count ?? 0) < 2) {
@@ -70,23 +80,67 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
     }
   }
 
-  // ── CONSISTENCY CHECKS (warning only, do not filter) ───────────────────
+  // ── CRITICAL CHECKS — OUTLIER DETECTION (post-Lakers hallucination) ────
+
+  // 9. Excessive edge vs market — sharp markets (MLB/NBA/NFL/NHL) are
+  //    accurate to a few pp; an edge > 15pp vs the consensus is almost
+  //    never legitimate, it's the model hallucinating.
+  //    Lakers @ 5.25: edge_vs_market = 0.27 → blocked.
+  if (row.edge_vs_market !== null && row.edge_vs_market !== undefined) {
+    if (row.edge_vs_market > 0.15) {
+      failures.push('edge_vs_market_excessive');
+    }
+  }
+
+  // 10. LOCK tier with weak base confidence — the floor gate may promote
+  //     confidence to 85 even when Claude's organic confidence_raw was
+  //     low. A LOCK is a max-conviction pick; promoting from <65 base is
+  //     amplifying weak signal into false certainty.
+  //     Lakers: tier=lock, confidence_raw=58 → blocked.
+  if (row.tier === 'lock' && row.confidence_raw < 65) {
+    failures.push('lock_with_low_raw_confidence');
+  }
+
+  // 11. LOCK tier with long odds — LOCKs are meant to be high-conviction
+  //     plays, typically on favorites or modest underdogs. A LOCK on
+  //     odds > 2.5 (= +150 American) is structurally suspicious: real
+  //     LOCKs at long odds imply huge edges that themselves are bug-prone.
+  //     Lakers @ 5.25 → blocked.
+  if (row.tier === 'lock' && row.odds_decimal > 2.5) {
+    failures.push('lock_tier_long_odds');
+  }
+
+  // ── CONSISTENCY CHECKS (tier-sensitive: WARN for value, FAIL for high tiers) ─
 
   // 6. Gap between raw edge and edge_vs_market. If big, our real_probability
   //    is far from the implied — could be a legit edge or an outlier model.
+  //    For LOCK / STRONG tiers this is a blocking failure: high-conviction
+  //    picks shouldn't sit on a wobbly internal/external disagreement.
   if (row.edge_vs_market !== null && row.edge !== null) {
     const gap = Math.abs(row.edge - row.edge_vs_market);
     if (gap > 0.03) {
-      warnings.push(`edge_market_gap_${(gap * 100).toFixed(1)}pct`);
+      const label = `edge_market_gap_${(gap * 100).toFixed(1)}pct`;
+      if (row.tier === 'lock' || row.tier === 'strong') {
+        failures.push(`${label}_${row.tier}_blocking`);
+      } else {
+        warnings.push(label);
+      }
     }
   }
 
   // 7. Confidence boost from floor too aggressive — large delta means the
   //    organic Claude conviction was much lower than the post-floor value.
+  //    For LOCK tier this is a FAIL: we don't sell max conviction on a
+  //    >25pp amplified signal. STRONG/VALUE remains a warning.
   if (row.confidence !== null && row.confidence_raw !== null) {
     const delta = row.confidence - row.confidence_raw;
     if (delta > 25) {
-      warnings.push(`confidence_floor_boost_${delta}pp`);
+      const label = `confidence_floor_boost_${delta}pp`;
+      if (row.tier === 'lock') {
+        failures.push(`${label}_lock_blocking`);
+      } else {
+        warnings.push(label);
+      }
     }
   }
 

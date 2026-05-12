@@ -413,9 +413,9 @@ export function formatPickDigestMessage(
   ctx: { systemHealth?: SystemHealthSummary } = {},
 ): string {
   const lines: string[] = [];
-  lines.push('📊 *Pick It Up · Sin picks este run*');
+  lines.push('🚫 *NO APOSTAR · 0 picks recomendados*');
   lines.push('─────────────────────');
-  lines.push(`${data.analyzedCount} juego(s) analizados, sin recomendaciones:`);
+  lines.push(`${data.analyzedCount} juego(s) analizados · 0 picks pasaron filtros`);
 
   // Order: most-relevant-to-user first.
   // 1) ❌ Sin edge contra DK
@@ -476,7 +476,7 @@ export function formatPickDigestMessage(
   }
 
   lines.push('');
-  lines.push('Sistema OK · picks aparecen cuando edge ≥ 2% vs mercado.');
+  lines.push('⚠️ *NO apostar estos juegos.* Sistema analizó pero sin edge suficiente vs mercado.');
 
   if (ctx.systemHealth) {
     lines.push(renderHealthIndicator(ctx.systemHealth));

@@ -48,9 +48,10 @@ export function computeMarketSignal(
  * Injected: game.real_data.market_signal — qualitative tag for Claude.
  */
 export function sanitizeGameForClaude(game: Game): Record<string, unknown> {
-  const { odds, multi_odds, real_data, ...rest } = game;
+  const { odds, multi_odds, odds_comparison, real_data, ...rest } = game;
   void odds;
   void multi_odds;
+  void odds_comparison;
   const rd = (real_data ?? {}) as Record<string, unknown>;
   const {
     dk_odds,
@@ -330,19 +331,25 @@ trabajo: si tu análisis identifica una trampa concreta (ver "DETECCIÓN DE
 TRAMPAS — MUY RESTRICTIVO" arriba), inclúyela en trap_warning. No tendrás
 acceso a movement numérico.
 
-== CALIBRACIÓN DE CONFIDENCE — NO SEAS TÍMIDO ==
-Históricamente has estado pegado en 55-65% para todo. Eso es indecisión. Calibra:
+== CALIBRACIÓN DE CONFIDENCE — DISTRIBUCIÓN REALISTA ==
 
-- 85-100% (LOCK): equipo claramente superior, datos lo respaldan, sin lesiones clave de su lado. Ejemplo MLB: equipo top-5 en casa con su #1 pitcher (ERA <3.0) vs equipo bottom-5 con #5 pitcher (ERA >5.0).
-- 70-84% (STRONG): mayoría de factores a favor, riesgo menor identificable. Ejemplo: equipo top-10 en casa, mejor pitcher, vs mediocre.
-- 55-69% (VALUE): edge existe pero hay factores de riesgo reales que pesan en contra.
+Tu confidence debe seguir una distribución empírica realista:
+- ~60% de tus picks deben caer entre 55-69%
+- ~20% entre 70-79%
+- ~15% entre 80-89%
+- ~5% entre 90-100% (reservar para mismatches extremos)
 
-Casos que MÍNIMO deben ser 75% confidence:
-- Equipo 8-2 últimos 10 + mejor pitcher + en casa vs equipo 3-7 últimos 10 → MÍNIMO 75%
-- Pitcher elite (ERA <2.50) en casa vs lineup contrario sin power → MÍNIMO 75%
-- Star team con descanso vs back-to-back fatigado en NBA → MÍNIMO 75%
+Si te encuentras dando 75%+ a más del 20% de tus picks, estás siendo
+demasiado agresivo. Recalibra.
 
-Si ves un mismatch claro y le pones 60%, estás siendo tímido. La data DICE que es un 75% — pónlo. La calibración importa.
+Casos que típicamente justifican 75%+ confidence:
+- Equipo 8-2 últimos 10 + mejor pitcher + en casa vs equipo 3-7 últimos 10
+- Pitcher elite (ERA <2.50) en casa vs lineup contrario sin power
+- Star team con descanso vs back-to-back fatigado en NBA
+
+Pero NO automaticamente — evalúa el caso específico. Confidence 60-65% es
+apropiado para juegos donde hay leve ventaja pero también incertidumbre.
+La indecisión bien calibrada vale más que la falsa convicción.
 
 == PARLAYS — server-side ==
 El servidor genera parlays automáticamente combinando tus picks ML con mayor
@@ -387,7 +394,7 @@ VALIDACIÓN OBLIGATORIA:
 == REGLAS FINALES ==
 - Devuelve UNA entrada por juego (no múltiples por mercado — solo ML, server decide el lado)
 - El análisis de cada juego: ~130 palabras DENSAS con datos concretos
-- Si hay 10 juegos con buena confidence, devuelve los 10 — NUNCA te limites
+- Solo incluye juegos donde tu análisis convergente justifique apuesta. Si en tu slate solo 2 de 10 juegos califican, devuelve esos 2.
 - Nombres COMPLETOS de equipos SIEMPRE con ciudad (debe matchear el home_team/away_team del input EXACTAMENTE)
 - Si no tienes data confiable de un factor, omítelo en lugar de inventar
 - Sé HONESTO con los riesgos

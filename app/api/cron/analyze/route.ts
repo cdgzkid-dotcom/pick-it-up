@@ -11,7 +11,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { fetchGames, fetchInjuriesForSports, fetchEventStatus } from '@/lib/espn';
+import { fetchGames, fetchInjuriesForSports, fetchEventStatus, fetchEspnClosingLine } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
 import {
@@ -645,6 +645,53 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       .single();
     const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
+    // CLV computation (ML only). Previously this path skipped CLV entirely
+    // and the older /api/check-results path read stale picks.odds_decimal —
+    // both yielded clv=0 or NULL universally. Now we fetch the true ESPN
+    // close.moneyLine.decimal for the side of the bet and persist it.
+    //
+    // Spread/total out of scope for now: too many mapping branches between
+    // pick text and ESPN field shape. They keep odds_at_close=NULL until a
+    // future commit extends coverage.
+    let oddsAtClose: number | null = null;
+    let clvValue: number | null = null;
+    if (isML) {
+      const side = cronPickedSide(
+        bet.pick,
+        bet.home_team_abbr,
+        bet.away_team_abbr,
+        bet.home_team,
+        bet.away_team,
+      );
+      const oddsAtBet = Number(bet.odds_at_bet ?? bet.odds_decimal);
+      try {
+        const closing = await fetchEspnClosingLine(bet.sport, bet.espn_event_id);
+        let source = 'fallback_no_data';
+        if (closing && side) {
+          const close = side === 'home' ? closing.home_close_decimal : closing.away_close_decimal;
+          if (close && close > 1.01) {
+            oddsAtClose = close;
+            source = 'espn_close';
+          }
+        }
+        if (oddsAtClose == null) oddsAtClose = oddsAtBet;
+        clvValue = Number(((1 / oddsAtClose) - (1 / oddsAtBet)).toFixed(6));
+        console.log('[CLV_COMPUTED]', {
+          bet_id: bet.id,
+          pick: bet.pick,
+          side,
+          odds_at_bet: oddsAtBet,
+          odds_at_close: oddsAtClose,
+          clv: clvValue,
+          source,
+        });
+      } catch (e) {
+        console.warn('[CLV_COMPUTED] fetch error', { bet_id: bet.id, err: (e as Error).message });
+        oddsAtClose = oddsAtBet;
+        clvValue = 0;
+      }
+    }
+
     const finalScore = `${status.away_score}-${status.home_score}`;
     await supabase
       .from('bets')
@@ -653,6 +700,8 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
         payout,
         result_notified_at: null,
         final_score: finalScore,
+        ...(oddsAtClose != null ? { odds_at_close: oddsAtClose } : {}),
+        ...(clvValue != null ? { clv: clvValue } : {}),
       })
       .eq('id', bet.id);
 

@@ -666,3 +666,92 @@ export async function fetchEspnPredictor(
   if (homeProb == null || awayProb == null) return null;
   return { home_win_prob: homeProb, away_win_prob: awayProb };
 }
+
+/**
+ * Closing-line snapshot for a completed (or near-completed) event. Used by
+ * the bet-resolution flow to compute true CLV — the previous approach read
+ * `picks.odds_decimal` which is stale once the pick gets `status='bet'`
+ * (lock-in skips updates), producing CLV=0 for every bet.
+ *
+ * ESPN's `/odds` endpoint persists `homeTeamOdds.close.moneyLine` and
+ * `awayTeamOdds.close.moneyLine` as nested objects with `decimal` after
+ * games complete. Verified live for both NBA and MLB.
+ *
+ * Fallback chain (per side):
+ *   1. `close.moneyLine.decimal` (true closing line — preferred)
+ *   2. plain `moneyLine` (current/last known american) → americanToDecimal
+ *   3. null
+ */
+export interface EspnClosingLine {
+  home_close_decimal: number | null;
+  away_close_decimal: number | null;
+  home_open_decimal: number | null;
+  away_open_decimal: number | null;
+  /** Provider name passed through ('DraftKings' usually). */
+  source: string;
+  source_slug: string;
+}
+
+export async function fetchEspnClosingLine(
+  sport: string,
+  eventId: string,
+): Promise<EspnClosingLine | null> {
+  // Same URL + provider selection logic as fetchEspnGameOdds; reuse the
+  // raw fetch but parse the richer nested shape (open/close are not in
+  // CoreOddsItem because the gate didn't need them).
+  const cfg = SPORTS[sport];
+  if (!cfg) return null;
+  const data = await fetchJson<{
+    items?: Array<{
+      provider?: { name?: string };
+      homeTeamOdds?: {
+        moneyLine?: number | null;
+        close?: { moneyLine?: { decimal?: number; american?: string } };
+        open?: { moneyLine?: { decimal?: number; american?: string } };
+      };
+      awayTeamOdds?: {
+        moneyLine?: number | null;
+        close?: { moneyLine?: { decimal?: number; american?: string } };
+        open?: { moneyLine?: { decimal?: number; american?: string } };
+      };
+    }>;
+  }>(
+    `https://sports.core.api.espn.com/v2/sports/${cfg.coreSport}/leagues/${cfg.coreLeague}/events/${eventId}/competitions/${eventId}/odds`,
+  );
+  const items = data?.items ?? [];
+  // Skip "live" providers — same convention as the live-odds gate.
+  const primary = items.find(
+    (o) => !/live/i.test(o.provider?.name ?? '') &&
+      (o.homeTeamOdds || o.awayTeamOdds),
+  ) ?? items[0];
+  if (!primary) return null;
+
+  const pickSide = (
+    side: 'homeTeamOdds' | 'awayTeamOdds',
+    field: 'close' | 'open',
+  ): number | null => {
+    const decimal = primary[side]?.[field]?.moneyLine?.decimal;
+    if (typeof decimal === 'number' && Number.isFinite(decimal) && decimal > 1.01) {
+      return decimal;
+    }
+    return null;
+  };
+  const fallbackFromAmerican = (side: 'homeTeamOdds' | 'awayTeamOdds'): number | null => {
+    const am = primary[side]?.moneyLine;
+    return americanToDecimal(typeof am === 'number' ? am : null);
+  };
+
+  const home_close = pickSide('homeTeamOdds', 'close') ?? fallbackFromAmerican('homeTeamOdds');
+  const away_close = pickSide('awayTeamOdds', 'close') ?? fallbackFromAmerican('awayTeamOdds');
+  if (home_close == null && away_close == null) return null;
+
+  const name = primary.provider?.name ?? 'ESPN';
+  return {
+    home_close_decimal: home_close,
+    away_close_decimal: away_close,
+    home_open_decimal: pickSide('homeTeamOdds', 'open'),
+    away_open_decimal: pickSide('awayTeamOdds', 'open'),
+    source: name,
+    source_slug: normalizeProviderSlug(name),
+  };
+}

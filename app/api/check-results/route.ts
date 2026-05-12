@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { fetchEventStatus } from '@/lib/espn';
+import { fetchEventStatus, fetchEspnClosingLine } from '@/lib/espn';
 import { potentialWin } from '@/lib/units';
 import { applyResult as applyEloResult } from '@/lib/elo';
 import { updateFactorPerformance } from '@/lib/learning';
@@ -168,26 +168,38 @@ export async function POST() {
     // time — the line shortened in our favor, i.e. the market moved
     // toward our side (sharp confirmation of edge).
     //
-    // odds_at_close approximation: picks.odds_decimal is refreshed by the
-    // cron on every analyze run for the same locked side, so the last
-    // stored value before the game starts is the closest free-tier proxy
-    // for the actual closing line. When no pick is associated or no
-    // refresh occurred, we fall back to odds_at_bet which yields clv=0
-    // (no observed movement — a valid statement, not a bug).
+    // odds_at_close: fetched fresh from ESPN core API at resolution time.
+    // The pre-2026-05-12 version read picks.odds_decimal which goes stale
+    // when status='bet' (applyLockIn skips updates), producing clv=0 for
+    // every bet. Now we use ESPN's close.moneyLine.decimal which persists
+    // post-game. ML only for now (spread/total fallback to clv=0).
     const oddsAtBet = bet.odds_at_bet != null ? Number(bet.odds_at_bet) : Number(bet.odds_decimal);
     let oddsAtClose: number | null = null;
-    if (bet.pick_id) {
-      const { data: pickRow } = await supabase
-        .from('picks')
-        .select('odds_decimal')
-        .eq('id', bet.pick_id)
-        .single();
-      if (pickRow?.odds_decimal) {
-        oddsAtClose = Number(pickRow.odds_decimal);
+    let clvSource = 'fallback_not_ml';
+    if (isML && bet.espn_event_id) {
+      const side = pickedSide(
+        bet.pick,
+        bet.home_team_abbr,
+        bet.away_team_abbr,
+        bet.home_team,
+        bet.away_team,
+      );
+      try {
+        const closing = await fetchEspnClosingLine(bet.sport, bet.espn_event_id);
+        if (closing && side) {
+          const close = side === 'home' ? closing.home_close_decimal : closing.away_close_decimal;
+          if (close && close > 1.01) {
+            oddsAtClose = close;
+            clvSource = 'espn_close';
+          }
+        }
+      } catch (e) {
+        console.warn('[CLV_COMPUTED] fetch error', { bet_id: bet.id, err: (e as Error).message });
       }
     }
     if (oddsAtClose === null) {
       oddsAtClose = oddsAtBet;
+      if (clvSource === 'fallback_not_ml' && isML) clvSource = 'fallback_no_data';
     }
     const clv = (1 / oddsAtClose) - (1 / oddsAtBet);
     console.log('[CLV_COMPUTED]', {
@@ -196,7 +208,7 @@ export async function POST() {
       odds_at_bet: oddsAtBet,
       odds_at_close: oddsAtClose,
       clv: Number(clv.toFixed(4)),
-      source: oddsAtClose === oddsAtBet ? 'fallback_no_movement' : 'pick_refresh',
+      source: clvSource,
     });
 
     // Save final score for display in tracker history + Telegram message.

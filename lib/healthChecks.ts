@@ -9,6 +9,7 @@
 // Auditoría 5 work. The functions are moved verbatim from the original route.
 
 import { supabaseAdmin } from '@/lib/supabase';
+import { pingPinnacle } from '@/lib/pinnacle';
 
 export interface HealthCheckResult {
   name: string;
@@ -484,8 +485,31 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
   }
 }
 
+async function checkPinnacleApi(): Promise<HealthCheckResult> {
+  // Pinnacle is an OPTIONAL second market source — when unavailable the
+  // system still functions via DK + BPI. We emit WARNING (not error) on
+  // failure so /api/health stays HTTP 200 and the cron flow keeps running,
+  // but the user sees the degraded state in the Auditoría 5 indicator.
+  const t0 = Date.now();
+  const r = await pingPinnacle();
+  if (r.ok) {
+    return {
+      name: 'pinnacle_api',
+      status: 'ok',
+      detail: r.detail,
+      duration_ms: Date.now() - t0,
+    };
+  }
+  return {
+    name: 'pinnacle_api',
+    status: 'warning',
+    detail: r.detail ?? 'unknown error',
+    duration_ms: Date.now() - t0,
+  };
+}
+
 /**
- * Run all 13 health checks in parallel and return the raw results.
+ * Run all 14 health checks in parallel and return the raw results.
  * Consumers: /api/health (HTTP wrapper) and cron/analyze (Telegram indicator).
  */
 export async function runHealthChecks(): Promise<HealthCheckResult[]> {
@@ -503,6 +527,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkRecentCronActivity(),
     checkStuckPendingBets(),
     checkRecentPickStructure(),
+    checkPinnacleApi(),
   ]);
 }
 

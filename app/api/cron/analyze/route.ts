@@ -493,6 +493,11 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       best_odds_source: p.best_odds_source ?? null,
       odds_comparison: (p.odds_comparison as Array<{ source: string; ml: number }> | null) ?? undefined,
       analysis: p.analysis,
+      // Pinnacle (2026-05-12): only render the inline market line when
+      // Pinnacle actually contributed; bpi_implied is not yet persisted in
+      // PickRow so the line renders as "DK X% · Pin Y%" for now.
+      pinnacle_implied:
+        (p as { pinnacle_implied?: number | null }).pinnacle_implied ?? null,
     })),
     result.insertedParlays.map((p) => ({
       tier: p.tier,

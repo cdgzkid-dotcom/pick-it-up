@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { callClaudeJson } from './claude';
 import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SUNSET } from './prompts';
 import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
+import { fetchPinnacleOddsForEspnEvent, type PinnacleOddsResult } from './pinnacle';
 import type { MarketSource } from './edge';
 import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence } from './units';
 import { getRatingsForGames } from './elo';
@@ -291,6 +292,12 @@ interface PickRow {
   market_sources_count: number | null;
   market_sources: MarketSource[] | null;
   floor_applied: 'lock' | 'strong' | 'none' | null;
+  /** Pinnacle ML implied prob for picked side, 0-1 or null. See lib/pinnacle.ts. */
+  pinnacle_implied?: number | null;
+  /** PinnacleStatus serialized as text. 'available' enables Audit v2 check #12. */
+  pinnacle_status?: string | null;
+  /** real_probability - pinnacle_implied. Drives Audit v2 #12. */
+  edge_vs_pinnacle?: number | null;
   confidence: number;
   confidence_raw: number | null;
   tier: Tier;
@@ -457,17 +464,36 @@ export async function analyzeGames(
         console.warn(`[pickGen] real-data enrichment failed for ${g.sport} ${g.game_label}`, e);
       }
 
-      // Market consensus enrichment — two independent zero-key sources:
+      // Market consensus enrichment — three independent zero-key sources:
       //   (1) DraftKings ML via ESPN /odds (market proxy)
       //   (2) ESPN BPI gameProjection via /predictor (analytical proxy)
+      //   (3) Pinnacle Guest API ML (sharp-book proxy — 2026-05-12 addition)
       // Each call is allSettled so a 4xx on one source doesn't kill the other.
-      // NHL /predictor returns {error:...} → fetchEspnPredictor returns null;
-      // the downstream gate sees sources_count=1 and blocks the floor, which
-      // is the intended conservative behavior for hockey.
+      // Pinnacle covers NHL where ESPN BPI returns HTTP 400 — this is what
+      // unblocks the consensus gate for hockey picks. If Pinnacle is down,
+      // status='api_error' and the rest of the pipeline keeps working.
       if (g.espn_event_id) {
-        const [dkRes, bpiRes] = await Promise.allSettled([
+        const pinnacleP = withTimeout(
+          fetchPinnacleOddsForEspnEvent(
+            supabase,
+            g.espn_event_id,
+            g.sport,
+            g.home_team,
+            g.away_team,
+            g.start_time ?? null,
+          ),
+          ENRICH_TIMEOUT_MS,
+          {
+            status: 'api_error',
+            home_implied: null,
+            away_implied: null,
+            matchup_id: null,
+          } as PinnacleOddsResult,
+        );
+        const [dkRes, bpiRes, pinRes] = await Promise.allSettled([
           withTimeout(fetchEspnGameOdds(g.sport, g.espn_event_id), ENRICH_TIMEOUT_MS, null as EspnOddsResult | null),
           withTimeout(fetchEspnPredictor(g.sport, g.espn_event_id), ENRICH_TIMEOUT_MS, null as EspnPredictor | null),
+          pinnacleP,
         ]);
         const rd = g.real_data as Record<string, unknown>;
         if (dkRes.status === 'fulfilled' && dkRes.value) {
@@ -476,8 +502,19 @@ export async function analyzeGames(
         if (bpiRes.status === 'fulfilled' && bpiRes.value) {
           rd.espn_bpi = bpiRes.value;
         }
+        if (pinRes.status === 'fulfilled' && pinRes.value) {
+          rd.pinnacle = pinRes.value;
+        } else {
+          rd.pinnacle = {
+            status: 'api_error',
+            home_implied: null,
+            away_implied: null,
+            matchup_id: null,
+          } as PinnacleOddsResult;
+        }
+        const pin = rd.pinnacle as PinnacleOddsResult;
         console.log(
-          `[DATA][MARKET] ${g.game_label} dk=${rd.dk_odds ? 'Y' : 'N'} bpi=${rd.espn_bpi ? 'Y' : 'N'}`,
+          `[DATA][MARKET] ${g.game_label} dk=${rd.dk_odds ? 'Y' : 'N'} bpi=${rd.espn_bpi ? 'Y' : 'N'} pin=${pin.status === 'available' ? 'Y' : `N(${pin.status})`}`,
         );
       }
 
@@ -664,6 +701,16 @@ export async function analyzeGames(
     market_sources_count: number;
     market_sources: MarketSource[] | null;
     floor_applied: 'lock' | 'strong' | 'none';
+    // Pinnacle integration (2026-05-12). pinnacle_implied is the picked
+    // side's implied prob from Pinnacle Guest API; pinnacle_status carries
+    // the success/failure reason ('available' | 'matchup_not_found' |
+    // 'no_ml_open' | 'sport_unsupported' | 'api_error' | 'not_called').
+    // edge_vs_pinnacle is real_probability - pinnacle_implied (separate
+    // from edge_vs_market so Audit v2's #12 check can target Pinnacle
+    // disagreement specifically).
+    pinnacle_implied: number | null;
+    pinnacle_status: string;
+    edge_vs_pinnacle: number | null;
     // Populated by the post-mapping quality audit pass. When set on a row
     // that survives (audit.passed=true) these are non-blocking warnings;
     // when set on a row routed to Rail 5 (audit.passed=false) these are
@@ -753,6 +800,7 @@ export async function analyzeGames(
     const rdMatched = (matchedGame.real_data ?? {}) as Record<string, unknown>;
     const dkOdds = rdMatched.dk_odds as EspnOddsResult | undefined;
     const espnBpi = rdMatched.espn_bpi as EspnPredictor | undefined;
+    const pinnacle = rdMatched.pinnacle as PinnacleOddsResult | undefined;
     if (!dkOdds || !dkOdds.home_ml_decimal || !dkOdds.away_ml_decimal) {
       const missing = !dkOdds
         ? 'no_dk_odds_object'
@@ -840,16 +888,29 @@ export async function analyzeGames(
     const implied = impliedProbability(pickedOdds);
     const e = bestEdge;
 
-    // Consensus: market book + ESPN BPI for the picked side.
+    // Consensus: market book + ESPN BPI + Pinnacle ML for the picked side.
     let bpiImplied: number | null = null;
     if (espnBpi) {
       const bpiPct = side === 'home' ? espnBpi.home_win_prob : espnBpi.away_win_prob;
       if (bpiPct != null && bpiPct > 0 && bpiPct < 100) bpiImplied = bpiPct / 100;
     }
+    let pinnacleImplied: number | null = null;
+    const pinnacleStatus: string = pinnacle?.status ?? 'not_called';
+    if (pinnacle && pinnacle.status === 'available') {
+      const v = side === 'home' ? pinnacle.home_implied : pinnacle.away_implied;
+      if (v != null && v > 0 && v < 1) pinnacleImplied = v;
+    }
     const marketBookImplied = 1 / pickedOdds;
     const marketBookSlug = dkOdds.source_slug ?? null;
-    const consensus = computeMarketConsensus(marketBookImplied, marketBookSlug, bpiImplied, pickedProb);
+    const consensus = computeMarketConsensus(
+      marketBookImplied,
+      marketBookSlug,
+      bpiImplied,
+      pinnacleImplied,
+      pickedProb,
+    );
     const edgeVsMarket = consensus?.edge_vs_market ?? null;
+    const edgeVsPinnacle = consensus?.edge_vs_pinnacle ?? null;
     const sourcesCount = consensus?.sources_count ?? 0;
     const consensusImplied = consensus?.avg_implied_prob ?? null;
     const sourcesList: MarketSource[] = consensus?.sources ?? [];
@@ -964,6 +1025,9 @@ export async function analyzeGames(
       market_sources_count: sourcesCount,
       market_sources: sourcesList.length > 0 ? sourcesList : null,
       floor_applied: floorApplied,
+      pinnacle_implied: pinnacleImplied,
+      pinnacle_status: pinnacleStatus,
+      edge_vs_pinnacle: edgeVsPinnacle,
       _score: score,
     }];
   });
@@ -1150,6 +1214,9 @@ export async function analyzeGames(
     market_sources_count: p.market_sources_count,
     market_sources: p.market_sources,
     floor_applied: p.floor_applied,
+    pinnacle_implied: p.pinnacle_implied,
+    pinnacle_status: p.pinnacle_status,
+    edge_vs_pinnacle: p.edge_vs_pinnacle,
     confidence: p.confidence,
     confidence_raw: p.confidence_raw,
     tier: p.tier,
@@ -1198,6 +1265,9 @@ export async function analyzeGames(
     market_sources_count: p.market_sources_count,
     market_sources: p.market_sources,
     floor_applied: p.floor_applied,
+    pinnacle_implied: p.pinnacle_implied,
+    pinnacle_status: p.pinnacle_status,
+    edge_vs_pinnacle: p.edge_vs_pinnacle,
     confidence: p.confidence,
     confidence_raw: p.confidence_raw,
     tier: p.tier,

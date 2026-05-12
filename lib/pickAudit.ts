@@ -29,6 +29,11 @@ export interface AuditablePick {
   confidence_raw: number;
   odds_decimal: number;
   risk_factors: string | null;
+  /** Pinnacle integration (2026-05-12). When pinnacle_status='available'
+   *  the audit enforces an extra check on LOCK picks: a 2pp disagreement
+   *  vs Pinnacle is the minimum bar to claim sharp-confirmed edge. */
+  pinnacle_status?: string | null;
+  edge_vs_pinnacle?: number | null;
 }
 
 export interface QualityAuditResult {
@@ -108,6 +113,20 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
   //     Lakers @ 5.25 → blocked.
   if (row.tier === 'lock' && row.odds_decimal > 2.5) {
     failures.push('lock_tier_long_odds');
+  }
+
+  // 12. LOCK tier without enough disagreement vs Pinnacle (2026-05-12).
+  //     Pinnacle is the sharp-book reference; when their line is available
+  //     we hold LOCK picks to a stricter bar: real_probability must beat
+  //     Pinnacle's implied by ≥ 2pp. If Pinnacle is not available
+  //     (api_error, matchup_not_found, sport_unsupported, no_ml_open) this
+  //     check is skipped — the system still uses DK + BPI consensus.
+  if (
+    row.tier === 'lock' &&
+    row.pinnacle_status === 'available' &&
+    (row.edge_vs_pinnacle == null || row.edge_vs_pinnacle < 0.02)
+  ) {
+    failures.push('lock_edge_vs_pinnacle_below_2pct');
   }
 
   // ── CONSISTENCY CHECKS (tier-sensitive: WARN for value, FAIL for high tiers) ─

@@ -65,6 +65,13 @@ interface PickForMessage {
   best_odds_source?: string | null;
   /** Per-book ML lines for the comparator line. */
   odds_comparison?: Array<{ source: string; ml: number }>;
+  /** Pinnacle integration: when present, render an inline "Mercado: DK X% ·
+   *  Pin Y% · BPI Z%" line so the user sees the three independent
+   *  probability estimates. Null = Pinnacle didn't contribute. */
+  pinnacle_implied?: number | null;
+  /** ESPN BPI implied for the picked side. Used jointly with pinnacle_implied
+   *  to render the 3-way market line. Null = BPI didn't contribute. */
+  bpi_implied?: number | null;
 }
 
 const TIER_EMOJI: Record<string, string> = {
@@ -263,6 +270,16 @@ export function formatPicksMessage(
       lines.push(`📊 Edge: ${edgePct}${marketTag} · Prob: ${realPct}`);
     } else if (edgePct) {
       lines.push(`📊 Edge: ${edgePct}${marketTag}`);
+    }
+    // Pinnacle integration: when Pinnacle's ML contributed, show all
+    // three probability sources side-by-side so the user can see the
+    // disagreement footprint. DK always present (derived from odds).
+    if (p.pinnacle_implied != null && p.odds_decimal > 1.01) {
+      const dkPct = (1 / p.odds_decimal) * 100;
+      const pinPct = p.pinnacle_implied * 100;
+      const bits = [`DK ${dkPct.toFixed(1)}%`, `Pin ${pinPct.toFixed(1)}%`];
+      if (p.bpi_implied != null) bits.push(`BPI ${(p.bpi_implied * 100).toFixed(1)}%`);
+      lines.push(`📈 Mercado: ${bits.join(' · ')}`);
     }
     if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
     if (p.odds_comparison && p.odds_comparison.length >= 2) {

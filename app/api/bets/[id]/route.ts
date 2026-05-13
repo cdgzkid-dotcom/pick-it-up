@@ -65,46 +65,41 @@ export async function PATCH(
     credit = ca;
   }
 
-  const { data: settings, error: setErr } = await supabase
-    .from('settings')
-    .select('bankroll_current')
-    .eq('id', 1)
-    .single();
-  if (setErr) {
-    return NextResponse.json({ error: 'Settings missing' }, { status: 500 });
+  // Atomic resolution: UPDATE bets + UPDATE bankroll + INSERT log in one
+  // PL/pgSQL block. Idempotent — if another caller (cron/check-results)
+  // resolved this bet first, the RPC returns skipped:true and we surface
+  // a 409 so the manual UI shows "already resolved".
+  const { data: rpcData, error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+    p_bet_id: id,
+    p_result: parsed.data.result,
+    p_payout: payout,
+    p_credit: credit,
+    p_cashout_amount: parsed.data.result === 'cashout' ? (parsed.data.cashout_amount ?? null) : null,
+    p_final_score: null,
+    p_odds_at_close: null,
+    p_clv: null,
+    p_note: `${parsed.data.result.toUpperCase()} on ${bet.pick} (${bet.game})`,
+  });
+  if (rpcErr) {
+    const msg = rpcErr.message ?? '';
+    if (msg.startsWith('bet_not_found')) {
+      return NextResponse.json({ error: 'Bet not found' }, { status: 404 });
+    }
+    return NextResponse.json({ error: 'resolve_bet_atomic failed', detail: msg }, { status: 500 });
   }
-  const newBankroll = Number(settings.bankroll_current) + credit;
-
-  const { error: updErr } = await supabase
-    .from('bets')
-    .update({
-      result: parsed.data.result,
-      cashout_amount: parsed.data.result === 'cashout' ? parsed.data.cashout_amount : null,
-      payout,
-    })
-    .eq('id', id);
-  if (updErr) {
-    return NextResponse.json({ error: 'Update failed', detail: updErr.message }, { status: 500 });
+  const result = rpcData as { ok: boolean; skipped?: boolean; bankroll_current?: number; old_result?: string };
+  if (result.skipped) {
+    return NextResponse.json(
+      { error: 'Bet already resolved', old_result: result.old_result },
+      { status: 409 },
+    );
   }
-
-  if (credit !== 0) {
-    await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
-  }
-
-  await supabase.from('bankroll_log').insert([
-    {
-      type: parsed.data.result,
-      amount: credit,
-      balance_after: newBankroll,
-      note: `${parsed.data.result.toUpperCase()} on ${bet.pick} (${bet.game})`,
-    },
-  ]);
 
   return NextResponse.json({
     ok: true,
     result: parsed.data.result,
     payout,
     pl: payout - amount,
-    bankroll_current: newBankroll,
+    bankroll_current: result.bankroll_current,
   });
 }

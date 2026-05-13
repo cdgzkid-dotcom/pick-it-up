@@ -631,24 +631,26 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     const odds = Number(bet.odds_decimal);
 
     if (isPush) {
-      const { data: settings } = await supabase.from('settings').select('bankroll_current').eq('id', 1).single();
-      const newBankroll = Number(settings?.bankroll_current ?? 0) + amount;
-      await supabase.from('bets').update({ result: 'push', payout: amount, result_notified_at: null }).eq('id', bet.id);
-      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
-      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick} (${status.away_score}-${status.home_score})` }]);
+      // Atomic resolve via RPC. Idempotent — if PATCH /api/bets/:id (manual)
+      // already resolved this bet, RPC returns skipped:true and we skip.
+      const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+        p_bet_id: bet.id,
+        p_result: 'push',
+        p_payout: amount,
+        p_credit: amount,  // refund stake
+        p_cashout_amount: null,
+        p_final_score: `${status.away_score}-${status.home_score}`,
+        p_odds_at_close: null,
+        p_clv: null,
+        p_note: `[Auto] PUSH ${bet.pick} (${status.away_score}-${status.home_score})`,
+      });
+      if (rpcErr) console.error('[cron resolve push] rpc failed', rpcErr.message);
       continue;
     }
 
     if (won === null) continue;
 
     const payout = won ? amount + potentialWin(amount, odds) : 0;
-
-    const { data: settings } = await supabase
-      .from('settings')
-      .select('bankroll_current')
-      .eq('id', 1)
-      .single();
-    const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
     // CLV computation (ML only). Previously this path skipped CLV entirely
     // and the older /api/check-results path read stale picks.odds_decimal —
@@ -698,30 +700,25 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     }
 
     const finalScore = `${status.away_score}-${status.home_score}`;
-    await supabase
-      .from('bets')
-      .update({
-        result: won ? 'win' : 'loss',
-        payout,
-        result_notified_at: null,
-        final_score: finalScore,
-        ...(oddsAtClose != null ? { odds_at_close: oddsAtClose } : {}),
-        ...(clvValue != null ? { clv: clvValue } : {}),
-      })
-      .eq('id', bet.id);
-
-    if (payout > 0) {
-      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
+    // Atomic resolve via RPC. UPDATE bets + UPDATE bankroll + INSERT log
+    // all inside the PL/pgSQL function. Idempotent: if PATCH /api/bets/:id
+    // or check-results route already resolved this bet, the RPC returns
+    // {skipped:true} and we skip without double-crediting bankroll.
+    const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+      p_bet_id: bet.id,
+      p_result: won ? 'win' : 'loss',
+      p_payout: payout,
+      p_credit: payout,
+      p_cashout_amount: null,
+      p_final_score: finalScore,
+      p_odds_at_close: oddsAtClose,
+      p_clv: clvValue,
+      p_note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
+    });
+    if (rpcErr) {
+      console.error('[cron resolve] rpc failed', { bet_id: bet.id, err: rpcErr.message });
+      continue;
     }
-
-    await supabase.from('bankroll_log').insert([
-      {
-        type: won ? 'win' : 'loss',
-        amount: payout,
-        balance_after: newBankroll,
-        note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
-      },
-    ]);
 
     // Learning: roll this bet's outcome into per-factor performance.
     await updateFactorPerformance(supabase, {

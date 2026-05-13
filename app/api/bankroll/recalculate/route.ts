@@ -116,19 +116,14 @@ export async function POST() {
     if (calc.diff === 0) {
       return NextResponse.json({ ok: true, ...calc, applied: false, note: 'No change' });
     }
-    const { error: updErr } = await supabase
-      .from('settings')
-      .update({ bankroll_current: calc.correct })
-      .eq('id', 1);
-    if (updErr) throw new Error(updErr.message);
-    await supabase.from('bankroll_log').insert([
-      {
-        type: calc.diff > 0 ? 'deposit' : 'withdraw',
-        amount: calc.diff,
-        balance_after: calc.correct,
-        note: `Recálculo automático: ${calc.diff > 0 ? '+' : ''}$${calc.diff} para alinear con bets+log`,
-      },
-    ]);
+    // Atomic adjust: settings UPDATE + bankroll_log INSERT in one PL/pgSQL
+    // block. Replaces the old 2-statement non-atomic pattern.
+    const { error: rpcErr } = await supabase.rpc('adjust_bankroll_atomic', {
+      p_delta: calc.diff,
+      p_type: calc.diff > 0 ? 'deposit' : 'withdraw',
+      p_note: `Recálculo automático: ${calc.diff > 0 ? '+' : ''}$${calc.diff} para alinear con bets+log`,
+    });
+    if (rpcErr) throw new Error(rpcErr.message);
     return NextResponse.json({ ok: true, ...calc, applied: true });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

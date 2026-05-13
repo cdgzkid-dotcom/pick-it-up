@@ -134,15 +134,21 @@ export async function POST() {
 
     if (isPush) {
       const amount = Number(bet.amount);
-      const { data: settings } = await supabase.from('settings').select('bankroll_current').eq('id', 1).single();
-      const newBankroll = Number(settings?.bankroll_current ?? 0) + amount; // refund stake
       const finalScorePush = `${status.away_score}-${status.home_score}`;
-      await supabase
-        .from('bets')
-        .update({ result: 'push', payout: amount, final_score: finalScorePush })
-        .eq('id', bet.id);
-      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
-      await supabase.from('bankroll_log').insert([{ type: 'push', amount, balance_after: newBankroll, note: `[Auto] PUSH ${bet.pick} (${finalScorePush})` }]);
+      // Atomic resolve. Idempotent — if already resolved by another path
+      // (cron, manual), skipped:true is returned and we move on.
+      const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+        p_bet_id: bet.id,
+        p_result: 'push',
+        p_payout: amount,
+        p_credit: amount,  // stake refund
+        p_cashout_amount: null,
+        p_final_score: finalScorePush,
+        p_odds_at_close: null,
+        p_clv: null,
+        p_note: `[Auto] PUSH ${bet.pick} (${finalScorePush})`,
+      });
+      if (rpcErr) console.error('[check-results] push rpc failed', rpcErr.message);
       continue;
     }
 
@@ -151,14 +157,6 @@ export async function POST() {
     const amount = Number(bet.amount);
     const odds = Number(bet.odds_decimal);
     const payout = won ? amount + potentialWin(amount, odds) : 0;
-
-    // Apply: update bets, settings, bankroll_log
-    const { data: settings } = await supabase
-      .from('settings')
-      .select('bankroll_current')
-      .eq('id', 1)
-      .single();
-    const newBankroll = Number(settings?.bankroll_current ?? 0) + payout;
 
     // CLV (Closing Line Value) — convention: implied probability difference.
     //
@@ -215,16 +213,25 @@ export async function POST() {
     // Format: "away-home" (e.g., "Royals 5 - Tigers 2" rendered from this).
     const finalScore = `${status.away_score}-${status.home_score}`;
 
-    await supabase
-      .from('bets')
-      .update({
-        result: won ? 'win' : 'loss',
-        payout,
-        odds_at_close: oddsAtClose,
-        clv,
-        final_score: finalScore,
-      })
-      .eq('id', bet.id);
+    // Atomic resolve: UPDATE bets + UPDATE bankroll + INSERT log, with
+    // idempotency guard inside the RPC. If cron already resolved this bet
+    // (this route + cron/analyze runResultsCheck both run), skipped:true
+    // returns and the bankroll isn't double-credited.
+    const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+      p_bet_id: bet.id,
+      p_result: won ? 'win' : 'loss',
+      p_payout: payout,
+      p_credit: payout, // 0 for loss, full payout for win
+      p_cashout_amount: null,
+      p_final_score: finalScore,
+      p_odds_at_close: oddsAtClose,
+      p_clv: clv,
+      p_note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
+    });
+    if (rpcErr) {
+      console.error('[check-results] resolve rpc failed', rpcErr.message);
+      continue;
+    }
 
     // Update ELO ratings for both teams based on actual game result.
     if (bet.home_team && bet.away_team) {
@@ -241,19 +248,6 @@ export async function POST() {
         console.error('[check-results] ELO update failed', e);
       }
     }
-
-    if (payout > 0) {
-      await supabase.from('settings').update({ bankroll_current: newBankroll }).eq('id', 1);
-    }
-
-    await supabase.from('bankroll_log').insert([
-      {
-        type: won ? 'win' : 'loss',
-        amount: payout,
-        balance_after: newBankroll,
-        note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
-      },
-    ]);
 
     // Learning: update per-factor performance now that this bet has a final
     // result. recordPickFactors was called at pick-generation time, so the

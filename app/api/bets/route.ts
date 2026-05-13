@@ -43,21 +43,9 @@ export async function POST(req: Request) {
   const supabase = supabaseAdmin();
   const { pick_id, ...fields } = parsed.data;
 
-  if (pick_id) {
-    const { data: existing } = await supabase
-      .from('bets')
-      .select('id')
-      .eq('pick_id', pick_id)
-      .maybeSingle();
-    if (existing) {
-      return NextResponse.json(
-        { error: 'Ya apostaste en este pick', existing_bet_id: existing.id },
-        { status: 409 },
-      );
-    }
-  }
-
-  // If the pick has an espn_event_id / game_start_time, copy to the bet
+  // If the pick has an espn_event_id / game_start_time, copy to the bet.
+  // The duplicate-bet check used to live here; now it's inside the RPC
+  // (raises 'duplicate_bet:<existing_id>' with errcode 23505).
   let espn_event_id = fields.espn_event_id ?? null;
   let game_start_time: string | null = null;
   if (pick_id) {
@@ -70,84 +58,56 @@ export async function POST(req: Request) {
     game_start_time = pickRow?.game_start_time ?? null;
   }
 
-  // Get current bankroll
-  const { data: settings, error: settingsErr } = await supabase
-    .from('settings')
-    .select('bankroll_current')
-    .eq('id', 1)
-    .single();
-  if (settingsErr) {
-    return NextResponse.json({ error: 'Settings missing' }, { status: 500 });
-  }
-  const currentBankroll = Number(settings.bankroll_current);
-  const newBankroll = currentBankroll - fields.amount;
+  // Atomic placement: INSERT bet + UPDATE bankroll + INSERT log + UPDATE
+  // picks.status all happen inside a single PL/pgSQL block. Any failure
+  // (duplicate, insufficient bankroll, etc.) rolls back every change.
+  const { data: rpcData, error: rpcErr } = await supabase.rpc('place_bet_atomic', {
+    p_pick_id: pick_id ?? null,
+    p_sport: fields.sport,
+    p_game: fields.game,
+    p_home_team: fields.home_team ?? null,
+    p_away_team: fields.away_team ?? null,
+    p_home_team_abbr: fields.home_team_abbr ?? null,
+    p_away_team_abbr: fields.away_team_abbr ?? null,
+    p_espn_event_id: espn_event_id,
+    p_pick: fields.pick,
+    p_bet_type: fields.bet_type,
+    p_odds_decimal: fields.odds_decimal,
+    p_amount: fields.amount,
+    p_tier: fields.tier ?? null,
+    p_date: fields.date ?? null,
+    p_notes: fields.notes ?? null,
+    p_game_start_time: game_start_time,
+  });
 
-  // Insert the bet — capture odds_at_bet for CLV tracking
-  const { data: bet, error } = await supabase
-    .from('bets')
-    .insert([{
-      ...fields,
-      espn_event_id,
-      game_start_time,
-      pick_id: pick_id ?? null,
-      result: 'pending',
-      odds_at_bet: fields.odds_decimal,
-    }])
-    .select()
-    .single();
-  if (error) {
-    if (error.code === '23505') {
+  if (rpcErr) {
+    const msg = rpcErr.message ?? '';
+    if (msg.startsWith('duplicate_bet:') || rpcErr.code === '23505') {
+      return NextResponse.json({ error: 'Ya apostaste en este pick' }, { status: 409 });
+    }
+    if (msg.startsWith('insufficient_bankroll')) {
       return NextResponse.json(
-        { error: 'Ya apostaste en este pick' },
+        { error: 'Bankroll insuficiente para esta apuesta', detail: msg },
         { status: 409 },
       );
     }
-    return NextResponse.json({ error: 'Insert failed', detail: error.message }, { status: 500 });
-  }
-
-  // ATOMICITY GUARD: verify bet was actually persisted before touching bankroll
-  if (!bet || !bet.id) {
+    if (msg.startsWith('settings_missing')) {
+      return NextResponse.json({ error: 'Settings missing' }, { status: 500 });
+    }
     return NextResponse.json(
-      { error: 'Insert returned no data — bet not created. Bankroll untouched.' },
+      { error: 'place_bet_atomic failed', detail: msg },
       { status: 500 },
     );
   }
+  const result = rpcData as { ok: boolean; bet_id: string; bankroll_current: number };
 
-  // Double-check bet exists in DB before deducting
-  const { data: verified } = await supabase.from('bets').select('id').eq('id', bet.id).maybeSingle();
-  if (!verified) {
-    return NextResponse.json(
-      { error: 'Bet not found after insert — possible timeout. Bankroll untouched.' },
-      { status: 500 },
-    );
-  }
+  // Re-fetch the bet to return the same shape as before (UI consumers
+  // expect the full row, not just id + bankroll).
+  const { data: bet } = await supabase
+    .from('bets')
+    .select('*')
+    .eq('id', result.bet_id)
+    .maybeSingle();
 
-  // Deduct bankroll + log (only after confirmed bet exists)
-  const { error: bankrollErr } = await supabase
-    .from('settings')
-    .update({ bankroll_current: newBankroll })
-    .eq('id', 1);
-  if (bankrollErr) {
-    // Rollback: delete the bet since bankroll couldn't be deducted
-    await supabase.from('bets').delete().eq('id', bet.id);
-    return NextResponse.json(
-      { error: 'Bankroll update failed — bet rolled back.', detail: bankrollErr.message },
-      { status: 500 },
-    );
-  }
-
-  await supabase.from('bankroll_log').insert([
-    {
-      type: 'stake',
-      amount: -fields.amount,
-      balance_after: newBankroll,
-      note: `Apuesta: ${fields.pick} (${fields.game})`,
-    },
-  ]);
-
-  if (pick_id) {
-    await supabase.from('picks').update({ status: 'bet' }).eq('id', pick_id);
-  }
-
-  return NextResponse.json({ ...bet, bankroll_current: newBankroll });
+  return NextResponse.json({ ...bet, bankroll_current: result.bankroll_current });
 }

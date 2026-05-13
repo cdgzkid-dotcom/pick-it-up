@@ -361,6 +361,15 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
         away_team: g.away_team,
         game_start_time: g.start_time ?? null,
       })),
+      noPositiveEdge: result.noPositiveEdgeEvents.map((e) => ({
+        sport: e.sport,
+        home_team: e.home_team,
+        away_team: e.away_team,
+        home_prob: e.home_prob,
+        away_prob: e.away_prob,
+        home_dk_implied: e.home_dk_implied,
+        away_dk_implied: e.away_dk_implied,
+      })),
       noOdds: result.noOddsEvents.map((e) => ({
         sport: e.sport,
         home_team: e.home_team,
@@ -372,6 +381,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       digestData.edgeBelow.length +
         digestData.auditFiltered.length +
         digestData.playoffNoEdge.length +
+        digestData.noPositiveEdge.length +
         digestData.noOdds.length >
       0;
 
@@ -405,6 +415,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
                 edge_below: digestData.edgeBelow.length,
                 audit_filtered: digestData.auditFiltered.length,
                 playoff_no_edge: digestData.playoffNoEdge.length,
+                no_positive_edge: digestData.noPositiveEdge.length,
                 no_odds: digestData.noOdds.length,
               },
               sent_for_run_at: new Date().toISOString(),
@@ -416,6 +427,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
               edge_below: digestData.edgeBelow.length,
               audit_filtered: digestData.auditFiltered.length,
               playoff_no_edge: digestData.playoffNoEdge.length,
+              no_positive_edge: digestData.noPositiveEdge.length,
               no_odds: digestData.noOdds.length,
             },
           });

@@ -405,6 +405,17 @@ export interface PickDigestData {
     away_team: string;
     game_start_time: string | null;
   }>;
+  /** Games where Claude's probability for BOTH sides was below DK's implied
+   *  probability — market was more bullish than Claude on every option. */
+  noPositiveEdge: Array<{
+    sport: string;
+    home_team: string;
+    away_team: string;
+    home_prob: number; // 0-1, Claude
+    away_prob: number; // 0-1, Claude
+    home_dk_implied: number; // 0-1
+    away_dk_implied: number; // 0-1
+  }>;
   /** Games where DK never published moneylines in time. */
   noOdds: Array<{
     sport: string;
@@ -479,7 +490,25 @@ export function formatPickDigestMessage(
     }
   }
 
-  // 4) 🚫 Sin DK odds
+  // 4) 📉 Mercado más bullish que Claude (edge ≤ 0 en ambos lados)
+  if (data.noPositiveEdge.length > 0) {
+    lines.push('');
+    lines.push(`📉 *Mercado más bullish que Claude* (${data.noPositiveEdge.length}):`);
+    for (const g of data.noPositiveEdge.slice(0, PER_CATEGORY_LIMIT)) {
+      const homeClaudePct = (g.home_prob * 100).toFixed(1);
+      const awayClaudePct = (g.away_prob * 100).toFixed(1);
+      const homeDkPct = (g.home_dk_implied * 100).toFixed(1);
+      const awayDkPct = (g.away_dk_implied * 100).toFixed(1);
+      lines.push(`• ${sportEmoji(g.sport)} ${g.away_team} @ ${g.home_team}`);
+      lines.push(`   ${g.away_team}: Claude ${awayClaudePct}% · DK ${awayDkPct}%`);
+      lines.push(`   ${g.home_team}: Claude ${homeClaudePct}% · DK ${homeDkPct}%`);
+    }
+    if (data.noPositiveEdge.length > PER_CATEGORY_LIMIT) {
+      lines.push(`   ...y ${data.noPositiveEdge.length - PER_CATEGORY_LIMIT} más`);
+    }
+  }
+
+  // 5) 🚫 Sin DK odds
   if (data.noOdds.length > 0) {
     lines.push('');
     lines.push(`🚫 *Sin DK odds* (${data.noOdds.length}):`);

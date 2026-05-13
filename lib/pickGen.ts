@@ -250,6 +250,20 @@ export interface AnalyzeResult {
     edge: number; // claude_prob - dk_implied
     odds_decimal: number;
   }>;
+  /** Pick Digest: games where Claude's probability for BOTH sides was below
+   * DK's implied probability (edge ≤ 0 on both sides). Claude agreed with
+   * the market or saw the game more conservatively. Surfaced so the user
+   * can confirm the system DID analyze, even if no side was edgy. */
+  noPositiveEdgeEvents: Array<{
+    espn_event_id: string | null;
+    sport: string;
+    home_team: string;
+    away_team: string;
+    home_prob: number; // 0-1, Claude
+    away_prob: number; // 0-1, Claude
+    home_dk_implied: number; // 0-1
+    away_dk_implied: number; // 0-1
+  }>;
   /** Pick Digest: picks that survived all upstream filters (gate + kelly +
    * edge threshold) and reached Auditoría 2, but failed one or more
    * critical quality checks (status='filtered_quality_audit'). Surfaced in
@@ -752,6 +766,7 @@ export async function analyzeGames(
   // is filtered for edge < EDGE_THRESHOLD. Returned in AnalyzeResult for
   // the cron's digest message to the user.
   const edgeBelowEvents: AnalyzeResult['edgeBelowEvents'] = [];
+  const noPositiveEdgeEvents: AnalyzeResult['noPositiveEdgeEvents'] = [];
 
   const mapped: MappedRow[] = raw.picks.flatMap((p): MappedRow[] => {
     // (1) Game match — exact home_team / away_team (case-insensitive).
@@ -849,6 +864,16 @@ export async function analyzeGames(
         edge_away: Number(edgeAway.toFixed(4)),
       });
       reasons.fail_no_positive_edge++;
+      noPositiveEdgeEvents.push({
+        espn_event_id: matchedGame.espn_event_id ?? null,
+        sport: p.sport,
+        home_team: p.home_team,
+        away_team: p.away_team,
+        home_prob: homeProb,
+        away_prob: awayProb,
+        home_dk_implied: 1 / homeOdds,
+        away_dk_implied: 1 / awayOdds,
+      });
       return [];
     }
     const side: 'home' | 'away' = edgeHome >= edgeAway ? 'home' : 'away';
@@ -1898,6 +1923,7 @@ export async function analyzeGames(
     insertedNoOddsCount,
     noOddsEvents,
     edgeBelowEvents,
+    noPositiveEdgeEvents,
     auditFilteredEvents,
   };
 }

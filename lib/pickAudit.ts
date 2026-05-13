@@ -65,7 +65,11 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
 
   // 3. Floor must have promoted — gate confirmed the edge is real,
   // OR Claude's organic confidence cleared the tier threshold.
-  if (!row.floor_applied || row.floor_applied === 'none') {
+  // Organic-cleared branch only applies to STRONG (raw ≥ 70, matching
+  // tierFromConfidence in lib/units.ts). LOCK still requires floor_applied
+  // — the anti-Lakers defenses depend on the floor gate having fired.
+  const organicStrong = row.tier === 'strong' && row.confidence_raw >= 70;
+  if ((!row.floor_applied || row.floor_applied === 'none') && !organicStrong) {
     failures.push('floor_not_applied');
   }
 

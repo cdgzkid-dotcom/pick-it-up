@@ -9,7 +9,7 @@ import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SU
 import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
 import { fetchPinnacleOddsForEspnEvent, type PinnacleOddsResult } from './pinnacle';
 import type { MarketSource } from './edge';
-import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence } from './units';
+import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence, TIER_UNITS } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
@@ -347,6 +347,15 @@ interface PickRow {
   // (currently retry_count<3 + age>20min). Only set on analyzed_no_odds_data
   // rows in practice — other statuses leave it at the DB default (0).
   retry_count?: number | null;
+  // Sizing transparency (2026-05-13). theoretical_amount is the tier's
+  // ceiling in MXN; sizing_reason names the dominant factor when the
+  // final recommended_amount fell below the ceiling (null when not cut).
+  // units_actual / units_theoretical let Telegram show "1.7u de 2u" —
+  // persisted so a pick is self-contained against future TIER_UNITS changes.
+  theoretical_amount?: number | null;
+  sizing_reason?: string | null;
+  units_actual?: number | null;
+  units_theoretical?: number | null;
 }
 
 interface EnrichedGame extends Game {
@@ -730,6 +739,11 @@ export async function analyzeGames(
     // when set on a row routed to Rail 5 (audit.passed=false) these are
     // the blocking failures.
     audit_failures?: string[] | null;
+    // Sizing transparency — see PickRow for semantics.
+    theoretical_amount: number;
+    sizing_reason: string | null;
+    units_actual: number;
+    units_theoretical: number;
     _score: number;
   };
 
@@ -1002,12 +1016,33 @@ export async function analyzeGames(
     const baseTier: Tier = tierFromConfidence(conf);
     const adjustedTier = tierForOdds(baseTier, pickedOdds);
     const hasTrap = !!mergedTrap;
+    // Sizing transparency — compute the tier ceiling BEFORE Kelly so we can
+    // later attribute any shortfall to the dominant cutting factor.
+    const unitSize = opts.bankroll * (opts.unitPercentage / 100);
+    const unitsTheoretical = TIER_UNITS[adjustedTier];
+    const theoreticalAmount = Math.round(unitsTheoretical * unitSize);
     const k = kellyAmount(opts.bankroll, pickedProb, pickedOdds, { conservative: hasTrap });
+    // Did kellyAmount's internal 10% cap clamp the fraction? Captured before
+    // sport scaling because the cap acts on the pre-multiplier fraction.
+    const kellyHitCap = k.fraction >= 0.0999;
     const learnedMult = kellyMultipliers[p.sport] ?? 0.5;
     if (learnedMult !== 0.5 && k.amount > 0) {
       const scale = learnedMult / 0.5;
       k.amount = Math.max(1, Math.round(k.amount * scale));
       k.fraction = Math.min(0.1, k.fraction * scale);
+    }
+    const unitsActual = unitSize > 0 ? Math.round((k.amount / unitSize) * 10) / 10 : 0;
+    // Dominant-factor priority when the final stake is below the tier
+    // ceiling. trap is most user-visible (already flagged elsewhere);
+    // sport_multiplier reflects per-sport history (actionable); bankroll_cap
+    // only matters when it would have actually limited Kelly's ask; the
+    // default is Kelly itself recommending less than the ceiling.
+    let sizingReason: string | null = null;
+    if (k.amount < theoreticalAmount) {
+      if (hasTrap) sizingReason = 'trap';
+      else if (learnedMult < 0.5) sizingReason = 'sport_multiplier';
+      else if (kellyHitCap && theoreticalAmount > opts.bankroll * 0.1) sizingReason = 'bankroll_cap';
+      else sizingReason = 'kelly_below_ceiling';
     }
     const score = adjustedEdgeScore(pickedProb, pickedOdds);
 
@@ -1043,6 +1078,10 @@ export async function analyzeGames(
       analysis: p.analysis ?? null,
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
+      theoretical_amount: theoreticalAmount,
+      sizing_reason: sizingReason,
+      units_actual: unitsActual,
+      units_theoretical: unitsTheoretical,
       best_odds_source: bestOddsSource,
       odds_comparison: oddsComparison,
       edge_vs_market: edgeVsMarket,
@@ -1264,6 +1303,10 @@ export async function analyzeGames(
     game_start_time: p.game_start_time,
     updated_at: now,
     audit_failures: p.audit_failures ?? null,
+    theoretical_amount: p.theoretical_amount,
+    sizing_reason: p.sizing_reason,
+    units_actual: p.units_actual,
+    units_theoretical: p.units_theoretical,
   }));
 
   // Rail 5 source: rows that failed the quality audit. Persisted with
@@ -1315,6 +1358,10 @@ export async function analyzeGames(
     game_start_time: p.game_start_time,
     updated_at: now,
     audit_failures: p.audit_failures ?? null,
+    theoretical_amount: p.theoretical_amount,
+    sizing_reason: p.sizing_reason,
+    units_actual: p.units_actual,
+    units_theoretical: p.units_theoretical,
   }));
 
   const parlayRows: PickRow[] = enrichedParlays.map((par) => ({
@@ -1695,6 +1742,10 @@ export async function analyzeGames(
         confidence_raw: row.confidence_raw,
         tier: row.tier,
         recommended_amount: row.recommended_amount,
+        theoretical_amount: row.theoretical_amount,
+        sizing_reason: row.sizing_reason,
+        units_actual: row.units_actual,
+        units_theoretical: row.units_theoretical,
         lock_reason: 'updated',
         updated_at: now,
       };

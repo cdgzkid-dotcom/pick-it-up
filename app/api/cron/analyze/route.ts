@@ -510,6 +510,12 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       // PickRow so the line renders as "DK X% · Pin Y%" for now.
       pinnacle_implied:
         (p as { pinnacle_implied?: number | null }).pinnacle_implied ?? null,
+      // Sizing transparency (2026-05-13).
+      theoretical_amount: (p as { theoretical_amount?: number | null }).theoretical_amount ?? null,
+      sizing_reason: (p as { sizing_reason?: string | null }).sizing_reason ?? null,
+      units_actual: (p as { units_actual?: number | null }).units_actual ?? null,
+      units_theoretical: (p as { units_theoretical?: number | null }).units_theoretical ?? null,
+      sport: p.sport ?? null,
     })),
     result.insertedParlays.map((p) => ({
       tier: p.tier,

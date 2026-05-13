@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Tier } from './types';
 
-const TIER_UNITS: Record<Tier, number> = {
+export const TIER_UNITS: Record<Tier, number> = {
   lock: 2,
   strong: 1.5,
   value: 1,

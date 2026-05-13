@@ -59,6 +59,15 @@ interface PickForMessage {
   market_sources_count?: number | null;
   recommended_amount?: number | null;
   kelly_fraction?: number | null;
+  /** Sizing transparency (2026-05-13). When sizing_reason !== null, the
+   *  Apostar line shows "$22 (1.7u de 2u — <reason phrase>)" so the user
+   *  never has to guess where the stake came from. Null on parlays. */
+  theoretical_amount?: number | null;
+  sizing_reason?: string | null;
+  units_actual?: number | null;
+  units_theoretical?: number | null;
+  /** Sport needed to phrase the sport_multiplier reason. */
+  sport?: string | null;
   trap_warning?: string | null;
   analysis?: string | null;
   is_parlay?: boolean;
@@ -99,6 +108,25 @@ const SPORT_EMOJI: Record<string, string> = {
   Soccer: '⚽',
 };
 const sportEmoji = (sport: string): string => SPORT_EMOJI[sport] ?? '🎲';
+
+function sizingReasonPhrase(
+  reason: string | null | undefined,
+  sport: string | null | undefined,
+): string | null {
+  if (!reason) return null;
+  switch (reason) {
+    case 'kelly_below_ceiling':
+      return 'Kelly recomienda menos';
+    case 'sport_multiplier':
+      return sport ? `Kelly ${sport} recortó por varianza` : 'Kelly recortó por varianza';
+    case 'trap':
+      return 'Recortado por señal de trampa';
+    case 'bankroll_cap':
+      return 'Cap 10% del bankroll';
+    default:
+      return null;
+  }
+}
 
 function tierBadge(tier?: string | null, confidence?: number | null): string {
   if (!tier) return '';
@@ -281,7 +309,16 @@ export function formatPicksMessage(
       if (p.bpi_implied != null) bits.push(`BPI ${(p.bpi_implied * 100).toFixed(1)}%`);
       lines.push(`📈 Mercado: ${bits.join(' · ')}`);
     }
-    if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
+    if (stake > 0) {
+      const phrase = sizingReasonPhrase(p.sizing_reason, p.sport);
+      if (phrase && p.units_actual != null && p.units_theoretical != null) {
+        lines.push(
+          `💰 Apostar: $${stake} (${p.units_actual}u de ${p.units_theoretical}u — ${phrase}) → Ganas: $${win}`,
+        );
+      } else {
+        lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
+      }
+    }
     if (p.odds_comparison && p.odds_comparison.length >= 2) {
       const sorted = [...p.odds_comparison].sort((a, b) => b.ml - a.ml);
       lines.push(`📍 ${sorted.map((b) => `${b.source} ${b.ml.toFixed(2)}`).join(' | ')}`);
@@ -296,7 +333,16 @@ export function formatPicksMessage(
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
     lines.push(`🎯 *Parlay:* ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
-    if (stake > 0) lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
+    if (stake > 0) {
+      const phrase = sizingReasonPhrase(par.sizing_reason, par.sport);
+      if (phrase && par.units_actual != null && par.units_theoretical != null) {
+        lines.push(
+          `💰 Apostar: $${stake} (${par.units_actual}u de ${par.units_theoretical}u — ${phrase}) → Ganas: $${win}`,
+        );
+      } else {
+        lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
+      }
+    }
     lines.push('');
   });
 

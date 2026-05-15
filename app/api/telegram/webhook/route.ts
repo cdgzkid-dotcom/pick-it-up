@@ -176,6 +176,13 @@ function formatPreview(
 
 // ── Confirm payload builder ─────────────────────────────────────────────────
 
+/** Returns null for any string that is not a parseable date — prevents
+ *  Postgres from receiving non-timestamptz values like "0h 48m". */
+function safeIso(t: string | null): string | null {
+  if (!t) return null;
+  return isNaN(new Date(t).getTime()) ? null : t;
+}
+
 function buildConfirmPayload(extracted: DrafteaExtractedBet, matches: LegMatch[]) {
   return {
     bet_type: extracted.bet_type,
@@ -199,7 +206,7 @@ function buildConfirmPayload(extracted: DrafteaExtractedBet, matches: LegMatch[]
         market_type: leg.market_type,
         line: leg.line,
         odds_decimal: leg.odds_decimal,
-        event_time: leg.event_time,
+        event_time: safeIso(leg.event_time),
         matched_pick_id: match?.pick?.id ?? null,
         odds_changed: oddsChanged,
         original_odds: pickOdds,

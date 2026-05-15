@@ -27,7 +27,10 @@ const LegSchema = z.object({
   market_type: z.string(),
   line: z.string().nullable(),
   odds_decimal: z.coerce.number().min(1.01).max(200),
-  event_time: z.string().nullable(),
+  event_time: z.string().nullable().transform((v) => {
+    if (!v) return null;
+    return isNaN(new Date(v).getTime()) ? null : v;
+  }),
   // Matching results (from /api/bets/from-image response)
   matched_pick_id: z.string().uuid().nullable(),
   odds_changed: z.boolean(),

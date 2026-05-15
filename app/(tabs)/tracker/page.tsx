@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase';
 import BetResolver from '@/components/BetResolver';
 import ManualBetForm from '@/components/ManualBetForm';
+import DrafteaBetFromImage from '@/components/DrafteaBetFromImage';
 import ResetPendingButton from '@/components/ResetPendingButton';
 import ForceCheckResultsButton from '@/components/ForceCheckResultsButton';
 import ResultsRefresher from '@/components/ResultsRefresher';
@@ -96,7 +97,13 @@ export default async function TrackerPage() {
 
       <section className="space-y-2">
         <div className="text-[10px] text-muted uppercase tracking-wider">
-          Agregar manual
+          Registrar apuesta
+        </div>
+        <DrafteaBetFromImage />
+        <div className="flex items-center gap-2 py-1">
+          <div className="flex-1 h-px bg-line" />
+          <span className="text-[10px] text-muted">o ingresa manualmente</span>
+          <div className="flex-1 h-px bg-line" />
         </div>
         <ManualBetForm />
       </section>

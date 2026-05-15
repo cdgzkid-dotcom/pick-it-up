@@ -41,7 +41,7 @@ interface CronRunRow {
   errors: Record<string, string> | null;
 }
 
-export async function GET(_req: Request) {
+export async function GET() {
   const supabase = supabaseAdmin();
   const now = new Date();
 

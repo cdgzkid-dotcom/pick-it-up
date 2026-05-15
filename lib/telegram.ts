@@ -97,17 +97,18 @@ const TIER_NAME: Record<string, string> = {
   parlay: 'PARLAY',
 };
 
-/** Visual sport indicator used by the Pick Digest message. Match the keys
- * to Game.sport values produced by lib/espn.ts (uppercase 3-letter codes
- * for the major leagues; 'Soccer' for any MLS/EPL/UEFA aggregate). */
 const SPORT_EMOJI: Record<string, string> = {
   MLB: '⚾',
   NBA: '🏀',
   NHL: '🏒',
   NFL: '🏈',
+  'Liga MX': '⚽',
+  'Premier League': '⚽',
+  Champions: '⚽',
   Soccer: '⚽',
+  UFC: '🥊',
 };
-const sportEmoji = (sport: string): string => SPORT_EMOJI[sport] ?? '🎲';
+const sportEmoji = (sport: string): string => SPORT_EMOJI[sport] ?? '🎯';
 
 function sizingReasonPhrase(
   reason: string | null | undefined,
@@ -292,8 +293,9 @@ export function formatPicksMessage(
         : '';
     const bookTag = p.best_odds_source ? ` (${p.best_odds_source})` : '';
 
+    const sportTag = p.sport ? `${sportEmoji(p.sport)} ` : '';
     lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
-    lines.push(`${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
+    lines.push(`${sportTag}${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
     if (edgePct && realPct) {
       lines.push(`📊 Edge: ${edgePct}${marketTag} · Prob: ${realPct}`);
     } else if (edgePct) {
@@ -332,7 +334,8 @@ export function formatPicksMessage(
   parlays.forEach((par) => {
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
-    lines.push(`🎯 *Parlay:* ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    const parlayTag = par.sport ? `${sportEmoji(par.sport)} ` : '';
+    lines.push(`🎯 *Parlay:* ${parlayTag}${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
     if (stake > 0) {
       const phrase = sizingReasonPhrase(par.sizing_reason, par.sport);
       if (phrase && par.units_actual != null && par.units_theoretical != null) {

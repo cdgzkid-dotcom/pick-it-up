@@ -115,6 +115,23 @@ function withinWindow(sport: string, startIso: string | undefined): boolean {
   return diffMin >= min && diffMin <= max;
 }
 
+/**
+ * Deduplicates an array of game-like objects by sport+home_team+away_team.
+ * Used when merging multiple pick_digest_pending records into a single digest
+ * — the same game can appear in several cron runs within the 2h window.
+ */
+function dedupeGames<T extends { sport: string; home_team: string; away_team: string }>(
+  games: T[],
+): T[] {
+  const seen = new Set<string>();
+  return games.filter((g) => {
+    const key = `${g.sport}|${g.home_team}|${g.away_team}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string[]; message: string | null }> {
   const supabase = supabaseAdmin();
 
@@ -293,6 +310,58 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     await sendTelegramMessage(lines.join('\n'));
   }
 
+  // FIX 1: Save analyzed_no_edge markers for regular-season games where
+  // Claude found NO positive edge on EITHER side (market is already priced
+  // more accurately than our model). Without markers these games re-enter
+  // the analysis queue every cron run (every 10 min) burning Claude tokens
+  // with no chance of producing a different result.
+  //
+  // Only `no_positive_edge` gets markers — `edge_below` games (one side is
+  // marginally better but still < 2% threshold) are intentionally left open:
+  // a 10-min line movement could push them above the threshold. Re-analysis
+  // for edge_below is worth the cost; re-analysis for no_positive_edge is not.
+  //
+  // Playoff games are already marked via playoffsAnalyzedNoEdge above, so we
+  // exclude them here to avoid duplicate DB rows.
+  const regularSeasonNoEdge = result.noPositiveEdgeEvents.filter(
+    (e) => e.espn_event_id !== null && !isPlayoffSeason(e.sport),
+  );
+
+  if (regularSeasonNoEdge.length > 0) {
+    const regularMarkers = regularSeasonNoEdge.map((e) => ({
+      sport: e.sport,
+      league: null,
+      game: `${e.away_team} @ ${e.home_team}`,
+      home_team: e.home_team,
+      away_team: e.away_team,
+      home_team_abbr: null,
+      away_team_abbr: null,
+      espn_event_id: e.espn_event_id as string,
+      pick: '—',
+      bet_type: 'ML',
+      odds_decimal: 1,
+      confidence: 0,
+      real_probability: 0,
+      implied_probability: 0,
+      edge: 0,
+      recommended_amount: 0,
+      tier: 'value',
+      status: 'analyzed_no_edge',
+      is_parlay: false,
+      game_start_time: null,
+      picks_generated_at: new Date().toISOString(),
+    }));
+    const { error: regularMarkerErr } = await supabase.from('picks').insert(regularMarkers);
+    if (regularMarkerErr) {
+      console.error('[cron] regular-season no_edge markers insert failed', regularMarkerErr);
+    } else {
+      console.log(
+        `[cron][FIX1] saved ${regularSeasonNoEdge.length} regular-season no_edge marker(s):`,
+        regularSeasonNoEdge.map((e) => `${e.sport}/${e.away_team}@${e.home_team}`).join(', '),
+      );
+    }
+  }
+
   if (result.insertedPicks.length === 0 && result.insertedParlays.length === 0 && result.updated === 0) {
     // No new picks, no updates. But if we superseded picks that the user
     // already saw in Telegram, we MUST notify — otherwise they might bet on
@@ -328,14 +397,23 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       };
     }
 
-    // Pick Digest — replaces the older single-purpose "no DK odds" alert
-    // with a unified summary of WHY the cron didn't produce any picks.
+    // Pick Digest — unified summary of WHY the cron didn't produce any picks.
     // Surfaces the categories so the user can see the system DID analyze
     // and DID compute, killing the "silent system = broken system" anxiety.
     //
-    // Anti-spam: same 2h sliding window via system_notifications, but now
-    // keyed by kind='pick_digest'. Legacy kind='no_odds_alert' rows
-    // (none in DB today) stay as historical and are ignored by this query.
+    // FIX 2: Accumulate-then-flush (replaces suppress-on-2h).
+    // OLD behaviour: when a digest was sent, any subsequent runs within the
+    // 2h window were SUPPRESSED silently. The user had no visibility into
+    // games analyzed during those suppressed runs.
+    //
+    // NEW behaviour:
+    //  1. Every run with digest content saves a pick_digest_pending record.
+    //  2. If the 2h window since the last sent pick_digest has EXPIRED, we
+    //     query all pending records since that send, MERGE them into one
+    //     consolidated digest, send it, and insert a pick_digest record.
+    //  3. If still within the 2h window, just save pending and log — no send.
+    // Result: the user gets at most one digest per 2h, but it contains ALL
+    // games analyzed in that window (not just the first run's games).
     const digestData: PickDigestData = {
       analyzedCount: toAnalyze.length,
       edgeBelow: result.edgeBelowEvents.map((e) => ({
@@ -386,49 +464,126 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       0;
 
     if (hasDigestContent && digestData.analyzedCount > 0) {
-      const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-      const { data: recentNotif } = await supabase
+      // Step 1: Always persist this run's data as a pending record.
+      // It will be flushed into the next consolidated digest when the 2h
+      // window expires. Using 'sent_at' (auto-set by DB) as the timestamp.
+      await supabase.from('system_notifications').insert({
+        kind: 'pick_digest_pending',
+        payload: {
+          kind_version: 1,
+          run_at: new Date().toISOString(),
+          analyzed_count: digestData.analyzedCount,
+          edge_below: digestData.edgeBelow,
+          audit_filtered: digestData.auditFiltered,
+          playoff_no_edge: digestData.playoffNoEdge,
+          no_positive_edge: digestData.noPositiveEdge,
+          no_odds: digestData.noOdds,
+        },
+      });
+
+      // Step 2: Find the last sent digest (if any) to determine the window.
+      const { data: lastSentDigest } = await supabase
         .from('system_notifications')
         .select('sent_at')
         .eq('kind', 'pick_digest')
-        .gte('sent_at', cutoff)
         .order('sent_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (recentNotif) {
-        console.log('[PICK_DIGEST_SUPPRESSED]', {
-          last_sent: recentNotif.sent_at,
-          reason: 'within_2h_window',
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const withinWindow = lastSentDigest && lastSentDigest.sent_at > twoHoursAgo;
+
+      if (withinWindow) {
+        // Still within the 2h window. Pending record already saved above.
+        // The next cron run after the window expires will flush everything.
+        console.log('[PICK_DIGEST_ACCUMULATED]', {
+          last_sent: lastSentDigest.sent_at,
+          reason: 'within_2h_window — pending saved, will flush on expiry',
         });
       } else {
+        // Step 3: 2h window expired (or first-ever digest). Query ALL pending
+        // records since the last sent digest and merge them. The pending record
+        // for THIS run was just inserted above, so it's included in the merge.
+        const pendingSince = lastSentDigest
+          ? lastSentDigest.sent_at
+          : new Date(0).toISOString(); // epoch → first run ever
+
+        const { data: pendingRecords } = await supabase
+          .from('system_notifications')
+          .select('payload, sent_at')
+          .eq('kind', 'pick_digest_pending')
+          .gt('sent_at', pendingSince) // strict-gt: avoids including the send-event itself
+          .order('sent_at', { ascending: true });
+
+        const allPending = pendingRecords ?? [];
+
+        // Merge: sum analyzed counts, concatenate + deduplicate game arrays.
+        // Dedup by sport+home+away prevents the same game from appearing twice
+        // when it was re-analyzed across consecutive suppressed cron runs.
+        type PendingPayload = {
+          analyzed_count?: number;
+          edge_below?: PickDigestData['edgeBelow'];
+          audit_filtered?: PickDigestData['auditFiltered'];
+          playoff_no_edge?: PickDigestData['playoffNoEdge'];
+          no_positive_edge?: PickDigestData['noPositiveEdge'];
+          no_odds?: PickDigestData['noOdds'];
+        };
+        const mergedData: PickDigestData = {
+          analyzedCount: allPending.reduce(
+            (sum, r) => sum + ((r.payload as PendingPayload).analyzed_count ?? 0),
+            0,
+          ),
+          edgeBelow: dedupeGames(
+            allPending.flatMap((r) => (r.payload as PendingPayload).edge_below ?? []),
+          ),
+          auditFiltered: dedupeGames(
+            allPending.flatMap((r) => (r.payload as PendingPayload).audit_filtered ?? []),
+          ),
+          playoffNoEdge: dedupeGames(
+            allPending.flatMap((r) => (r.payload as PendingPayload).playoff_no_edge ?? []),
+          ),
+          noPositiveEdge: dedupeGames(
+            allPending.flatMap((r) => (r.payload as PendingPayload).no_positive_edge ?? []),
+          ),
+          noOdds: dedupeGames(
+            allPending.flatMap((r) => (r.payload as PendingPayload).no_odds ?? []),
+          ),
+        };
+
+        // Guard: if nothing merged (e.g. pending insert failed), fall back to
+        // current run's data so we don't send an empty message.
+        const effectiveData =
+          mergedData.analyzedCount > 0 ? mergedData : digestData;
+
         const systemHealth = await computeSystemHealthBounded();
-        const text = formatPickDigestMessage(digestData, { systemHealth });
+        const text = formatPickDigestMessage(effectiveData, { systemHealth });
         const sent = await sendTelegramMessage(text);
         if (sent.ok) {
           await supabase.from('system_notifications').insert({
             kind: 'pick_digest',
             payload: {
               kind_version: 1,
-              analyzed_count: digestData.analyzedCount,
+              analyzed_count: effectiveData.analyzedCount,
               by_category: {
-                edge_below: digestData.edgeBelow.length,
-                audit_filtered: digestData.auditFiltered.length,
-                playoff_no_edge: digestData.playoffNoEdge.length,
-                no_positive_edge: digestData.noPositiveEdge.length,
-                no_odds: digestData.noOdds.length,
+                edge_below: effectiveData.edgeBelow.length,
+                audit_filtered: effectiveData.auditFiltered.length,
+                playoff_no_edge: effectiveData.playoffNoEdge.length,
+                no_positive_edge: effectiveData.noPositiveEdge.length,
+                no_odds: effectiveData.noOdds.length,
               },
+              pending_runs_merged: allPending.length,
               sent_for_run_at: new Date().toISOString(),
             },
           });
           console.log('[PICK_DIGEST_SENT]', {
-            analyzed: digestData.analyzedCount,
+            analyzed: effectiveData.analyzedCount,
+            pending_merged: allPending.length,
             categories: {
-              edge_below: digestData.edgeBelow.length,
-              audit_filtered: digestData.auditFiltered.length,
-              playoff_no_edge: digestData.playoffNoEdge.length,
-              no_positive_edge: digestData.noPositiveEdge.length,
-              no_odds: digestData.noOdds.length,
+              edge_below: effectiveData.edgeBelow.length,
+              audit_filtered: effectiveData.auditFiltered.length,
+              playoff_no_edge: effectiveData.playoffNoEdge.length,
+              no_positive_edge: effectiveData.noPositiveEdge.length,
+              no_odds: effectiveData.noOdds.length,
             },
           });
         } else {

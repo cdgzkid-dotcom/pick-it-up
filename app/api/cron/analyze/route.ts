@@ -115,22 +115,6 @@ function withinWindow(sport: string, startIso: string | undefined): boolean {
   return diffMin >= min && diffMin <= max;
 }
 
-/**
- * Deduplicates an array of game-like objects by sport+home_team+away_team.
- * Used when merging multiple pick_digest_pending records into a single digest
- * — the same game can appear in several cron runs within the 2h window.
- */
-function dedupeGames<T extends { sport: string; home_team: string; away_team: string }>(
-  games: T[],
-): T[] {
-  const seen = new Set<string>();
-  return games.filter((g) => {
-    const key = `${g.sport}|${g.home_team}|${g.away_team}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string[]; message: string | null }> {
   const supabase = supabaseAdmin();
@@ -401,19 +385,10 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     // Surfaces the categories so the user can see the system DID analyze
     // and DID compute, killing the "silent system = broken system" anxiety.
     //
-    // FIX 2: Accumulate-then-flush (replaces suppress-on-2h).
-    // OLD behaviour: when a digest was sent, any subsequent runs within the
-    // 2h window were SUPPRESSED silently. The user had no visibility into
-    // games analyzed during those suppressed runs.
-    //
-    // NEW behaviour:
-    //  1. Every run with digest content saves a pick_digest_pending record.
-    //  2. If the 2h window since the last sent pick_digest has EXPIRED, we
-    //     query all pending records since that send, MERGE them into one
-    //     consolidated digest, send it, and insert a pick_digest record.
-    //  3. If still within the 2h window, just save pending and log — no send.
-    // Result: the user gets at most one digest per 2h, but it contains ALL
-    // games analyzed in that window (not just the first run's games).
+    // CAMBIO 1: Direct per-run send (replaces FIX 2 accumulate-then-flush).
+    // Every cron run that analyzes ≥1 game and has digest content sends a
+    // Telegram digest immediately. No 2h anti-spam window, no pending records,
+    // no merge logic. The user gets a notification for every run that matters.
     const digestData: PickDigestData = {
       analyzedCount: toAnalyze.length,
       edgeBelow: result.edgeBelowEvents.map((e) => ({
@@ -464,131 +439,37 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       0;
 
     if (hasDigestContent && digestData.analyzedCount > 0) {
-      // Step 1: Always persist this run's data as a pending record.
-      // It will be flushed into the next consolidated digest when the 2h
-      // window expires. Using 'sent_at' (auto-set by DB) as the timestamp.
-      await supabase.from('system_notifications').insert({
-        kind: 'pick_digest_pending',
-        payload: {
-          kind_version: 1,
-          run_at: new Date().toISOString(),
-          analyzed_count: digestData.analyzedCount,
-          edge_below: digestData.edgeBelow,
-          audit_filtered: digestData.auditFiltered,
-          playoff_no_edge: digestData.playoffNoEdge,
-          no_positive_edge: digestData.noPositiveEdge,
-          no_odds: digestData.noOdds,
-        },
-      });
-
-      // Step 2: Find the last sent digest (if any) to determine the window.
-      const { data: lastSentDigest } = await supabase
-        .from('system_notifications')
-        .select('sent_at')
-        .eq('kind', 'pick_digest')
-        .order('sent_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-      const withinWindow = lastSentDigest && lastSentDigest.sent_at > twoHoursAgo;
-
-      if (withinWindow) {
-        // Still within the 2h window. Pending record already saved above.
-        // The next cron run after the window expires will flush everything.
-        console.log('[PICK_DIGEST_ACCUMULATED]', {
-          last_sent: lastSentDigest.sent_at,
-          reason: 'within_2h_window — pending saved, will flush on expiry',
+      const systemHealth = await computeSystemHealthBounded();
+      const text = formatPickDigestMessage(digestData, { systemHealth });
+      const sent = await sendTelegramMessage(text);
+      if (sent.ok) {
+        await supabase.from('system_notifications').insert({
+          kind: 'pick_digest',
+          payload: {
+            kind_version: 1,
+            analyzed_count: digestData.analyzedCount,
+            by_category: {
+              edge_below: digestData.edgeBelow.length,
+              audit_filtered: digestData.auditFiltered.length,
+              playoff_no_edge: digestData.playoffNoEdge.length,
+              no_positive_edge: digestData.noPositiveEdge.length,
+              no_odds: digestData.noOdds.length,
+            },
+            sent_for_run_at: new Date().toISOString(),
+          },
+        });
+        console.log('[PICK_DIGEST_SENT]', {
+          analyzed: digestData.analyzedCount,
+          categories: {
+            edge_below: digestData.edgeBelow.length,
+            audit_filtered: digestData.auditFiltered.length,
+            playoff_no_edge: digestData.playoffNoEdge.length,
+            no_positive_edge: digestData.noPositiveEdge.length,
+            no_odds: digestData.noOdds.length,
+          },
         });
       } else {
-        // Step 3: 2h window expired (or first-ever digest). Query ALL pending
-        // records since the last sent digest and merge them. The pending record
-        // for THIS run was just inserted above, so it's included in the merge.
-        const pendingSince = lastSentDigest
-          ? lastSentDigest.sent_at
-          : new Date(0).toISOString(); // epoch → first run ever
-
-        const { data: pendingRecords } = await supabase
-          .from('system_notifications')
-          .select('payload, sent_at')
-          .eq('kind', 'pick_digest_pending')
-          .gt('sent_at', pendingSince) // strict-gt: avoids including the send-event itself
-          .order('sent_at', { ascending: true });
-
-        const allPending = pendingRecords ?? [];
-
-        // Merge: sum analyzed counts, concatenate + deduplicate game arrays.
-        // Dedup by sport+home+away prevents the same game from appearing twice
-        // when it was re-analyzed across consecutive suppressed cron runs.
-        type PendingPayload = {
-          analyzed_count?: number;
-          edge_below?: PickDigestData['edgeBelow'];
-          audit_filtered?: PickDigestData['auditFiltered'];
-          playoff_no_edge?: PickDigestData['playoffNoEdge'];
-          no_positive_edge?: PickDigestData['noPositiveEdge'];
-          no_odds?: PickDigestData['noOdds'];
-        };
-        const mergedData: PickDigestData = {
-          analyzedCount: allPending.reduce(
-            (sum, r) => sum + ((r.payload as PendingPayload).analyzed_count ?? 0),
-            0,
-          ),
-          edgeBelow: dedupeGames(
-            allPending.flatMap((r) => (r.payload as PendingPayload).edge_below ?? []),
-          ),
-          auditFiltered: dedupeGames(
-            allPending.flatMap((r) => (r.payload as PendingPayload).audit_filtered ?? []),
-          ),
-          playoffNoEdge: dedupeGames(
-            allPending.flatMap((r) => (r.payload as PendingPayload).playoff_no_edge ?? []),
-          ),
-          noPositiveEdge: dedupeGames(
-            allPending.flatMap((r) => (r.payload as PendingPayload).no_positive_edge ?? []),
-          ),
-          noOdds: dedupeGames(
-            allPending.flatMap((r) => (r.payload as PendingPayload).no_odds ?? []),
-          ),
-        };
-
-        // Guard: if nothing merged (e.g. pending insert failed), fall back to
-        // current run's data so we don't send an empty message.
-        const effectiveData =
-          mergedData.analyzedCount > 0 ? mergedData : digestData;
-
-        const systemHealth = await computeSystemHealthBounded();
-        const text = formatPickDigestMessage(effectiveData, { systemHealth });
-        const sent = await sendTelegramMessage(text);
-        if (sent.ok) {
-          await supabase.from('system_notifications').insert({
-            kind: 'pick_digest',
-            payload: {
-              kind_version: 1,
-              analyzed_count: effectiveData.analyzedCount,
-              by_category: {
-                edge_below: effectiveData.edgeBelow.length,
-                audit_filtered: effectiveData.auditFiltered.length,
-                playoff_no_edge: effectiveData.playoffNoEdge.length,
-                no_positive_edge: effectiveData.noPositiveEdge.length,
-                no_odds: effectiveData.noOdds.length,
-              },
-              pending_runs_merged: allPending.length,
-              sent_for_run_at: new Date().toISOString(),
-            },
-          });
-          console.log('[PICK_DIGEST_SENT]', {
-            analyzed: effectiveData.analyzedCount,
-            pending_merged: allPending.length,
-            categories: {
-              edge_below: effectiveData.edgeBelow.length,
-              audit_filtered: effectiveData.auditFiltered.length,
-              playoff_no_edge: effectiveData.playoffNoEdge.length,
-              no_positive_edge: effectiveData.noPositiveEdge.length,
-              no_odds: effectiveData.noOdds.length,
-            },
-          });
-        } else {
-          console.error('[PICK_DIGEST_FAILED]', sent);
-        }
+        console.error('[PICK_DIGEST_FAILED]', sent);
       }
     }
 

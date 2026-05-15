@@ -2,18 +2,20 @@
  * POST /api/telegram/webhook
  *
  * Receives Telegram updates for the Pick It Up bot.
+ * Returns HTTP 200 to Telegram immediately (< 200 ms) and runs all
+ * heavy work — image download, Claude Vision, Supabase writes — inside
+ * waitUntil() so Vercel keeps the function alive past the response.
  *
  * Supported flows:
- *   • message.photo  → Claude Vision extracts the Draftea ticket, sends
- *                      a preview with [✅ Confirmar] [❌ Cancelar] buttons.
+ *   • message.photo  → sends "Analizando…", then edits that message
+ *                      with the ticket preview + [✅ Confirmar] [❌ Cancelar].
  *   • callback_query → confirm stores the bet via /api/bets/from-image/confirm;
  *                      cancel deletes the pending session.
  *   • any other msg  → friendly prompt asking for a screenshot.
- *
- * Always returns HTTP 200 so Telegram does not retry failed deliveries.
  */
 
 import { NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { supabaseAdmin } from '@/lib/supabase';
 import { extractDrafteaBet } from '@/lib/vision-extract-bet';
 import { matchExtractedBetToPicks } from '@/lib/bet-matching';
@@ -65,11 +67,12 @@ async function tgPost(method: string, body: Record<string, unknown>): Promise<Re
   });
 }
 
-async function tgSend(
+/** Sends a message and returns the Telegram message_id (needed to edit it later). */
+async function tgSendWithId(
   chatId: number,
   text: string,
   replyMarkup?: object,
-): Promise<void> {
+): Promise<number | null> {
   const body: Record<string, unknown> = {
     chat_id: chatId,
     text,
@@ -77,18 +80,33 @@ async function tgSend(
     disable_web_page_preview: true,
   };
   if (replyMarkup) body.reply_markup = replyMarkup;
-  await tgPost('sendMessage', body).catch((e) =>
-    console.error('[tg-webhook] sendMessage failed', e),
-  );
+  try {
+    const r = await tgPost('sendMessage', body);
+    if (!r.ok) return null;
+    const data = (await r.json()) as { result?: { message_id?: number } };
+    return data.result?.message_id ?? null;
+  } catch (e) {
+    console.error('[tg-webhook] sendMessage failed', e);
+    return null;
+  }
 }
 
-async function tgEdit(chatId: number, messageId: number, text: string): Promise<void> {
-  await tgPost('editMessageText', {
+async function tgEdit(
+  chatId: number,
+  messageId: number,
+  text: string,
+  replyMarkup?: object,
+): Promise<void> {
+  const body: Record<string, unknown> = {
     chat_id: chatId,
     message_id: messageId,
     text,
     parse_mode: 'Markdown',
-  }).catch((e) => console.error('[tg-webhook] editMessageText failed', e));
+  };
+  if (replyMarkup) body.reply_markup = replyMarkup;
+  await tgPost('editMessageText', body).catch((e) =>
+    console.error('[tg-webhook] editMessageText failed', e),
+  );
 }
 
 async function tgAnswer(callbackQueryId: string, text?: string): Promise<void> {
@@ -201,132 +219,26 @@ function confirmKeyboard(sessionId: string) {
   };
 }
 
-// ── Main handler ────────────────────────────────────────────────────────────
+// ── Background handlers ─────────────────────────────────────────────────────
 
-export async function POST(req: Request) {
-  let update: TelegramUpdate;
-  try {
-    update = (await req.json()) as TelegramUpdate;
-  } catch {
-    return NextResponse.json({ ok: false }, { status: 400 });
-  }
+async function handlePhoto(chatId: number, fileId: string): Promise<void> {
+  // Send "Analizando…" and capture message_id so we can edit it later
+  const processingMsgId = await tgSendWithId(chatId, '🔍 Analizando tu ticket con Claude Vision…');
 
-  // Always 200 — prevents Telegram from retrying
-  const ok = () => NextResponse.json({ ok: true });
+  // Edits the "Analizando…" message (or sends a new one if that failed)
+  const finish = (text: string, keyboard?: object) =>
+    processingMsgId
+      ? tgEdit(chatId, processingMsgId, text, keyboard)
+      : tgSendWithId(chatId, text, keyboard).then(() => undefined);
 
-  // ── Callback query (button press) ────────────────────────────────────────
-  if (update.callback_query) {
-    const cq = update.callback_query;
-    const chatId = cq.message?.chat.id;
-    const messageId = cq.message?.message_id;
-    const cbData = cq.data ?? '';
-
-    if (!chatId || !messageId) {
-      await tgAnswer(cq.id);
-      return ok();
-    }
-
-    const colonIdx = cbData.indexOf(':');
-    const action = cbData.slice(0, colonIdx);
-    const sessionId = cbData.slice(colonIdx + 1);
-
-    const supabase = supabaseAdmin();
-
-    if (action === 'cancel') {
-      await supabase.from('telegram_sessions').delete().eq('id', sessionId);
-      await tgAnswer(cq.id, 'Cancelado');
-      await tgEdit(chatId, messageId, '❌ *Registro cancelado.*');
-      return ok();
-    }
-
-    if (action === 'confirm') {
-      const { data: session } = await supabase
-        .from('telegram_sessions')
-        .select('payload')
-        .eq('id', sessionId)
-        .single();
-
-      if (!session) {
-        await tgAnswer(cq.id, 'Sesión expirada o ya usada');
-        await tgEdit(
-          chatId,
-          messageId,
-          '⚠️ Esta confirmación ya expiró o fue usada. Manda el screenshot de nuevo.',
-        );
-        return ok();
-      }
-
-      // Delete immediately to prevent double-submit
-      await supabase.from('telegram_sessions').delete().eq('id', sessionId);
-
-      const confirmRes = await fetch(`${APP_URL}/api/bets/from-image/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(session.payload),
-      });
-
-      const confirmBody = await confirmRes.json().catch(() => ({})) as {
-        ok?: boolean;
-        error?: string;
-        bet_id?: string;
-        bankroll_current?: number | null;
-        historical?: boolean;
-      };
-
-      if (!confirmRes.ok) {
-        const errMsg = confirmBody.error ?? 'Error desconocido';
-        await tgAnswer(cq.id, '❌ Error al registrar');
-        await tgEdit(chatId, messageId, `❌ *No se pudo registrar:*\n${errMsg}`);
-        return ok();
-      }
-
-      const bankrollLine = confirmBody.bankroll_current
-        ? `\n💰 Bankroll: $${Math.round(confirmBody.bankroll_current)} MXN`
-        : '';
-      const historicalNote = confirmBody.historical
-        ? '\n📚 _Apuesta ya liquidada — registrada en historial._'
-        : '';
-
-      await tgAnswer(cq.id, '✅ Registrado');
-      await tgEdit(
-        chatId,
-        messageId,
-        `✅ *Apuesta registrada*${bankrollLine}${historicalNote}`,
-      );
-      return ok();
-    }
-
-    await tgAnswer(cq.id);
-    return ok();
-  }
-
-  // ── Message ───────────────────────────────────────────────────────────────
-  const message = update.message;
-  if (!message) return ok();
-
-  const chatId = message.chat.id;
-
-  if (!message.photo || message.photo.length === 0) {
-    await tgSend(
-      chatId,
-      'Mándame un screenshot de tu ticket de Draftea para registrarlo automáticamente. 📸',
-    );
-    return ok();
-  }
-
-  // Highest resolution = last element in the array
-  const bestPhoto = message.photo[message.photo.length - 1];
-
-  await tgSend(chatId, '🔍 Analizando tu ticket con Claude Vision…');
-
-  // Get download URL from Telegram
-  const fileUrl = await tgGetFileUrl(bestPhoto.file_id);
+  // 1. Get download URL from Telegram
+  const fileUrl = await tgGetFileUrl(fileId);
   if (!fileUrl) {
-    await tgSend(chatId, '⚠️ No pude acceder al archivo. Intenta enviarlo de nuevo.');
-    return ok();
+    await finish('⚠️ No pude acceder al archivo. Intenta enviarlo de nuevo.');
+    return;
   }
 
-  // Download image
+  // 2. Download image
   let imageBuffer: Buffer;
   try {
     const imgRes = await fetch(fileUrl);
@@ -334,11 +246,11 @@ export async function POST(req: Request) {
     imageBuffer = Buffer.from(await imgRes.arrayBuffer());
   } catch (e) {
     console.error('[tg-webhook] image download failed', e);
-    await tgSend(chatId, '⚠️ No pude descargar la imagen. Intenta de nuevo.');
-    return ok();
+    await finish('⚠️ No pude descargar la imagen. Intenta de nuevo.');
+    return;
   }
 
-  // Extract with Claude Vision
+  // 3. Extract with Claude Vision
   let extracted: DrafteaExtractedBet;
   try {
     const base64 = imageBuffer.toString('base64');
@@ -346,10 +258,9 @@ export async function POST(req: Request) {
     extracted = result.extracted;
 
     // Log usage (fire-and-forget)
-    const supabase = supabaseAdmin();
     void (async () => {
       try {
-        await supabase.from('ai_usage_log').insert({
+        await supabaseAdmin().from('ai_usage_log').insert({
           task_type: 'vision_extract_bet_tg',
           model: 'claude-sonnet-4-6',
           tokens_in: result.usage.tokens_in,
@@ -368,37 +279,32 @@ export async function POST(req: Request) {
     })();
   } catch (e) {
     console.error('[tg-webhook] extractDrafteaBet failed', e);
-    await tgSend(chatId, '⚠️ Error al analizar la imagen con Claude. Intenta con otra foto.');
-    return ok();
+    await finish('⚠️ Error al analizar la imagen con Claude. Intenta con otra foto.');
+    return;
   }
 
   if (!extracted.is_draftea_betslip) {
     const reason =
       extracted.extraction_notes ||
       'No parece ser un ticket de Draftea. ¿Es de Caliente u otra app?';
-    await tgSend(
-      chatId,
-      `❓ *No reconocí este ticket.*\n\n${reason}\n\nIntenta con una foto más clara.`,
-    );
-    return ok();
+    await finish(`❓ *No reconocí este ticket.*\n\n${reason}\n\nIntenta con una foto más clara.`);
+    return;
   }
 
   // Guard: confirm endpoint requires wager_mxn > 0 and total_odds_decimal > 1
   if (!extracted.wager_mxn || !extracted.total_odds_decimal) {
-    await tgSend(
-      chatId,
-      `📸 Ticket detectado pero con datos incompletos.\n\nNo pude leer el monto o los momios correctamente. Usa la web para registrarlo: ${APP_URL}/tracker`,
+    await finish(
+      `📸 Ticket detectado pero con datos incompletos.\n\nNo pude leer el monto o los momios. Usa la web: ${APP_URL}/tracker`,
     );
-    return ok();
+    return;
   }
 
-  // Match legs to pending picks
+  // 4. Match legs to pending picks
   const { matches, math_warning } = await matchExtractedBetToPicks(extracted);
 
-  // Store confirm payload in Supabase (keyed by UUID → goes in button callback_data)
+  // 5. Store confirm payload in Supabase
   const confirmPayload = buildConfirmPayload(extracted, matches);
-  const supabase = supabaseAdmin();
-  const { data: session, error: sessionErr } = await supabase
+  const { data: session, error: sessionErr } = await supabaseAdmin()
     .from('telegram_sessions')
     .insert({ chat_id: chatId, payload: confirmPayload })
     .select('id')
@@ -406,12 +312,134 @@ export async function POST(req: Request) {
 
   if (sessionErr || !session) {
     console.error('[tg-webhook] session insert failed', sessionErr);
-    await tgSend(chatId, '⚠️ Error interno. Intenta de nuevo en unos segundos.');
+    await finish('⚠️ Error interno. Intenta de nuevo en unos segundos.');
+    return;
+  }
+
+  // 6. Edit "Analizando…" → preview + buttons
+  const previewText = formatPreview(extracted, matches, math_warning);
+  await finish(previewText, confirmKeyboard(session.id as string));
+}
+
+async function handleCallback(cq: TelegramCallbackQuery): Promise<void> {
+  const chatId = cq.message?.chat.id;
+  const messageId = cq.message?.message_id;
+  const cbData = cq.data ?? '';
+
+  if (!chatId || !messageId) {
+    await tgAnswer(cq.id);
+    return;
+  }
+
+  const colonIdx = cbData.indexOf(':');
+  const action = cbData.slice(0, colonIdx);
+  const sessionId = cbData.slice(colonIdx + 1);
+
+  const supabase = supabaseAdmin();
+
+  if (action === 'cancel') {
+    await supabase.from('telegram_sessions').delete().eq('id', sessionId);
+    await tgAnswer(cq.id, 'Cancelado');
+    await tgEdit(chatId, messageId, '❌ *Registro cancelado.*');
+    return;
+  }
+
+  if (action === 'confirm') {
+    const { data: session } = await supabase
+      .from('telegram_sessions')
+      .select('payload')
+      .eq('id', sessionId)
+      .single();
+
+    if (!session) {
+      await tgAnswer(cq.id, 'Sesión expirada o ya usada');
+      await tgEdit(
+        chatId,
+        messageId,
+        '⚠️ Esta confirmación ya expiró o fue usada. Manda el screenshot de nuevo.',
+      );
+      return;
+    }
+
+    // Delete immediately to prevent double-submit
+    await supabase.from('telegram_sessions').delete().eq('id', sessionId);
+
+    const confirmRes = await fetch(`${APP_URL}/api/bets/from-image/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(session.payload),
+    });
+
+    const confirmBody = (await confirmRes.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      bet_id?: string;
+      bankroll_current?: number | null;
+      historical?: boolean;
+    };
+
+    if (!confirmRes.ok) {
+      const errMsg = confirmBody.error ?? 'Error desconocido';
+      await tgAnswer(cq.id, '❌ Error al registrar');
+      await tgEdit(chatId, messageId, `❌ *No se pudo registrar:*\n${errMsg}`);
+      return;
+    }
+
+    const bankrollLine = confirmBody.bankroll_current
+      ? `\n💰 Bankroll: $${Math.round(confirmBody.bankroll_current)} MXN`
+      : '';
+    const historicalNote = confirmBody.historical
+      ? '\n📚 _Apuesta ya liquidada — registrada en historial._'
+      : '';
+
+    await tgAnswer(cq.id, '✅ Registrado');
+    await tgEdit(
+      chatId,
+      messageId,
+      `✅ *Apuesta registrada*${bankrollLine}${historicalNote}`,
+    );
+    return;
+  }
+
+  await tgAnswer(cq.id);
+}
+
+// ── Main handler ────────────────────────────────────────────────────────────
+
+export async function POST(req: Request) {
+  let update: TelegramUpdate;
+  try {
+    update = (await req.json()) as TelegramUpdate;
+  } catch {
+    return NextResponse.json({ ok: false }, { status: 400 });
+  }
+
+  const ok = () => NextResponse.json({ ok: true });
+
+  // ── Callback query (button press) ────────────────────────────────────────
+  if (update.callback_query) {
+    waitUntil(handleCallback(update.callback_query));
     return ok();
   }
 
-  const previewText = formatPreview(extracted, matches, math_warning);
-  await tgSend(chatId, previewText, confirmKeyboard(session.id as string));
+  // ── Message ───────────────────────────────────────────────────────────────
+  const message = update.message;
+  if (!message) return ok();
 
+  const chatId = message.chat.id;
+
+  if (!message.photo || message.photo.length === 0) {
+    waitUntil(
+      tgSendWithId(
+        chatId,
+        'Mándame un screenshot de tu ticket de Draftea para registrarlo automáticamente. 📸',
+      ),
+    );
+    return ok();
+  }
+
+  // Highest resolution = last element in the array
+  const bestPhoto = message.photo[message.photo.length - 1];
+  waitUntil(handlePhoto(chatId, bestPhoto.file_id));
   return ok();
 }

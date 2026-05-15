@@ -54,9 +54,20 @@ export default async function HomePage() {
 
   try {
     const games = await fetchGames(autoSports);
+
+    // Filter: only show games whose calendar date in America/Mexico_City is TODAY.
+    // The previous filter (Date.now() - 5min) let ALL future games through —
+    // including NFL off-season games 2800h+ away and tomorrow's NBA slate.
+    // Using sv-SE locale because it formats dates as 'YYYY-MM-DD' regardless
+    // of system locale, which makes string comparison safe and unambiguous.
+    const fmtMx = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' });
+    const todayMx = fmtMx.format(new Date()); // 'YYYY-MM-DD' in CDMX
+
     const future = games.filter((g) => {
       if (!g.start_time) return false;
-      return new Date(g.start_time).getTime() > Date.now() - 5 * 60_000;
+      // Keep games on the same CDMX calendar day (includes already-started
+      // games — they stay visible until midnight CDMX per spec).
+      return fmtMx.format(new Date(g.start_time)) === todayMx;
     });
     const eventIds = future.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x));
     let withPicks = new Set<string>();

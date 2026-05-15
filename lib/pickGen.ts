@@ -612,7 +612,13 @@ export async function analyzeGames(
           const claudeOutput = await callClaudeJson(
             PICK_GENERATION_SYSTEM,
             buildPickGenerationUserPrompt(b) + learnedWeights,
-            { retry: false, maxTokens: 4096 },
+            {
+              retry: false,
+              maxTokens: 4096,
+              gameLabel: b
+                .map((g) => `${g.away_team_abbr ?? g.away_team ?? '?'}@${g.home_team_abbr ?? g.home_team ?? '?'}`)
+                .join(', '),
+            },
           );
           const parsedPicks = parseClaudeResponse(claudeOutput, i);
           if (parsedPicks == null) {

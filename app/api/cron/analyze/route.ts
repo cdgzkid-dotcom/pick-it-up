@@ -116,7 +116,14 @@ function withinWindow(sport: string, startIso: string | undefined): boolean {
 }
 
 
-async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string[]; message: string | null }> {
+async function runAnalyzeWindow(): Promise<{
+  generated: number;
+  eventIds: string[];
+  message: string | null;
+  games_fetched: number;
+  games_in_window: number;
+  games_analyzed: number;
+}> {
   const supabase = supabaseAdmin();
 
   const { data: settings, error: settingsErr } = await supabase
@@ -128,10 +135,10 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     throw new Error(`settings: ${settingsErr?.message ?? 'missing'}`);
   }
   if (settings.auto_enabled === false) {
-    return { generated: 0, eventIds: [], message: 'auto_disabled' };
+    return { generated: 0, eventIds: [], message: 'auto_disabled', games_fetched: 0, games_in_window: 0, games_analyzed: 0 };
   }
   const sports: string[] = settings.auto_sports ?? [];
-  if (sports.length === 0) return { generated: 0, eventIds: [], message: 'no_sports' };
+  if (sports.length === 0) return { generated: 0, eventIds: [], message: 'no_sports', games_fetched: 0, games_in_window: 0, games_analyzed: 0 };
 
   const [games, injByTeam] = await Promise.all([
     fetchGames(sports),
@@ -154,7 +161,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   const playoffsInWindow = inWindow.filter((g) => isPlayoffSeason(g.sport));
   console.log(`[AUDIT][cron] in-window games: ${inWindow.length} (filtered out ${games.length - inWindow.length} outside window) · playoffs in window: ${playoffsInWindow.length}`);
   if (inWindow.length === 0) {
-    return { generated: 0, eventIds: [], message: 'no_games_in_window' };
+    return { generated: 0, eventIds: [], message: 'no_games_in_window', games_fetched: games.length, games_in_window: 0, games_analyzed: 0 };
   }
 
   const eventIds = inWindow.map((g) => g.espn_event_id).filter((x): x is string => Boolean(x));
@@ -217,7 +224,7 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
   console.log(`[AUDIT][cron] fresh games: ${fresh.map((g) => `${g.sport}/${g.away_team_abbr ?? '?'}@${g.home_team_abbr ?? '?'}`).join(', ')}`);
 
   if (fresh.length === 0) {
-    return { generated: 0, eventIds: [], message: 'all_already_generated' };
+    return { generated: 0, eventIds: [], message: 'all_already_generated', games_fetched: games.length, games_in_window: inWindow.length, games_analyzed: 0 };
   }
 
   // Cap how many games we analyze per cron run so we stay under Vercel's
@@ -378,6 +385,9 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
         generated: 0,
         eventIds,
         message: 'superseded_only_notified',
+        games_fetched: games.length,
+        games_in_window: inWindow.length,
+        games_analyzed: toAnalyze.length,
       };
     }
 
@@ -477,6 +487,9 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
       generated: 0,
       eventIds,
       message: playoffsAnalyzedNoEdge.length > 0 ? 'playoff_no_edge_notified' : 'no_picks_with_edge',
+      games_fetched: games.length,
+      games_in_window: inWindow.length,
+      games_analyzed: toAnalyze.length,
     };
   }
 
@@ -588,6 +601,9 @@ async function runAnalyzeWindow(): Promise<{ generated: number; eventIds: string
     generated: result.insertedPicks.length + result.insertedParlays.length,
     eventIds,
     message: 'picks_sent',
+    games_fetched: games.length,
+    games_in_window: inWindow.length,
+    games_analyzed: toAnalyze.length,
   };
 }
 
@@ -944,11 +960,27 @@ async function handle(req: Request) {
   // endpoint can verify the cron is actually firing every 10 min. Failure
   // here MUST NOT block the response — it's audit telemetry, not behavior.
   try {
+    // Derive anthropic_status from analyze result + error info.
+    // 'ok'      = Claude was called and the batch succeeded.
+    // '529'     = at least one batch was aborted by Anthropic Overloaded.
+    // 'error'   = non-529 failure (network, auth, JSON parse, …).
+    // 'skipped' = no games entered the analysis window this run.
+    let anthropicStatus = 'skipped';
+    if (errors.analyze) {
+      anthropicStatus = errors.analyze.includes('529') ? '529' : 'error';
+    } else if ((analyze?.games_analyzed ?? 0) > 0) {
+      anthropicStatus = 'ok';
+    }
+
     await supabaseAdmin().from('cron_runs').insert({
       workflow: 'analyze',
       duration_ms: Date.now() - t0,
       generated_picks: analyze?.generated ?? 0,
       errors: Object.keys(errors).length > 0 ? errors : null,
+      games_fetched: analyze?.games_fetched ?? 0,
+      games_in_window: analyze?.games_in_window ?? 0,
+      games_analyzed: analyze?.games_analyzed ?? 0,
+      anthropic_status: anthropicStatus,
     });
   } catch (e) {
     console.error('[cron_runs insert failed]', e);

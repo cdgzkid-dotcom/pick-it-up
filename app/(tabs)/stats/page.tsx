@@ -60,6 +60,7 @@ export default async function StatsPage() {
   const siPierdesTodo = bankrollActual - enRiesgo;
   const totalApostado = bets.reduce((s, b) => s + Number(b.amount || 0), 0);
 
+  const bankrollInicial = Number(settings?.bankroll_initial ?? 300);
   const baseChart = logs.map((l) => ({
     x: new Date(l.created_at).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' }),
     y: Number(l.balance_after),
@@ -68,10 +69,10 @@ export default async function StatsPage() {
   const chartData =
     baseChart.length === 0
       ? [
-          { x: 'INICIO', y: bankrollActual },
+          { x: 'INICIO', y: bankrollInicial },
           { x: 'AHORA', y: efectivo },
         ]
-      : [...baseChart, { x: 'AHORA', y: efectivo }];
+      : [{ x: 'INICIO', y: bankrollInicial }, ...baseChart, { x: 'AHORA', y: efectivo }];
 
   const settled = bets.filter((b) => b.result !== 'pending');
   const bySport = groupBy(settled, (b) => b.sport);

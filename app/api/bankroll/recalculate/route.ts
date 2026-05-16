@@ -46,8 +46,8 @@ async function compute() {
     .filter((l) => l.type === 'deposit')
     .reduce((s, l) => s + Number(l.amount), 0);
   const withdrawals = logs
-    .filter((l) => l.type === 'withdraw')
-    .reduce((s, l) => s + Number(l.amount), 0); // already negative
+    .filter((l) => l.type === 'withdraw' || l.type === 'reconciliation')
+    .reduce((s, l) => s + Number(l.amount), 0); // already negative; reconciliation entries are audit adjustments
 
   const pending = bets.filter((b) => b.result === 'pending');
   const wins = bets.filter((b) => b.result === 'win' || b.result === 'early_payout');

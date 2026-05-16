@@ -113,7 +113,7 @@ export interface Bet {
 export interface BankrollLog {
   id: string;
   created_at: string;
-  type: 'deposit' | 'withdraw' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout' | 'stake';
+  type: 'deposit' | 'withdraw' | 'reconciliation' | 'win' | 'loss' | 'push' | 'cashout' | 'early_payout' | 'stake';
   amount: number;
   balance_after: number;
   note?: string | null;
@@ -122,6 +122,7 @@ export interface BankrollLog {
 export interface Settings {
   id: 1;
   bankroll_current: number;
+  bankroll_initial?: number;
   unit_percentage: number;
   auto_sports?: string[];
   auto_enabled?: boolean;

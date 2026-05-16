@@ -11,7 +11,7 @@ import Anthropic from '@anthropic-ai/sdk';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface DrafteaLeg {
-  sport: string;                  // 'Fútbol', 'NBA', 'NFL', 'MLB', 'UFC', …
+  sport: string;                  // canonical: 'MLB', 'NBA', 'NHL', 'NFL', 'Fútbol', 'Liga MX', 'UFC', …
   league: string | null;          // 'Liga MX', 'Champions League', …
   teams: string;                  // 'América vs Chivas'
   selection: string;              // 'América gana', 'Más de 2.5 goles', …
@@ -54,6 +54,8 @@ REGLAS CRÍTICAS:
 - Extrae TODOS los legs/selecciones aunque sean muchos.
 - Para combinadas (parlays), extrae el momio total Y los momios individuales de cada leg.
 - potential_payout_mxn = importe total que recibirías (incluye la apuesta). potential_winnings_mxn = solo la ganancia neta.
+- VALORES CANÓNICOS para sport: usa SIEMPRE "MLB" (no "Béisbol"), "NBA", "NHL", "NFL", "Fútbol", "Liga MX", "Premier League", "UFC". Si el ticket muestra "Béisbol" → usa "MLB". Si muestra "Baloncesto" → usa "NBA". Si muestra "Hockey" → usa "NHL".
+- VALORES CANÓNICOS para market_type: usa SIEMPRE "ML" para apuestas de ganador directo/moneyline (no "Moneyline", no "Moneyline (PA – Para Ganar)", no "ganador"). Usa "Spread" para handicap/run-line. Usa "Total" para over/under. Usa "Props" para props de jugador.
 
 FORMATO JSON EXACTO:
 {

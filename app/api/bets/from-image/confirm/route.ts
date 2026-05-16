@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
+import { normalizeSport, normalizeBetType } from '@/lib/normalize-bet';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -83,10 +84,10 @@ function buildBetDescription(data: ConfirmData): {
   const isParlay = data.legs.length > 1;
   const first = data.legs[0];
 
-  const sport = isParlay
-    ? // Multi-sport parlay → use first leg sport or 'Parlay'
-      (new Set(data.legs.map((l) => l.sport)).size > 1 ? 'Parlay' : first.sport)
+  const rawSport = isParlay
+    ? (new Set(data.legs.map((l) => l.sport)).size > 1 ? 'Parlay' : first.sport)
     : first.sport;
+  const sport = normalizeSport(rawSport);
 
   const game = isParlay
     ? data.legs.map((l) => l.selection).join(' + ')
@@ -96,7 +97,7 @@ function buildBetDescription(data: ConfirmData): {
     ? `COMBINADA (${data.legs.length}): ${data.legs.map((l) => l.selection).join(' · ')}`
     : first.selection;
 
-  const bet_type = isParlay ? 'Parlay' : (first.market_type || 'ML');
+  const bet_type = isParlay ? 'Parlay' : normalizeBetType(first.market_type || 'ML');
 
   // Single bet: link to matched pick if available
   const pick_id = !isParlay ? (data.legs[0]?.matched_pick_id ?? null) : null;

@@ -47,8 +47,10 @@ async function computeSystemHealthBounded(timeoutMs = 5000): Promise<SystemHealt
     warnings: 1,
     errorNames: [],
     warningNames: ['health_check_timeout'],
-    total: 13,
-    ok: 12,
+    total: 14,
+    ok: 13,
+    offSeason: 0,
+    offSeasonNames: [],
   };
   return Promise.race<SystemHealthSummary>([
     runHealthChecks().then(buildHealthSummary),

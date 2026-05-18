@@ -13,7 +13,7 @@ import { pingPinnacle } from '@/lib/pinnacle';
 
 export interface HealthCheckResult {
   name: string;
-  status: 'ok' | 'warning' | 'error' | 'expected_unsupported';
+  status: 'ok' | 'warning' | 'error' | 'expected_unsupported' | 'off_season';
   detail?: string;
   duration_ms?: number;
 }
@@ -21,7 +21,9 @@ export interface HealthCheckResult {
 /** Summary shape consumed by the Telegram health indicator and the
  *  /api/health HTTP response. errorNames/warningNames let the renderer
  *  show WHICH checks failed (not just a count), so the user knows what
- *  to investigate before betting. */
+ *  to investigate before betting. offSeasonNames lists league checks
+ *  that returned 'off_season' — surfaced in the daily heartbeat only,
+ *  never in individual pick notifications. */
 export interface SystemHealthSummary {
   status: 'ok' | 'warning' | 'error';
   errors: number;
@@ -30,6 +32,8 @@ export interface SystemHealthSummary {
   warningNames: string[];
   total: number;
   ok: number;
+  offSeason: number;
+  offSeasonNames: string[];
 }
 
 async function checkEnvVars(): Promise<HealthCheckResult> {
@@ -162,10 +166,43 @@ async function checkEspnScoreboard(): Promise<HealthCheckResult> {
   }
 }
 
+/**
+ * Returns true when a sport league is in its off-season and ESPN BPI
+ * predictors will not have live events to test against. Checks that
+ * return 'off_season' are excluded from error/warning counts so the
+ * health indicator stays green when all active leagues are healthy.
+ *
+ * Season windows (inclusive, UTC month 1-12):
+ *   NFL  active Sep–Feb  (off-season Mar–Aug)
+ *   NBA  active Oct–Jun  (off-season Jul–Sep)
+ *   NHL  active Oct–Jun  (off-season Jul–Sep)
+ *   MLB  active Mar–Oct  (off-season Nov–Feb)
+ */
+function isLeagueOffSeason(
+  sport: 'mlb' | 'nba' | 'nfl' | 'nhl',
+  date: Date = new Date(),
+): boolean {
+  const m = date.getUTCMonth() + 1; // 1..12
+  switch (sport) {
+    case 'nfl': return m >= 3 && m <= 8;
+    case 'nba': return m >= 7 && m <= 9;
+    case 'nhl': return m >= 7 && m <= 9;
+    case 'mlb': return m >= 11 || m <= 2;
+  }
+}
+
 async function checkEspnPredictor(
   sport: 'mlb' | 'nba' | 'nfl' | 'nhl',
 ): Promise<HealthCheckResult> {
   const t0 = Date.now();
+  if (isLeagueOffSeason(sport)) {
+    return {
+      name: `espn_predictor_${sport}`,
+      status: 'off_season',
+      detail: `${sport.toUpperCase()} off-season — no BPI events to probe`,
+      duration_ms: Date.now() - t0,
+    };
+  }
   const sportMap: Record<typeof sport, string> = {
     mlb: 'baseball/mlb',
     nba: 'basketball/nba',
@@ -539,8 +576,10 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
 export function buildHealthSummary(checks: HealthCheckResult[]): SystemHealthSummary {
   const errors = checks.filter((c) => c.status === 'error');
   const warnings = checks.filter((c) => c.status === 'warning');
+  const offSeasonChecks = checks.filter((c) => c.status === 'off_season');
+  // off_season counts as ok — a dormant check is not a broken check.
   const okCount = checks.filter(
-    (c) => c.status === 'ok' || c.status === 'expected_unsupported',
+    (c) => c.status === 'ok' || c.status === 'expected_unsupported' || c.status === 'off_season',
   ).length;
   const status: SystemHealthSummary['status'] =
     errors.length > 0 ? 'error' : warnings.length > 0 ? 'warning' : 'ok';
@@ -552,5 +591,7 @@ export function buildHealthSummary(checks: HealthCheckResult[]): SystemHealthSum
     warningNames: warnings.map((c) => c.name),
     total: checks.length,
     ok: okCount,
+    offSeason: offSeasonChecks.length,
+    offSeasonNames: offSeasonChecks.map((c) => c.name),
   };
 }

@@ -26,6 +26,7 @@ export async function GET() {
         ok: summary.ok,
         warnings: summary.warnings,
         errors: summary.errors,
+        off_season: summary.offSeasonNames,
       },
       duration_ms: Date.now() - t0,
       timestamp: new Date().toISOString(),

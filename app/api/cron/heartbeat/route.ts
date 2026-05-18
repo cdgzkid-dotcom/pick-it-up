@@ -232,16 +232,31 @@ async function buildHeartbeat(): Promise<string> {
     .lt('game_start_time', cutoffStuck);
 
   const healthUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pick-it-up.vercel.app'}/api/health`;
+  const SPORT_RETURNS: Record<string, string> = {
+    espn_predictor_nfl: 'sep',
+    espn_predictor_nba: 'oct',
+    espn_predictor_nhl: 'oct',
+    espn_predictor_mlb: 'mar',
+  };
   let healthSummary = 'unknown';
+  let offSeasonLine = '';
   try {
     const r = await fetch(healthUrl, { signal: AbortSignal.timeout(15000) });
     const h = (await r.json()) as {
       ok: boolean;
-      summary: { ok: number; errors: number; warnings: number; total: number };
+      summary: { ok: number; errors: number; warnings: number; total: number; off_season?: string[] };
     };
     healthSummary = h.ok
       ? `✅ ${h.summary.ok}/${h.summary.total} checks ok`
       : `❌ ${h.summary.errors} errors, ${h.summary.warnings} warnings`;
+    if (h.summary.off_season && h.summary.off_season.length > 0) {
+      const parts = h.summary.off_season.map((name) => {
+        const sport = name.replace('espn_predictor_', '').toUpperCase();
+        const ret = SPORT_RETURNS[name] ?? '?';
+        return `${sport} (vuelve ${ret})`;
+      });
+      offSeasonLine = `\n💤 Off-season: ${parts.join(', ')}`;
+    }
   } catch {
     healthSummary = '⚠️ health endpoint unreachable';
   }
@@ -256,7 +271,7 @@ Picks generated 24h: ${generated}
 Notified: ${notified} (${supersededStr})
 Bets resolved: ${wins}W-${losses}L (P/L ${plSign}$${pl.toFixed(2)})
 Bankroll: $${bankroll.toFixed(2)}
-System: ${healthSummary}${stuckLine}${alertLine}${qualityMetrics}${decisionQuality}${qualityAlertsBlock}`;
+System: ${healthSummary}${offSeasonLine}${stuckLine}${alertLine}${qualityMetrics}${decisionQuality}${qualityAlertsBlock}`;
 }
 
 async function handle(req: Request) {

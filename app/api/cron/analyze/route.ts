@@ -399,9 +399,62 @@ async function runAnalyzeWindow(): Promise<{
     // Every cron run that analyzes ≥1 game and has digest content sends a
     // Telegram digest immediately. No 2h anti-spam window, no pending records,
     // no merge logic. The user gets a notification for every run that matters.
+
+    // FIX 1 — Anti-spam for edgeBelow games.
+    // edge_below games are intentionally left without an analyzed_no_edge
+    // marker (a line movement could push them above the threshold). But
+    // CAMBIO 1's per-run digest re-notified them every 10 min with identical
+    // data. Fix: notify a game once, then suppress unless its edge changed
+    // materially (>1pp). State persisted in system_notifications with
+    // kind='edge_below_notified', one row per espn_event_id updated in-place.
+    // TTL 12h: covers normal games + same-day postponements + doubleheaders.
+    const EDGE_BELOW_TTL_H = 12;
+    const EDGE_CHANGE_THRESHOLD = 0.01; // 1pp
+    const edgeBelowCutoff = new Date(Date.now() - EDGE_BELOW_TTL_H * 60 * 60 * 1000).toISOString();
+
+    type EdgeBelowUpsertEntry = { id: string; espn_event_id: string; edge: number }
+                              | { id: null;   espn_event_id: string; edge: number };
+    const edgeBelowFiltered: typeof result.edgeBelowEvents = [];
+    const edgeBelowUpserts: EdgeBelowUpsertEntry[] = [];
+
+    for (const e of result.edgeBelowEvents) {
+      if (!e.espn_event_id) {
+        // No espn_event_id — can't track; always include.
+        edgeBelowFiltered.push(e);
+        continue;
+      }
+      const { data: prev } = await supabase
+        .from('system_notifications')
+        .select('id, payload')
+        .eq('kind', 'edge_below_notified')
+        .filter('payload->>espn_event_id', 'eq', e.espn_event_id)
+        .gte('created_at', edgeBelowCutoff)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!prev) {
+        // First time seeing this game — include and schedule insert.
+        edgeBelowFiltered.push(e);
+        edgeBelowUpserts.push({ id: null, espn_event_id: e.espn_event_id, edge: e.edge });
+      } else {
+        const lastEdge = Number((prev.payload as Record<string, unknown>)?.edge ?? 0);
+        const delta = Math.abs(e.edge - lastEdge);
+        if (delta > EDGE_CHANGE_THRESHOLD) {
+          // Edge changed materially — re-notify and schedule in-place update.
+          edgeBelowFiltered.push(e);
+          edgeBelowUpserts.push({ id: prev.id as string, espn_event_id: e.espn_event_id, edge: e.edge });
+          console.log(`[EDGE_BELOW_RENOTIFY] ${e.sport}/${e.away_team}@${e.home_team} edge ${(lastEdge * 100).toFixed(2)}%→${(e.edge * 100).toFixed(2)}% (Δ${(delta * 100).toFixed(2)}pp)`);
+        } else {
+          // Edge unchanged — suppress to avoid spam.
+          console.log(`[EDGE_BELOW_SKIP] ${e.sport}/${e.away_team}@${e.home_team} edge ${(e.edge * 100).toFixed(2)}% unchanged vs last notified ${(lastEdge * 100).toFixed(2)}% (Δ${(delta * 100).toFixed(2)}pp < 1pp)`);
+        }
+      }
+    }
+
     const digestData: PickDigestData = {
       analyzedCount: toAnalyze.length,
-      edgeBelow: result.edgeBelowEvents.map((e) => ({
+      edgeBelow: edgeBelowFiltered.map((e) => ({
         sport: e.sport,
         home_team: e.home_team,
         away_team: e.away_team,
@@ -468,6 +521,26 @@ async function runAnalyzeWindow(): Promise<{
             sent_for_run_at: new Date().toISOString(),
           },
         });
+        // FIX 1: persist/update edge_below_notified state after successful send.
+        // One row per espn_event_id (insert first time, update in-place on change).
+        if (edgeBelowUpserts.length > 0) {
+          const upsertedAt = new Date().toISOString();
+          for (const u of edgeBelowUpserts) {
+            const newPayload = { espn_event_id: u.espn_event_id, edge: u.edge, notified_at: upsertedAt };
+            if (u.id) {
+              const { error: upErr } = await supabase
+                .from('system_notifications')
+                .update({ payload: newPayload })
+                .eq('id', u.id);
+              if (upErr) console.error('[EDGE_BELOW_UPDATE_FAILED]', u.espn_event_id, upErr.message);
+            } else {
+              const { error: insErr } = await supabase
+                .from('system_notifications')
+                .insert({ kind: 'edge_below_notified', payload: newPayload });
+              if (insErr) console.error('[EDGE_BELOW_INSERT_FAILED]', u.espn_event_id, insErr.message);
+            }
+          }
+        }
         console.log('[PICK_DIGEST_SENT]', {
           analyzed: digestData.analyzedCount,
           categories: {

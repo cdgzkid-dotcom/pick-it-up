@@ -1081,7 +1081,11 @@ export async function analyzeGames(
       key_stats: p.key_stats ?? null,
       regression_flags: p.regression_flags ?? null,
       line_movement_note: p.line_movement_note ?? null,
-      analysis: p.analysis ?? null,
+      analysis: (() => {
+        if (!p.analysis) return null;
+        if (implied >= 0.5) return p.analysis;
+        return `${p.analysis}\n\n📊 Value: mercado da ~${Math.round(implied * 100)}% a ${pickText}, modelo estima ${Math.round(pickedProb * 100)}% — edge de +${(e * 100).toFixed(1)} pp.`;
+      })(),
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
       theoretical_amount: theoreticalAmount,

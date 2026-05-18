@@ -59,6 +59,8 @@ interface PickForMessage {
   market_sources_count?: number | null;
   recommended_amount?: number | null;
   kelly_fraction?: number | null;
+  home_team?: string | null;
+  away_team?: string | null;
   /** Sizing transparency (2026-05-13). When sizing_reason !== null, the
    *  Apostar line shows "$22 (1.7u de 2u — <reason phrase>)" so the user
    *  never has to guess where the stake came from. Null on parlays. */
@@ -295,7 +297,12 @@ export function formatPicksMessage(
 
     const sportTag = p.sport ? `${sportEmoji(p.sport)} ` : '';
     lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
-    lines.push(`${sportTag}${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
+    if (p.away_team && p.home_team) {
+      lines.push(`${sportTag}${p.away_team} @ ${p.home_team}`);
+      lines.push(`Pick: ${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
+    } else {
+      lines.push(`${sportTag}${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
+    }
     if (edgePct && realPct) {
       lines.push(`📊 Edge: ${edgePct}${marketTag} · Prob: ${realPct}`);
     } else if (edgePct) {
@@ -335,7 +342,12 @@ export function formatPicksMessage(
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
     const parlayTag = par.sport ? `${sportEmoji(par.sport)} ` : '';
-    lines.push(`🎯 *Parlay:* ${parlayTag}${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    if (par.away_team && par.home_team) {
+      lines.push(`🎯 *Parlay:* ${parlayTag}${par.away_team} @ ${par.home_team}`);
+      lines.push(`Pick: ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    } else {
+      lines.push(`🎯 *Parlay:* ${parlayTag}${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    }
     if (stake > 0) {
       const phrase = sizingReasonPhrase(par.sizing_reason, par.sport);
       if (phrase && par.units_actual != null && par.units_theoretical != null) {

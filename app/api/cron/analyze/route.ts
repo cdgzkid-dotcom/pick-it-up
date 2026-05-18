@@ -691,6 +691,7 @@ interface ResolutionForTg {
   pick: string;
   result: 'win' | 'loss';
   pl: number;
+  payout: number;
   is_parlay: boolean;
   final_score?: string | null;
   home_team?: string | null;
@@ -881,6 +882,7 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       pick: bet.pick,
       result: won ? 'win' : 'loss',
       pl: payout - amount,
+      payout,
       is_parlay: (bet.bet_type as string) === 'Parlay',
       final_score: finalScore,
       home_team: bet.home_team,
@@ -905,6 +907,7 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       pick: b.pick,
       result: b.result === 'win' ? 'win' : 'loss',
       pl: payout - amount,
+      payout,
       is_parlay: b.bet_type === 'Parlay',
       final_score: b.final_score ?? null,
       home_team: b.home_team,
@@ -929,7 +932,8 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
   const todayPl = allToNotify.reduce((s, r) => s + r.pl, 0);
 
   const bankrollNow = Number(settings?.bankroll_current ?? 0);
-  const bankrollBefore = bankrollNow - todayPl;
+  const creditsApplied = allToNotify.reduce((s, r) => s + r.payout, 0);
+  const bankrollBefore = bankrollNow - creditsApplied;
   const text = formatResultsMessage(allToNotify, {
     bankrollCurrent: bankrollNow,
     bankrollBefore,

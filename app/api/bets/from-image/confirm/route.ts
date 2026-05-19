@@ -175,6 +175,17 @@ export async function POST(req: Request) {
   const { sport, game, pick, bet_type, pick_id, notes } = buildBetDescription(data);
   const gameStartTime = data.legs[0]?.event_time ?? null;
 
+  // Inherit tier from the matched pick so stats by tier are accurate.
+  let pickTier: string | null = null;
+  if (pick_id) {
+    const { data: pickRow } = await supabase
+      .from('picks')
+      .select('tier')
+      .eq('id', pick_id)
+      .single();
+    pickTier = pickRow?.tier ?? null;
+  }
+
   // ── Step 3a: PENDIENTE → place_bet_atomic (debits bankroll) ──────────
 
   if (isPending) {
@@ -191,7 +202,7 @@ export async function POST(req: Request) {
       p_bet_type: bet_type,
       p_odds_decimal: data.total_odds_decimal,
       p_amount: data.wager_mxn,
-      p_tier: null,
+      p_tier: pickTier,
       p_date: data.placed_at
         ? new Date(data.placed_at).toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' })
         : null,
@@ -255,6 +266,7 @@ export async function POST(req: Request) {
       game,
       pick,
       bet_type,
+      tier: pickTier,
       odds_decimal: data.total_odds_decimal,
       amount: data.wager_mxn,
       result: betResult,

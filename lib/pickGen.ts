@@ -939,10 +939,10 @@ export async function analyzeGames(
     // (6) Build pick text server-side.
     const pickedTeam = side === 'home' ? p.home_team : p.away_team;
     const pickText = `${pickedTeam} ML`;
-    const pickedProb = side === 'home' ? homeProb : awayProb;
+    let pickedProb = side === 'home' ? homeProb : awayProb;
     const pickedOdds = side === 'home' ? homeOdds : awayOdds;
     const implied = impliedProbability(pickedOdds);
-    const e = bestEdge;
+    let e = bestEdge;
 
     // Consensus: DK + ESPN BPI + Pinnacle + any extra ESPN providers.
     // More books agreeing = stronger validation of Claude's probability.
@@ -972,14 +972,33 @@ export async function analyzeGames(
     const consensusImplied = consensus?.avg_implied_prob ?? null;
     const sourcesList: MarketSource[] = consensus?.sources ?? [];
 
+    // (6b) Probability dampening: cap Claude's deviation from market consensus.
+    // Sharp markets (DK + BPI + Pinnacle) already price public stats. If Claude
+    // deviates by more than 8pp from the consensus, it's almost certainly
+    // overweighting a single factor (L10 record, pitcher matchup, etc.).
+    const MAX_DEVIATION_PP = 0.08;
+    const originalPickedProb = pickedProb;
+    if (consensus && consensus.sources_count >= 2 &&
+        (pickedProb - consensus.avg_implied_prob) > MAX_DEVIATION_PP) {
+      const dampened = consensus.avg_implied_prob + MAX_DEVIATION_PP;
+      console.log('[PROB_DAMPENED]', {
+        pick: pickText,
+        original_prob: Number(pickedProb.toFixed(4)),
+        dampened_prob: Number(dampened.toFixed(4)),
+        consensus_implied: Number(consensus.avg_implied_prob.toFixed(4)),
+        deviation_pp: Number(((pickedProb - consensus.avg_implied_prob) * 100).toFixed(1)),
+      });
+      pickedProb = dampened;
+      e = pickedProb - implied;
+    }
+
     const bestOddsSource = dkOdds.source ?? 'DraftKings';
     const oddsComparison: Array<{ source: string; ml: number }> = allBookOdds
       .map((o) => ({ source: o.source, ml: (side === 'home' ? o.home : o.away) ?? 0 }))
       .filter((o) => o.ml > 1.01)
       .sort((a, b) => b.ml - a.ml);
 
-    // (7) RLM trap merge + market-consensus floor gate. UNCHANGED logic, just
-    // sourced from `side` instead of isHome/isAway booleans.
+    // (7) RLM trap merge + market-consensus floor gate.
     let rlmTrapNote: string | null = null;
     const lm = rdMatched.line_movement as MovementSignal | undefined;
     if (lm && lm.rlm && lm.rlm_trap_side === side) {
@@ -997,7 +1016,7 @@ export async function analyzeGames(
     const fullConsensus = sourcesCount >= 2;
     const lockMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.03;
     const strongMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.02;
-    const EDGE_SUSPICIOUS = 0.12;
+    const EDGE_SUSPICIOUS = 0.10;
     const edgeSuspicious = e >= EDGE_SUSPICIOUS;
 
     if (edgeSuspicious) {

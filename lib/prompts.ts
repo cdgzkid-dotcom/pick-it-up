@@ -235,47 +235,27 @@ Mencionarlo en regression_flags cuando aplique.
 - 5v5 goal differential (elimina efecto de special teams)
 
 == SI ES MLB ==
-- PITCHER ABRIDOR (60% del análisis en baseball):
-  - ERA, WHIP, FIP, K/9, BB/9 de la temporada
-  - Últimas 3-5 salidas (forma reciente del pitcher)
-  - Record vs el equipo contrario (career + esta temporada)
-  - Splits: cómo le va vs bateadores zurdos vs derechos
-  - Pitch count promedio e innings promedio por salida
-  - FIP vs ERA: si hay diferencia grande, señalar regresión probable
-  - Pitch mix (% fastball, slider, changeup) y cómo el lineup contrario batea vs cada pitch type
-- BULLPEN:
-  - ERA del bullpen
-  - Uso últimos 3 días: si usaron closer + setup ayer, hoy están QUEMADOS
-  - Closer disponible o no
-  - Innings pitched del bullpen últimos 3 días
+DATOS QUE RECIBES (úsalos, NO inventes datos que no estén en el input):
+- PITCHER ABRIDOR (importante pero NO el 100% del análisis):
+  - ERA, WHIP, K/9, BB/9 de la temporada (en real_data)
+  - Últimas 5 salidas con ERA calculada (en real_data)
+  - SOLO analiza estos datos. NO tienes FIP, splits L/R, pitch mix, career H2H.
+    Si no está en el input, NO lo inventes ni lo aproximes.
+- PITCHING DE EQUIPO:
+  - ERA y WHIP del equipo completo (en real_data). Esto es team pitching, NO
+    bullpen específico. NO reportes estos números como "bullpen ERA" — di
+    "team pitching ERA" si los mencionas.
 - OFENSIVA:
-  - OPS del equipo últimos 10 juegos
-  - Splits vs zurdos/derechos (basado en pitcher contrario)
-  - Runs scored promedio últimos 10
-  - RISP batting average (con corredores en posición de anotar)
-  - Home runs últimos 10 juegos
-  - Strikeout rate del lineup (si poncha mucho vs pitcher con K/9 alto, problema)
-- PLATOON MATCHUPS:
-  - Handedness del lineup completo vs pitcher (si 6 de 9 bateadores son zurdos y pitcher domina zurdos, edge para pitcher)
-  - Batter vs Pitcher career stats si hay data significativa
-- BALLPARK FACTORS:
-  - Coors Field (Colorado) = +30% en runs, siempre considerar
-  - Great American Ball Park (Cincinnati) = favorable a bateadores
-  - Oracle Park (SF) = favorable a pitchers
-  - Wrigley Field (Chicago) = depende del viento
-  - Considerar park factor para HR, runs, y doubles
-- CLIMA:
-  - Velocidad y dirección del viento (viento soplando hacia afuera = más HR)
-  - Temperatura (calor = pelota viaja más)
-  - Humedad (alta humedad = pelota viaja menos)
-  - Si hay techo/dome, ignorar clima
-- UMPIRE:
-  - Si tienes data del umpire de home plate, considerar su tendencia de strike zone
-  - Umpires con strike zone grande favorecen pitchers (menos runs)
-  - Umpires con strike zone chica favorecen bateadores (más runs)
-- FIRST 5 INNINGS (F5):
-  - Considerar si hay mejor edge en la línea F5 (solo starter vs lineup, elimina factor bullpen)
-  - Si el starter es elite pero bullpen es malo, F5 puede ser mejor pick que full game
+  - OPS, AVG, HR, runs/game del equipo temporada (en real_data)
+  - NO tienes OPS L10, RISP, splits, strikeout rate. No los inventes.
+- STANDINGS:
+  - W-L, racha, home/away record, L10 (en real_data)
+- BALLPARK FACTORS (cuando aplique):
+  - Coors Field = +30% en runs | Wrigley = depende del viento
+  - Oracle Park = favorable a pitchers
+- CLIMA: usa el campo weather del input si existe
+- NO TIENES: bullpen ERA específico, uso del bullpen últimos 3 días, platoon
+  matchups, umpire data, pitcher splits, RISP, FIP. No los menciones.
 
 == SI ES FÚTBOL ==
 - xG (Expected Goals) últimos 5 partidos de cada equipo
@@ -340,6 +320,26 @@ Proceso mental sugerido:
   5. Ajustar por weather si aplica
   6. Resultado = real_probability_home; real_probability_away = 1 − real_probability_home
 
+LÍMITES DE DESVIACIÓN DEL BASE RATE:
+Los mercados deportivos son eficientes — DK, Pinnacle y ESPN BPI ya tienen acceso
+a TODOS los datos públicos que tú ves (records, L10, pitchers, lesiones). Si tu
+probabilidad se desvía mucho del base rate, probablemente estás sobre-pesando un
+solo factor. Límites máximos de probabilidad:
+  - MLB: max 58% visitante, max 66% local
+  - NBA: max 70% local, max 55% visitante
+  - NHL: max 65% local, max 55% visitante
+  - NFL: max 68% local, max 55% visitante
+Para exceder estos límites necesitas algo que el mercado NO pueda ver (lesión de
+último minuto no priced-in, dato no público). L10 records, pitcher matchups y
+rachas SON datos públicos que el mercado ya incorporó.
+
+ADVERTENCIA SOBRE L10 Y RACHAS:
+Un equipo 8-2 en L10 NO tiene 80% de ganar el siguiente juego. 10 juegos es una
+muestra chica con alta varianza. Un equipo .550 real puede fácilmente ir 8-2 o
+3-7 en cualquier stretch de 10 juegos por azar. No sobre-peses L10 sobre el
+record de temporada completa. Trata L10 como un FACTOR MENOR, no como el driver
+principal de tu probabilidad.
+
 NO ANCLES tu estimación a ningún momio. No tienes momios. Si tu análisis dice
 "home gana 65%", pon 0.65 / 0.35 sin segundas dudas.
 
@@ -379,12 +379,16 @@ Si te encuentras dando 75%+ a más del 20% de tus picks, estás siendo
 demasiado agresivo. Recalibra.
 
 Casos que típicamente justifican 75%+ confidence:
-- Equipo 8-2 últimos 10 + mejor pitcher + en casa vs equipo 3-7 últimos 10
-- Pitcher elite (ERA <2.50) en casa vs lineup contrario sin power
-- Star team con descanso vs back-to-back fatigado en NBA
+- Mismatch EXTREMO en calidad de equipos (ej. mejor equipo de la liga vs colista)
+  con MÚLTIPLES factores alineados: ELO, record, pitching, forma, en casa
+- Dato no público no priced-in por el mercado (lesión confirmada post-línea)
 
-Pero NO automaticamente — evalúa el caso específico. Confidence 60-65% es
-apropiado para juegos donde hay leve ventaja pero también incertidumbre.
+Casos que NO justifican 75%+:
+- L10 records divergentes (8-2 vs 2-8) — son muestra chica, el mercado ya lo ve
+- Pitcher bueno vs pitcher malo — el mercado ya tiene estos matchups priced-in
+- Racha ganadora o perdedora — regresión a la media es real
+
+Confidence 60-65% es apropiado para la MAYORÍA de juegos con leve ventaja.
 La indecisión bien calibrada vale más que la falsa convicción.
 
 == PARLAYS — server-side ==
@@ -410,9 +414,9 @@ RESPONDE SOLO EN JSON PURO (sin markdown, sin backticks, sin texto antes o despu
       "injuries": "Lesiones relevantes con impacto — máximo 30 palabras",
       "key_stats": [
         {"label": "Pitcher ERA", "value": "2.10", "flag": "green"},
-        {"label": "Bullpen ERA", "value": "3.45", "flag": "green"},
-        {"label": "Team OPS L10", "value": ".789", "flag": "green"},
-        {"label": "H2H this season", "value": "4-1", "flag": "green"}
+        {"label": "Team Pitching ERA", "value": "3.45", "flag": "green"},
+        {"label": "Team OPS", "value": ".789", "flag": "green"},
+        {"label": "L10 Record", "value": "7-3", "flag": "green"}
       ],
       "regression_flags": "(max 15 palabras, solo si hay flag importante; null si nada)",
       "trap_warning": "(max 25 palabras, solo si detectas trampa concreta; null si todo limpio)",

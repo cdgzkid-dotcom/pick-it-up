@@ -977,7 +977,6 @@ export async function analyzeGames(
     // deviates by more than 8pp from the consensus, it's almost certainly
     // overweighting a single factor (L10 record, pitcher matchup, etc.).
     const MAX_DEVIATION_PP = 0.08;
-    const originalPickedProb = pickedProb;
     if (consensus && consensus.sources_count >= 2 &&
         (pickedProb - consensus.avg_implied_prob) > MAX_DEVIATION_PP) {
       const dampened = consensus.avg_implied_prob + MAX_DEVIATION_PP;

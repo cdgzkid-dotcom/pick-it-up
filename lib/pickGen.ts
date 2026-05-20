@@ -465,9 +465,6 @@ export async function analyzeGames(
             {} as Awaited<ReturnType<typeof buildNhlGameContext>>,
           );
           g.real_data = ctx as unknown as Record<string, unknown>;
-          console.log(
-            `[DATA][NHL] ${g.away_team_abbr}@${g.home_team_abbr} ${ctx.awayStanding?.record} vs ${ctx.homeStanding?.record} GF/GP ${ctx.awaySummary?.goalsForPerGame?.toFixed(2)} vs ${ctx.homeSummary?.goalsForPerGame?.toFixed(2)}`,
-          );
         } else if (g.sport === 'NBA') {
           const ctx = await withTimeout(
             buildNbaGameContext(g.home_team, g.away_team),

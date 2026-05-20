@@ -393,6 +393,7 @@ function ymdUTC(d: Date): string {
 
 interface ScoreboardEventLite {
   id: string;
+  date?: string;
   status?: {
     type?: { state?: string; completed?: boolean; detail?: string; shortDetail?: string };
     period?: number;
@@ -482,7 +483,7 @@ export async function fetchEventStatus(
   push(new Date(now.getTime() + 86_400_000));
 
   for (const ymd of dates) {
-    const events = await fetchScoreboardByDate(sport, ymd);
+    const events = await fetchScoreboardByDateLive(sport, ymd);
     const ev = events.find((e) => String(e.id) === String(eventId));
     if (!ev) continue;
     return parseEventStatus(ev);
@@ -690,6 +691,89 @@ export interface EspnClosingLine {
   /** Provider name passed through ('DraftKings' usually). */
   source: string;
   source_slug: string;
+}
+
+// ── Vision-flow ESPN event lookup ─────────────────────────────────────────
+// Used by the Telegram photo confirm route to back-fill espn_event_id at bet
+// creation time. Matching is intentionally conservative: a wrong match
+// (binding a bet to the wrong game) is worse than leaving the field null.
+
+function parseGameTeams(gameText: string): [string, string] | null {
+  const m = gameText.match(/^(.+?)\s+(?:vs\.?|@)\s+(.+)$/i);
+  if (!m) return null;
+  const a = m[1].trim();
+  const b = m[2].trim();
+  return a && b ? [a, b] : null;
+}
+
+function tokenMatchesTeamName(token: string, displayName: string): boolean {
+  const t = token.trim().toLowerCase();
+  const d = displayName.trim().toLowerCase();
+  if (!t || !d) return false;
+  // Exact full-name match or nickname match at end: "Rays" → "Tampa Bay Rays"
+  // The token must be a complete word — no partial hits ("Card" won't match "Cardinals").
+  return d === t || d.endsWith(' ' + t);
+}
+
+/**
+ * Given a game text like "Rays vs Marlins" and the ISO timestamp when the
+ * bet was created, returns the ESPN event id if — and only if — exactly one
+ * event matches BOTH team tokens within the time window.
+ *
+ * Algorithm:
+ *  1. Fetch the scoreboard for the exact UTC date of `createdAt`.
+ *  2. Keep only events whose start time falls within
+ *     [createdAt − 3 h, createdAt + 18 h].  The 3 h buffer handles photos
+ *     snapped mid-game; 18 h handles same-day pre-bets.
+ *  3. Match both team tokens (conservative word-boundary check).
+ *  4. Return the event id only if the result is unique; null otherwise.
+ *
+ * Conservative by design: a wrong espn_event_id is worse than null because
+ * it would resolve the bet against a different game's score.
+ */
+export async function findEspnEventByTeams(
+  sport: string,
+  gameText: string,
+  createdAt: string,
+): Promise<string | null> {
+  const teams = parseGameTeams(gameText);
+  if (!teams) return null;
+  const [tokenA, tokenB] = teams;
+
+  const base = new Date(createdAt);
+  if (Number.isNaN(base.getTime())) return null;
+
+  const ymd = ymdUTC(base);
+  const events = await fetchScoreboardByDate(sport, ymd);
+
+  // Time window: game must start between 3 h before and 18 h after the bet.
+  const windowStart = base.getTime() - 3 * 3_600_000;
+  const windowEnd   = base.getTime() + 18 * 3_600_000;
+
+  const matches: string[] = [];
+  for (const ev of events) {
+    const comp = ev.competitions?.[0];
+    const home = comp?.competitors?.find((c) => c.homeAway === 'home');
+    const away = comp?.competitors?.find((c) => c.homeAway === 'away');
+    if (!home?.team?.displayName || !away?.team?.displayName) continue;
+
+    const aHome = tokenMatchesTeamName(tokenA, home.team.displayName);
+    const aAway = tokenMatchesTeamName(tokenA, away.team.displayName);
+    const bHome = tokenMatchesTeamName(tokenB, home.team.displayName);
+    const bAway = tokenMatchesTeamName(tokenB, away.team.displayName);
+    if (!((aHome && bAway) || (aAway && bHome))) continue;
+
+    // Apply time-proximity filter when the event has a known start time.
+    if (ev.date) {
+      const gameMs = new Date(ev.date).getTime();
+      if (!Number.isNaN(gameMs) && (gameMs < windowStart || gameMs > windowEnd)) continue;
+    }
+
+    matches.push(ev.id);
+  }
+
+  // Only trust a unique match — two+ candidates means ambiguity → null.
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export async function fetchEspnClosingLine(

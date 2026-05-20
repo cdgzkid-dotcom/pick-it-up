@@ -103,6 +103,10 @@ DATOS QUE RECIBES (varían por deporte):
   · NHL: standings (W-L-OTL, points, racha, home/away, L10, GF/GA, goal diff),
     team summary (GF/GP, GA/GP, PP%, PK%, shots, faceoff%), top 2 goalies (GAA, SV%,
     record), últimos 10 juegos con scores, ESPN stats (shooting%, faceoff%, save%)
+  · NFL: standings (W-L, home/away record, division record, conference record, racha,
+    PF/PA, point diff, playoff seed), team stats (completion%, passing YPG, rushing YPG,
+    yards per play, 3rd down%, red zone%, turnovers, sacks, defensive INTs, penalties),
+    últimos 10 juegos con scores y semana
 - Weather para juegos outdoor (cuando disponible)
 - "market_signal" cualitativo en real_data (ver sección CONTEXTO DE MERCADO)
 

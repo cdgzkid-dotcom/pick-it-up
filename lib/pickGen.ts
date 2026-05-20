@@ -892,7 +892,7 @@ export async function analyzeGames(
     }
 
     // (5) Pick the side with the larger positive edge.
-    const EDGE_THRESHOLD = 0.02;
+    const EDGE_THRESHOLD = 0.05;
     if (edgeHome <= 0 && edgeAway <= 0) {
       console.log('[NO_POSITIVE_EDGE]', {
         teams: `${p.away_team}@${p.home_team}`,

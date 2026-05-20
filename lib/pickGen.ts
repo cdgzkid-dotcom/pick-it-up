@@ -997,19 +997,24 @@ export async function analyzeGames(
     const fullConsensus = sourcesCount >= 2;
     const lockMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.03;
     const strongMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.02;
+    const EDGE_SUSPICIOUS = 0.12;
+    const edgeSuspicious = e >= EDGE_SUSPICIOUS;
 
-    if (e > 0.07 && oddsOk && noTrap && lockMarketOk) {
+    if (edgeSuspicious) {
+      console.log('[FLOOR_BLOCKED_SUSPICIOUS_EDGE]', {
+        pick: pickText,
+        edge: Number(e.toFixed(4)),
+        edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
+        threshold: EDGE_SUSPICIOUS,
+        reason: 'edge too high — Claude likely overestimating, keeping raw confidence',
+      });
+    } else if (e > 0.07 && oddsOk && noTrap && lockMarketOk) {
       conf = Math.max(conf, 85);
       floorApplied = 'lock';
     } else if (e > 0.05 && oddsOk && noTrap && strongMarketOk) {
       conf = Math.max(conf, 70);
       floorApplied = 'strong';
     } else if (e > 0.05 && noTrap) {
-      // Edge clears the bracket but at least one gate condition failed.
-      // Audit the exact blocker so post-mortems can distinguish "no sharp
-      // confirmation" from "odds too thin for floor". oddsOk = pickedOdds>1.5
-      // is an intentional economic rule (don't promote heavy favorites where
-      // edges tend to be illusory); we report it explicitly here.
       let reason: string;
       if (!oddsOk) reason = 'odds_too_low_for_floor';
       else if (sourcesCount === 0) reason = 'no_market_data';

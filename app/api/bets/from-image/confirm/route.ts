@@ -155,12 +155,27 @@ export async function POST(req: Request) {
   const oddsUpdated: Array<{ pick_id: string; new_odds: number }> = [];
 
   for (const leg of changedLegs) {
+    const { data: pickRow } = await supabase
+      .from('picks')
+      .select('real_probability')
+      .eq('id', leg.matched_pick_id!)
+      .single();
+
+    const newImplied = 1 / leg.odds_decimal;
+    const newEdge = pickRow?.real_probability != null
+      ? pickRow.real_probability - newImplied
+      : undefined;
+
+    const updateFields: Record<string, unknown> = {
+      odds_decimal: leg.odds_decimal,
+      implied_probability: newImplied,
+      updated_at: new Date().toISOString(),
+    };
+    if (newEdge !== undefined) updateFields.edge = newEdge;
+
     const { error } = await supabase
       .from('picks')
-      .update({
-        odds_decimal: leg.odds_decimal,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updateFields)
       .eq('id', leg.matched_pick_id!);
 
     if (error) {

@@ -475,13 +475,6 @@ export async function analyzeGames(
             {} as Awaited<ReturnType<typeof buildNbaGameContext>>,
           );
           g.real_data = ctx as unknown as Record<string, unknown>;
-          if (ctx.home || ctx.away) {
-            console.log(
-              `[DATA][NBA] ${g.away_team} @ ${g.home_team} OffRtg ${ctx.away?.offRtg?.toFixed(1) ?? '?'} vs ${ctx.home?.offRtg?.toFixed(1) ?? '?'}`,
-            );
-          } else {
-            console.log(`[DATA][NBA] ${g.away_team} @ ${g.home_team} stats.nba.com unavailable (or timeout), falling back to ESPN context`);
-          }
         }
       } catch (e) {
         console.warn(`[pickGen] real-data enrichment failed for ${g.sport} ${g.game_label}`, e);

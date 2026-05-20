@@ -1,17 +1,206 @@
-// NBA stats — stats.nba.com requires Referer + User-Agent headers, often
-// rate-limits, and is occasionally blocked by Vercel egress IPs. We try it
-// first with caching; if it fails, we degrade gracefully and let Claude
-// rely on its training knowledge + the ESPN injuries we already pass.
+// NBA stats — ESPN public API as primary source (reliable, never blocked),
+// stats.nba.com as optional enrichment for advanced metrics (Pace, OffRtg,
+// DefRtg, NetRtg) when it responds. Previous implementation relied solely
+// on stats.nba.com which is frequently blocked from Vercel egress IPs.
 
 import { cached } from './cache';
 
-const SEASON = (() => {
+// ─── ESPN endpoints (primary, always available) ───────────────────────
+
+const ESPN_BASE = 'https://site.api.espn.com/apis';
+
+interface EspnStandingEntry {
+  team: { id: string; displayName: string; abbreviation: string };
+  stats: Array<{ name: string; displayValue: string; value?: number }>;
+}
+
+export interface NbaStandingRow {
+  espnId: string;
+  team: string;
+  abbr: string;
+  wins: number;
+  losses: number;
+  homeRecord?: string;
+  awayRecord?: string;
+  last10?: string;
+  streak?: string;
+  ppg?: number;
+  oppPpg?: number;
+  pointDiff?: number;
+  playoffSeed?: number;
+}
+
+async function fetchEspnStandings(): Promise<Map<string, NbaStandingRow>> {
+  return cached('nba:espn:standings', 120, async () => {
+    const res = await fetch(`${ESPN_BASE}/v2/sports/basketball/nba/standings`, {
+      next: { revalidate: 7200 },
+    });
+    if (!res.ok) return new Map();
+    const data = await res.json();
+    const map = new Map<string, NbaStandingRow>();
+
+    for (const child of data.children ?? []) {
+      for (const group of child.standings?.entries ?? []) {
+        const entry = group as EspnStandingEntry;
+        const team = entry.team;
+        if (!team?.displayName) continue;
+
+        const stat = (name: string): string | undefined => {
+          const s = entry.stats?.find((s: { name: string }) => s.name === name);
+          return s?.displayValue ?? undefined;
+        };
+        const numStat = (name: string): number | undefined => {
+          const s = entry.stats?.find((s: { name: string }) => s.name === name);
+          return s?.value ?? undefined;
+        };
+
+        map.set(team.displayName.toUpperCase(), {
+          espnId: team.id,
+          team: team.displayName,
+          abbr: team.abbreviation,
+          wins: numStat('wins') ?? 0,
+          losses: numStat('losses') ?? 0,
+          homeRecord: stat('Home'),
+          awayRecord: stat('Road'),
+          last10: stat('Last Ten Games') || stat('L10'),
+          streak: stat('streak'),
+          ppg: numStat('avgPointsFor') ?? numStat('pointsFor'),
+          oppPpg: numStat('avgPointsAgainst') ?? numStat('pointsAgainst'),
+          pointDiff: numStat('differential') ?? numStat('pointDifferential'),
+          playoffSeed: numStat('playoffSeed'),
+        });
+      }
+    }
+    return map;
+  });
+}
+
+interface EspnStatItem {
+  name: string;
+  displayValue: string;
+  value?: number;
+}
+
+interface EspnStatsCategory {
+  name: string;
+  displayName: string;
+  stats: EspnStatItem[];
+}
+
+export interface NbaTeamStats {
+  avgPoints?: number;
+  fgPct?: number;
+  fg3Pct?: number;
+  ftPct?: number;
+  avgRebounds?: number;
+  avgAssists?: number;
+  avgTurnovers?: number;
+  avgSteals?: number;
+  avgBlocks?: number;
+  assistTurnoverRatio?: number;
+}
+
+async function fetchEspnTeamStats(espnTeamId: string): Promise<NbaTeamStats | null> {
+  return cached(`nba:espn:teamStats:${espnTeamId}`, 240, async () => {
+    const res = await fetch(
+      `${ESPN_BASE}/site/v2/sports/basketball/nba/teams/${espnTeamId}/statistics`,
+      { next: { revalidate: 14400 } },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    const allStats = new Map<string, number>();
+    for (const cat of (data.results?.stats?.categories ?? []) as EspnStatsCategory[]) {
+      for (const s of cat.stats ?? []) {
+        if (s.value != null) allStats.set(s.name, s.value);
+        else if (s.displayValue) {
+          const n = parseFloat(s.displayValue);
+          if (!isNaN(n)) allStats.set(s.name, n);
+        }
+      }
+    }
+
+    if (allStats.size === 0) return null;
+    return {
+      avgPoints: allStats.get('avgPoints'),
+      fgPct: allStats.get('fieldGoalPct'),
+      fg3Pct: allStats.get('threePointFieldGoalPct') ?? allStats.get('threePointPct'),
+      ftPct: allStats.get('freeThrowPct'),
+      avgRebounds: allStats.get('avgRebounds'),
+      avgAssists: allStats.get('avgAssists'),
+      avgTurnovers: allStats.get('avgTurnovers'),
+      avgSteals: allStats.get('avgSteals'),
+      avgBlocks: allStats.get('avgBlocks'),
+      assistTurnoverRatio: allStats.get('assistTurnoverRatio'),
+    };
+  });
+}
+
+export interface NbaRecentGame {
+  date: string;
+  opponent: string;
+  homeAway: 'home' | 'away';
+  won: boolean;
+  score: string;
+  teamScore: number;
+  oppScore: number;
+}
+
+async function fetchEspnRecentGames(
+  espnTeamId: string,
+  limit = 10,
+): Promise<NbaRecentGame[]> {
+  return cached(`nba:espn:schedule:${espnTeamId}`, 120, async () => {
+    const res = await fetch(
+      `${ESPN_BASE}/site/v2/sports/basketball/nba/teams/${espnTeamId}/schedule`,
+      { next: { revalidate: 7200 } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+
+    const games: NbaRecentGame[] = [];
+    for (const ev of data.events ?? []) {
+      const status = ev.competitions?.[0]?.status;
+      if (!status?.type?.completed) continue;
+
+      const comps = ev.competitions?.[0]?.competitors ?? [];
+      const us = comps.find(
+        (c: { id?: string }) => String(c.id) === String(espnTeamId),
+      );
+      const them = comps.find(
+        (c: { id?: string }) => String(c.id) !== String(espnTeamId),
+      );
+      if (!us || !them) continue;
+
+      const teamScore = Number(us.score?.value ?? us.score ?? 0);
+      const oppScore = Number(them.score?.value ?? them.score ?? 0);
+
+      games.push({
+        date: ev.date?.substring(0, 10) ?? '',
+        opponent: them.team?.displayName ?? them.team?.name ?? '?',
+        homeAway: us.homeAway === 'home' ? 'home' : 'away',
+        won: us.winner === true,
+        score: `${teamScore}-${oppScore}`,
+        teamScore,
+        oppScore,
+      });
+    }
+
+    return games.slice(-limit);
+  });
+}
+
+// ─── stats.nba.com (optional enrichment for advanced metrics) ─────────
+
+const NBA_STATS_SEASON = (() => {
   const now = new Date();
   const y = now.getUTCFullYear();
-  return now.getUTCMonth() >= 8 ? `${y}-${(y + 1).toString().slice(2)}` : `${y - 1}-${y.toString().slice(2)}`;
+  return now.getUTCMonth() >= 8
+    ? `${y}-${(y + 1).toString().slice(2)}`
+    : `${y - 1}-${y.toString().slice(2)}`;
 })();
 
-const HEADERS = {
+const NBA_STATS_HEADERS = {
   Referer: 'https://www.nba.com/',
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -21,75 +210,80 @@ const HEADERS = {
   'x-nba-stats-token': 'true',
 };
 
-interface NbaResultSet {
-  headers: string[];
-  rowSet: Array<Array<string | number>>;
-}
-
-interface NbaResp {
-  resultSets?: Array<{ name: string; headers: string[]; rowSet: Array<Array<string | number>> }>;
-}
-
-function rowsToObjects(rs: NbaResultSet | undefined): Array<Record<string, string | number>> {
-  if (!rs) return [];
-  return rs.rowSet.map((row) => Object.fromEntries(rs.headers.map((h, i) => [h, row[i]])));
-}
-
-export interface NbaTeamRow {
-  team: string;
-  abbr?: string;
-  wins?: number;
-  losses?: number;
-  ppg?: number;
-  fgPct?: number;
-  fg3Pct?: number;
-  ftPct?: number;
+interface NbaAdvancedRow {
   pace?: number;
   offRtg?: number;
   defRtg?: number;
   netRtg?: number;
 }
 
-export async function fetchNbaTeamStats(): Promise<Map<string, NbaTeamRow> | null> {
-  return cached(`nba:teamStats:${SEASON}`, 240, async () => {
+async function fetchAdvancedFromNbaStats(): Promise<Map<string, NbaAdvancedRow> | null> {
+  return cached(`nba:advanced:${NBA_STATS_SEASON}`, 240, async () => {
     try {
-      const url = `https://stats.nba.com/stats/leaguedashteamstats?Season=${SEASON}&SeasonType=Regular+Season&PerMode=PerGame&MeasureType=Base&PaceAdjust=N&PlusMinus=N&Rank=N&LastNGames=0&Period=0&GameSegment=&Outcome=&SeasonSegment=&Location=&DateFrom=&DateTo=&Conference=&Division=&LeagueID=00&Month=0&OpponentTeamID=0&PORound=0&ShotClockRange=&TeamID=0&TwoWay=0&VsConference=&VsDivision=`;
-      const advUrl = `https://stats.nba.com/stats/leaguedashteamstats?Season=${SEASON}&SeasonType=Regular+Season&PerMode=PerGame&MeasureType=Advanced&PaceAdjust=N&PlusMinus=N&Rank=N&LastNGames=0&Period=0&GameSegment=&Outcome=&SeasonSegment=&Location=&DateFrom=&DateTo=&Conference=&Division=&LeagueID=00&Month=0&OpponentTeamID=0&PORound=0&ShotClockRange=&TeamID=0&TwoWay=0&VsConference=&VsDivision=`;
-      const [base, adv] = await Promise.all([
-        fetch(url, { headers: HEADERS, next: { revalidate: 14400 } }).then((r) => (r.ok ? r.json() : null)),
-        fetch(advUrl, { headers: HEADERS, next: { revalidate: 14400 } }).then((r) => (r.ok ? r.json() : null)),
-      ]);
-      if (!base) return null;
+      const url = `https://stats.nba.com/stats/leaguedashteamstats?Season=${NBA_STATS_SEASON}&SeasonType=Regular+Season&PerMode=PerGame&MeasureType=Advanced&PaceAdjust=N&PlusMinus=N&Rank=N&LastNGames=0&Period=0&GameSegment=&Outcome=&SeasonSegment=&Location=&DateFrom=&DateTo=&Conference=&Division=&LeagueID=00&Month=0&OpponentTeamID=0&PORound=0&ShotClockRange=&TeamID=0&TwoWay=0&VsConference=&VsDivision=`;
+      const res = await fetch(url, {
+        headers: NBA_STATS_HEADERS,
+        signal: AbortSignal.timeout(5_000),
+        next: { revalidate: 14400 },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const rs = data.resultSets?.[0];
+      if (!rs?.headers || !rs?.rowSet) return null;
 
-      const baseRows = rowsToObjects((base as NbaResp).resultSets?.[0]);
-      const advRows = adv ? rowsToObjects((adv as NbaResp).resultSets?.[0]) : [];
-      const advByTeam = new Map<string, Record<string, string | number>>();
-      for (const a of advRows) advByTeam.set(String(a.TEAM_NAME).toUpperCase(), a);
+      const headers: string[] = rs.headers;
+      const nameIdx = headers.indexOf('TEAM_NAME');
+      const paceIdx = headers.indexOf('PACE');
+      const offIdx = headers.indexOf('OFF_RATING');
+      const defIdx = headers.indexOf('DEF_RATING');
+      const netIdx = headers.indexOf('NET_RATING');
 
-      const map = new Map<string, NbaTeamRow>();
-      for (const r of baseRows) {
-        const teamName = String(r.TEAM_NAME);
-        const a = advByTeam.get(teamName.toUpperCase()) ?? {};
-        map.set(teamName.toUpperCase(), {
-          team: teamName,
-          wins: Number(r.W ?? 0),
-          losses: Number(r.L ?? 0),
-          ppg: Number(r.PTS ?? 0),
-          fgPct: Number(r.FG_PCT ?? 0),
-          fg3Pct: Number(r.FG3_PCT ?? 0),
-          ftPct: Number(r.FT_PCT ?? 0),
-          pace: a.PACE ? Number(a.PACE) : undefined,
-          offRtg: a.OFF_RATING ? Number(a.OFF_RATING) : undefined,
-          defRtg: a.DEF_RATING ? Number(a.DEF_RATING) : undefined,
-          netRtg: a.NET_RATING ? Number(a.NET_RATING) : undefined,
+      const map = new Map<string, NbaAdvancedRow>();
+      for (const row of rs.rowSet) {
+        const name = String(row[nameIdx]).toUpperCase();
+        map.set(name, {
+          pace: paceIdx >= 0 ? Number(row[paceIdx]) : undefined,
+          offRtg: offIdx >= 0 ? Number(row[offIdx]) : undefined,
+          defRtg: defIdx >= 0 ? Number(row[defIdx]) : undefined,
+          netRtg: netIdx >= 0 ? Number(row[netIdx]) : undefined,
         });
       }
       return map;
-    } catch (e) {
-      console.warn('[nba] stats.nba.com fetch failed, returning null', e);
+    } catch {
       return null;
     }
   });
+}
+
+// ─── Public interface ─────────────────────────────────────────────────
+
+export interface NbaTeamRow {
+  team: string;
+  abbr?: string;
+  wins?: number;
+  losses?: number;
+  homeRecord?: string;
+  awayRecord?: string;
+  last10?: string;
+  streak?: string;
+  ppg?: number;
+  oppPpg?: number;
+  pointDiff?: number;
+  playoffSeed?: number;
+  fgPct?: number;
+  fg3Pct?: number;
+  ftPct?: number;
+  avgRebounds?: number;
+  avgAssists?: number;
+  avgTurnovers?: number;
+  avgSteals?: number;
+  avgBlocks?: number;
+  assistTurnoverRatio?: number;
+  pace?: number;
+  offRtg?: number;
+  defRtg?: number;
+  netRtg?: number;
+  recentGames?: NbaRecentGame[];
 }
 
 export interface NbaGameContext {
@@ -101,12 +295,61 @@ export async function buildNbaGameContext(
   homeName: string,
   awayName: string,
 ): Promise<NbaGameContext> {
-  const stats = await fetchNbaTeamStats().catch(() => null);
-  if (!stats) return {};
-  const homeKey = homeName.toUpperCase();
-  const awayKey = awayName.toUpperCase();
-  return {
-    home: stats.get(homeKey),
-    away: stats.get(awayKey),
+  const [standings, advanced] = await Promise.all([
+    fetchEspnStandings().catch(() => new Map<string, NbaStandingRow>()),
+    fetchAdvancedFromNbaStats().catch(() => null),
+  ]);
+
+  const build = async (teamName: string): Promise<NbaTeamRow | undefined> => {
+    const key = teamName.toUpperCase();
+    const st = standings.get(key);
+    if (!st) return undefined;
+
+    const [stats, recent] = await Promise.all([
+      fetchEspnTeamStats(st.espnId).catch(() => null),
+      fetchEspnRecentGames(st.espnId, 10).catch(() => [] as NbaRecentGame[]),
+    ]);
+    const adv = advanced?.get(key);
+
+    return {
+      team: st.team,
+      abbr: st.abbr,
+      wins: st.wins,
+      losses: st.losses,
+      homeRecord: st.homeRecord,
+      awayRecord: st.awayRecord,
+      last10: st.last10,
+      streak: st.streak,
+      ppg: st.ppg,
+      oppPpg: st.oppPpg,
+      pointDiff: st.pointDiff,
+      playoffSeed: st.playoffSeed,
+      fgPct: stats?.fgPct,
+      fg3Pct: stats?.fg3Pct,
+      ftPct: stats?.ftPct,
+      avgRebounds: stats?.avgRebounds,
+      avgAssists: stats?.avgAssists,
+      avgTurnovers: stats?.avgTurnovers,
+      avgSteals: stats?.avgSteals,
+      avgBlocks: stats?.avgBlocks,
+      assistTurnoverRatio: stats?.assistTurnoverRatio,
+      pace: adv?.pace,
+      offRtg: adv?.offRtg,
+      defRtg: adv?.defRtg,
+      netRtg: adv?.netRtg,
+      recentGames: recent.length > 0 ? recent : undefined,
+    };
   };
+
+  const [home, away] = await Promise.all([build(homeName), build(awayName)]);
+
+  if (home || away) {
+    console.log(
+      `[DATA][NBA] ${awayName} @ ${homeName}`,
+      home ? `home: ${home.wins}-${home.losses} PPG:${home.ppg ?? '?'} OffRtg:${home.offRtg ?? '?'} L10:${home.last10 ?? '?'}` : 'home: no data',
+      away ? `away: ${away.wins}-${away.losses} PPG:${away.ppg ?? '?'} OffRtg:${away.offRtg ?? '?'} L10:${away.last10 ?? '?'}` : 'away: no data',
+    );
+  }
+
+  return { home, away };
 }

@@ -53,7 +53,8 @@ REGLAS CRÍTICAS:
 - Si la imagen no es un ticket de apuestas, devuelve is_draftea_betslip: false.
 - Extrae TODOS los legs/selecciones aunque sean muchos.
 - Para combinadas (parlays), extrae el momio total Y los momios individuales de cada leg.
-- potential_payout_mxn = importe total que recibirías (incluye la apuesta). potential_winnings_mxn = solo la ganancia neta.
+- IMPORTANTE SOBRE MONTOS EN DRAFTEA: En los tickets de Draftea el campo que dice "Ganancia potencial" o "Posible ganancia" es la GANANCIA NETA (sin incluir la apuesta). Pon ese valor en potential_winnings_mxn. Para potential_payout_mxn SUMA la apuesta: potential_payout_mxn = wager_mxn + potential_winnings_mxn. Ejemplo: si la apuesta es $100 y el ticket dice "Ganancia potencial: $150", entonces potential_winnings_mxn = 150 y potential_payout_mxn = 250.
+- Si el ticket muestra "Pago total" o "Retorno", ese valor YA incluye la apuesta → ponlo en potential_payout_mxn y calcula potential_winnings_mxn = potential_payout_mxn - wager_mxn.
 - VALORES CANÓNICOS para sport: usa SIEMPRE "MLB" (no "Béisbol"), "NBA", "NHL", "NFL", "Fútbol", "Liga MX", "Premier League", "UFC". Si el ticket muestra "Béisbol" → usa "MLB". Si muestra "Baloncesto" → usa "NBA". Si muestra "Hockey" → usa "NHL".
 - VALORES CANÓNICOS para market_type: usa SIEMPRE "ML" para apuestas de ganador directo/moneyline (no "Moneyline", no "Moneyline (PA – Para Ganar)", no "ganador"). Usa "Spread" para handicap/run-line. Usa "Total" para over/under. Usa "Props" para props de jugador.
 
@@ -167,6 +168,44 @@ export async function extractDrafteaBet(
         ? leg.odds_decimal
         : 1.0,
   }));
+
+  // Reconcile payout vs winnings using math when Vision gets confused
+  const w = extracted.wager_mxn;
+  const odds = extracted.total_odds_decimal;
+  if (w && w > 0 && odds && odds > 1) {
+    const expectedPayout = Math.round(w * odds * 100) / 100;
+    const expectedWinnings = Math.round(w * (odds - 1) * 100) / 100;
+
+    const payout = extracted.potential_payout_mxn;
+    const winnings = extracted.potential_winnings_mxn;
+
+    if (payout && winnings) {
+      // Both provided — check if payout looks like it's actually the winnings
+      // (Vision put the net profit in the payout field)
+      const payoutMatchesWinnings = Math.abs(payout - expectedWinnings) / expectedWinnings < 0.05;
+      const payoutMatchesPayout = Math.abs(payout - expectedPayout) / expectedPayout < 0.05;
+      if (payoutMatchesWinnings && !payoutMatchesPayout) {
+        extracted.potential_winnings_mxn = payout;
+        extracted.potential_payout_mxn = Math.round((payout + w) * 100) / 100;
+      }
+    } else if (payout && !winnings) {
+      // Only payout — derive winnings
+      const looksLikeNetProfit = Math.abs(payout - expectedWinnings) / expectedWinnings < 0.05;
+      if (looksLikeNetProfit) {
+        extracted.potential_winnings_mxn = payout;
+        extracted.potential_payout_mxn = Math.round((payout + w) * 100) / 100;
+      } else {
+        extracted.potential_winnings_mxn = Math.round((payout - w) * 100) / 100;
+      }
+    } else if (!payout && winnings) {
+      // Only winnings — derive payout
+      extracted.potential_payout_mxn = Math.round((winnings + w) * 100) / 100;
+    } else {
+      // Neither — calculate both from odds
+      extracted.potential_payout_mxn = expectedPayout;
+      extracted.potential_winnings_mxn = expectedWinnings;
+    }
+  }
 
   // Token cost: claude-sonnet-4-6 → $3/M input, $15/M output
   const tokens_in = response.usage.input_tokens;

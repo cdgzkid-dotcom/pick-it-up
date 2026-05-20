@@ -80,15 +80,19 @@ export async function matchExtractedBetToPicks(
   });
 
   let math_warning: string | null = null;
-  const { wager_mxn, total_odds_decimal, potential_payout_mxn } = extracted;
+  const { wager_mxn, total_odds_decimal, potential_payout_mxn, potential_winnings_mxn } = extracted;
   if (wager_mxn && total_odds_decimal && potential_payout_mxn) {
-    const expected = wager_mxn * total_odds_decimal;
-    const deviation = Math.abs(potential_payout_mxn - expected) / expected;
-    if (deviation > 0.02) {
+    const expectedPayout = wager_mxn * total_odds_decimal;
+    const expectedWinnings = wager_mxn * (total_odds_decimal - 1);
+    const payoutDev = Math.abs(potential_payout_mxn - expectedPayout) / expectedPayout;
+    const winningsDev = potential_winnings_mxn
+      ? Math.abs(potential_winnings_mxn - expectedWinnings) / expectedWinnings
+      : 0;
+    if (payoutDev > 0.02 || winningsDev > 0.02) {
       math_warning =
-        `Los números no cuadran exactamente: ` +
-        `$${wager_mxn} × ${total_odds_decimal} = $${expected.toFixed(2)} ` +
-        `pero el ticket muestra $${potential_payout_mxn}. Verifica antes de confirmar.`;
+        `Números recalculados: ` +
+        `$${wager_mxn} × ${total_odds_decimal} → Ganancia $${expectedWinnings.toFixed(0)}, ` +
+        `Pago total $${expectedPayout.toFixed(0)}. Verifica antes de confirmar.`;
     }
   }
 

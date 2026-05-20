@@ -148,7 +148,8 @@ function formatPreview(
   lines.push(`🎲 *${extracted.bet_type ?? 'Apuesta'}* · Confianza: ${confLabel}`);
   if (extracted.wager_mxn) lines.push(`💰 Apuesta: $${extracted.wager_mxn} MXN`);
   if (extracted.total_odds_decimal) lines.push(`📈 Momios: ${extracted.total_odds_decimal.toFixed(2)}x`);
-  if (extracted.potential_payout_mxn) lines.push(`💵 Pago potencial: $${extracted.potential_payout_mxn} MXN`);
+  if (extracted.potential_winnings_mxn) lines.push(`💵 Ganancia: $${extracted.potential_winnings_mxn} MXN`);
+  if (extracted.potential_payout_mxn) lines.push(`💰 Pago total: $${extracted.potential_payout_mxn} MXN`);
   if (extracted.status) lines.push(`🔖 Status: ${extracted.status}`);
   if (extracted.bet_id) lines.push(`🆔 ID: ${extracted.bet_id}`);
   lines.push('');

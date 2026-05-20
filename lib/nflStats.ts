@@ -112,7 +112,6 @@ export interface NflTeamStats {
   // Turnovers
   fumbles?: number;
   fumblesLost?: number;
-  giveaways?: number;
   takeaways?: number;
   turnoverDiff?: number;
   // Efficiency
@@ -157,9 +156,9 @@ async function fetchEspnTeamStats(espnTeamId: string): Promise<NflTeamStats | nu
     const gp = all.get('gamesPlayed') ?? 17;
     const totalYards = (all.get('netPassingYards') ?? 0) + (all.get('rushingYards') ?? 0);
     const totalPlays = (all.get('passingAttempts') ?? 0) + (all.get('rushingAttempts') ?? 0);
-    const takeaways = (all.get('interceptions') ?? 0) + (all.get('fumblesRecovered') ?? 0);
-    const giveawayInts = all.get('interceptions') ?? 0; // passing interceptions thrown
-    const giveawayFum = all.get('fumblesLost') ?? 0;
+    const defInts = all.get('interceptions') ?? 0;
+    const fumblesRec = all.get('fumblesRecovered') ?? 0;
+    const takeawaysTotal = defInts + fumblesRec;
 
     return {
       completionPct: all.get('completionPct'),
@@ -173,7 +172,8 @@ async function fetchEspnTeamStats(espnTeamId: string): Promise<NflTeamStats | nu
       totalPoints: all.get('totalPoints'),
       pointsPerGame: all.get('totalPoints') != null ? Number(((all.get('totalPoints')!) / gp).toFixed(1)) : undefined,
       fumbles: all.get('fumbles'),
-      fumblesLost: giveawayFum || undefined,
+      fumblesLost: all.get('fumblesLost') || undefined,
+      takeaways: takeawaysTotal > 0 ? takeawaysTotal : undefined,
       thirdDownPct: all.get('thirdDownConvPct'),
       fourthDownPct: all.get('fourthDownConvPct'),
       redZonePct: all.get('redZonePct'),

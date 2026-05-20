@@ -175,15 +175,27 @@ export async function POST(req: Request) {
   const { sport, game, pick, bet_type, pick_id, notes } = buildBetDescription(data);
   const gameStartTime = data.legs[0]?.event_time ?? null;
 
-  // Inherit tier from the matched pick so stats by tier are accurate.
+  // Inherit fields from the matched pick so auto-resolve works.
   let pickTier: string | null = null;
+  let pickEspnEventId: string | null = null;
+  let pickGameStartTime: string | null = gameStartTime;
+  let pickHomeTeam: string | null = null;
+  let pickAwayTeam: string | null = null;
+  let pickHomeTeamAbbr: string | null = null;
+  let pickAwayTeamAbbr: string | null = null;
   if (pick_id) {
     const { data: pickRow } = await supabase
       .from('picks')
-      .select('tier')
+      .select('tier, espn_event_id, game_start_time, home_team, away_team, home_team_abbr, away_team_abbr')
       .eq('id', pick_id)
       .single();
     pickTier = pickRow?.tier ?? null;
+    pickEspnEventId = pickRow?.espn_event_id ?? null;
+    if (!pickGameStartTime) pickGameStartTime = pickRow?.game_start_time ?? null;
+    pickHomeTeam = pickRow?.home_team ?? null;
+    pickAwayTeam = pickRow?.away_team ?? null;
+    pickHomeTeamAbbr = pickRow?.home_team_abbr ?? null;
+    pickAwayTeamAbbr = pickRow?.away_team_abbr ?? null;
   }
 
   // ── Step 3a: PENDIENTE → place_bet_atomic (debits bankroll) ──────────
@@ -193,11 +205,11 @@ export async function POST(req: Request) {
       p_pick_id: pick_id,
       p_sport: sport,
       p_game: game,
-      p_home_team: null,
-      p_away_team: null,
-      p_home_team_abbr: null,
-      p_away_team_abbr: null,
-      p_espn_event_id: null,
+      p_home_team: pickHomeTeam,
+      p_away_team: pickAwayTeam,
+      p_home_team_abbr: pickHomeTeamAbbr,
+      p_away_team_abbr: pickAwayTeamAbbr,
+      p_espn_event_id: pickEspnEventId,
       p_pick: pick,
       p_bet_type: bet_type,
       p_odds_decimal: data.total_odds_decimal,
@@ -207,7 +219,7 @@ export async function POST(req: Request) {
         ? new Date(data.placed_at).toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' })
         : null,
       p_notes: notes,
-      p_game_start_time: gameStartTime,
+      p_game_start_time: pickGameStartTime,
     });
 
     if (rpcErr) {

@@ -510,6 +510,8 @@ export async function analyzeGames(
             status: 'api_error',
             home_implied: null,
             away_implied: null,
+            home_decimal: null,
+            away_decimal: null,
             matchup_id: null,
           } as PinnacleOddsResult,
         );
@@ -532,6 +534,8 @@ export async function analyzeGames(
             status: 'api_error',
             home_implied: null,
             away_implied: null,
+            home_decimal: null,
+            away_decimal: null,
             matchup_id: null,
           } as PinnacleOddsResult;
         }
@@ -869,9 +873,30 @@ export async function analyzeGames(
       console.log('[MARKET] non-default provider used:', dkOdds.source, `(slug=${dkOdds.source_slug})`);
     }
 
-    // (4) Edge per side against DK line.
-    const homeOdds = dkOdds.home_ml_decimal;
-    const awayOdds = dkOdds.away_ml_decimal;
+    // (4) Best-odds line shopping: find the highest decimal ML for each side
+    // across ALL ESPN providers (DK, ESPN BET, FanDuel, BetMGM, etc.) plus
+    // Pinnacle. Edge computed against best available line — same odds the
+    // user should bet at for maximum value.
+    const homeOddsDk = dkOdds.home_ml_decimal;
+    const awayOddsDk = dkOdds.away_ml_decimal;
+    type OddsEntry = { source: string; home: number | null; away: number | null };
+    const allBookOdds: OddsEntry[] = [];
+    for (const prov of (dkOdds.all_providers ?? [])) {
+      allBookOdds.push({ source: prov.source, home: prov.home_ml_decimal, away: prov.away_ml_decimal });
+    }
+    if (pinnacle?.status === 'available' && pinnacle.home_decimal && pinnacle.away_decimal) {
+      allBookOdds.push({ source: 'Pinnacle', home: pinnacle.home_decimal, away: pinnacle.away_decimal });
+    }
+    let bestHomeMl = homeOddsDk;
+    let bestHomeSource = dkOdds.source;
+    let bestAwayMl = awayOddsDk;
+    let bestAwaySource = dkOdds.source;
+    for (const o of allBookOdds) {
+      if (o.home != null && o.home > bestHomeMl) { bestHomeMl = o.home; bestHomeSource = o.source; }
+      if (o.away != null && o.away > bestAwayMl) { bestAwayMl = o.away; bestAwaySource = o.source; }
+    }
+    const homeOdds = bestHomeMl;
+    const awayOdds = bestAwayMl;
     const edgeHome = homeProb - 1 / homeOdds;
     const edgeAway = awayProb - 1 / awayOdds;
 
@@ -882,6 +907,10 @@ export async function analyzeGames(
         teams: `${p.away_team}@${p.home_team}`,
         edge_home: Number(edgeHome.toFixed(4)),
         edge_away: Number(edgeAway.toFixed(4)),
+        dk_home: homeOddsDk,
+        dk_away: awayOddsDk,
+        best_home: `${bestHomeMl} (${bestHomeSource})`,
+        best_away: `${bestAwayMl} (${bestAwaySource})`,
       });
       reasons.fail_no_positive_edge++;
       noPositiveEdgeEvents.push({
@@ -906,9 +935,6 @@ export async function analyzeGames(
         threshold: EDGE_THRESHOLD,
       });
       reasons.fail_edge_below_threshold++;
-      // Pick Digest: capture metadata for Telegram summary. The pick was
-      // mathematically valid but the edge was too thin to bet — still
-      // valuable signal for the user (proves the system analyzed).
       const pickedOddsLocal = side === 'home' ? homeOdds : awayOdds;
       const pickedProbLocal = side === 'home' ? homeProb : awayProb;
       edgeBelowEvents.push({
@@ -932,8 +958,19 @@ export async function analyzeGames(
     const pickedOdds = side === 'home' ? homeOdds : awayOdds;
     const implied = impliedProbability(pickedOdds);
     const e = bestEdge;
+    const pickedOddsDk = side === 'home' ? homeOddsDk : awayOddsDk;
+    if (pickedOdds > pickedOddsDk) {
+      console.log('[BEST_ODDS]', {
+        pick: pickText,
+        dk_odds: pickedOddsDk,
+        best_odds: Number(pickedOdds.toFixed(3)),
+        best_source: side === 'home' ? bestHomeSource : bestAwaySource,
+        edge_gain_pp: Number(((1 / pickedOddsDk) - (1 / pickedOdds)).toFixed(4)),
+      });
+    }
 
-    // Consensus: market book + ESPN BPI + Pinnacle ML for the picked side.
+    // Consensus: market book (DK) + ESPN BPI + Pinnacle ML for the picked side.
+    // Uses DK odds as the market proxy (representative average), NOT best odds.
     let bpiImplied: number | null = null;
     if (espnBpi) {
       const bpiPct = side === 'home' ? espnBpi.home_win_prob : espnBpi.away_win_prob;
@@ -945,7 +982,7 @@ export async function analyzeGames(
       const v = side === 'home' ? pinnacle.home_implied : pinnacle.away_implied;
       if (v != null && v > 0 && v < 1) pinnacleImplied = v;
     }
-    const marketBookImplied = 1 / pickedOdds;
+    const marketBookImplied = 1 / pickedOddsDk;
     const marketBookSlug = dkOdds.source_slug ?? null;
     const consensus = computeMarketConsensus(
       marketBookImplied,
@@ -960,8 +997,11 @@ export async function analyzeGames(
     const consensusImplied = consensus?.avg_implied_prob ?? null;
     const sourcesList: MarketSource[] = consensus?.sources ?? [];
 
-    const bestOddsSource = dkOdds.source ?? 'DraftKings';
-    const oddsComparison: Array<{ source: string; ml: number }> = [{ source: bestOddsSource, ml: pickedOdds }];
+    const bestOddsSource = side === 'home' ? bestHomeSource : bestAwaySource;
+    const oddsComparison: Array<{ source: string; ml: number }> = allBookOdds
+      .map((o) => ({ source: o.source, ml: (side === 'home' ? o.home : o.away) ?? 0 }))
+      .filter((o) => o.ml > 1.01)
+      .sort((a, b) => b.ml - a.ml);
 
     // (7) RLM trap merge + market-consensus floor gate. UNCHANGED logic, just
     // sourced from `side` instead of isHome/isAway booleans.

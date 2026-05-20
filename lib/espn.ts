@@ -587,6 +587,13 @@ function normalizeProviderSlug(name: string | undefined): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+export interface BookOdds {
+  source: string;
+  source_slug: string;
+  home_ml_decimal: number | null;
+  away_ml_decimal: number | null;
+}
+
 export interface EspnOddsResult {
   source: string; // raw provider name e.g. "Draft Kings"
   source_slug: string; // normalized e.g. "draftkings"
@@ -594,6 +601,7 @@ export interface EspnOddsResult {
   away_ml_american: number | null;
   home_ml_decimal: number | null;
   away_ml_decimal: number | null;
+  all_providers: BookOdds[];
 }
 
 /**
@@ -616,6 +624,22 @@ export async function fetchEspnGameOdds(
   // so collapse "one side present" into the same null outcome for diagnostic clarity.
   if (homeAm == null || awayAm == null) return null;
   const name = primary.provider?.name ?? 'ESPN';
+  const all_providers: BookOdds[] = items
+    .filter((o) => !isLiveProvider(o.provider?.name))
+    .map((o) => {
+      const pName = o.provider?.name ?? 'Unknown';
+      return {
+        source: pName,
+        source_slug: normalizeProviderSlug(pName),
+        home_ml_decimal: americanToDecimal(
+          typeof o.homeTeamOdds?.moneyLine === 'number' ? o.homeTeamOdds.moneyLine : null,
+        ),
+        away_ml_decimal: americanToDecimal(
+          typeof o.awayTeamOdds?.moneyLine === 'number' ? o.awayTeamOdds.moneyLine : null,
+        ),
+      };
+    })
+    .filter((p) => p.home_ml_decimal != null || p.away_ml_decimal != null);
   return {
     source: name,
     source_slug: normalizeProviderSlug(name),
@@ -623,6 +647,7 @@ export async function fetchEspnGameOdds(
     away_ml_american: awayAm,
     home_ml_decimal: americanToDecimal(homeAm),
     away_ml_decimal: americanToDecimal(awayAm),
+    all_providers,
   };
 }
 

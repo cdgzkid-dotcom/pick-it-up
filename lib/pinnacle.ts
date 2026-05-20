@@ -50,6 +50,9 @@ export interface PinnacleOddsResult {
   /** 0-1 implied probability for the home side. null when unavailable. */
   home_implied: number | null;
   away_implied: number | null;
+  /** Decimal odds (1/implied). null when unavailable. */
+  home_decimal: number | null;
+  away_decimal: number | null;
   /** Pinnacle internal matchup id — useful for debug + cache key. */
   matchup_id: number | null;
 }
@@ -189,6 +192,8 @@ async function readCache(
       status: 'available',
       home_implied: home,
       away_implied: away,
+      home_decimal: 1 / home,
+      away_decimal: 1 / away,
       matchup_id:
         data.pinnacle_matchup_id != null ? Number(data.pinnacle_matchup_id) : null,
     };
@@ -246,6 +251,8 @@ export async function fetchPinnacleOddsForEspnEvent(
       status: 'sport_unsupported',
       home_implied: null,
       away_implied: null,
+      home_decimal: null,
+      away_decimal: null,
       matchup_id: null,
     };
   }
@@ -263,6 +270,8 @@ export async function fetchPinnacleOddsForEspnEvent(
       status: 'api_error',
       home_implied: null,
       away_implied: null,
+      home_decimal: null,
+      away_decimal: null,
       matchup_id: null,
     };
   }
@@ -277,6 +286,8 @@ export async function fetchPinnacleOddsForEspnEvent(
       status: 'matchup_not_found',
       home_implied: null,
       away_implied: null,
+      home_decimal: null,
+      away_decimal: null,
       matchup_id: null,
     };
   }
@@ -290,6 +301,8 @@ export async function fetchPinnacleOddsForEspnEvent(
       status: 'api_error',
       home_implied: null,
       away_implied: null,
+      home_decimal: null,
+      away_decimal: null,
       matchup_id: matchup.id,
     };
   }
@@ -300,6 +313,8 @@ export async function fetchPinnacleOddsForEspnEvent(
       status: 'no_ml_open',
       home_implied: null,
       away_implied: null,
+      home_decimal: null,
+      away_decimal: null,
       matchup_id: matchup.id,
     };
   }
@@ -320,6 +335,8 @@ export async function fetchPinnacleOddsForEspnEvent(
     status: 'available',
     home_implied: ml.home,
     away_implied: ml.away,
+    home_decimal: 1 / ml.home,
+    away_decimal: 1 / ml.away,
     matchup_id: matchup.id,
   };
 }

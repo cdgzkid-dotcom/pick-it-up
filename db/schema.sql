@@ -81,7 +81,9 @@ create table if not exists bets (
   clv numeric,
   bet_direction text,
   spread_line numeric,
-  total_line numeric
+  total_line numeric,
+  game_start_time timestamptz,
+  draftea_ticket_id text
 );
 
 create index if not exists bets_result_idx on bets(result);

@@ -74,7 +74,11 @@ create table if not exists bets (
   payout numeric,
   date text,
   notes text,
-  result_notified_at timestamptz
+  result_notified_at timestamptz,
+  odds_at_bet numeric,
+  final_score text,
+  odds_at_close numeric,
+  clv numeric
 );
 
 create index if not exists bets_result_idx on bets(result);

@@ -50,10 +50,13 @@ export function computeStats(bets: Bet[]): BetStats {
   let longestW = 0;
   let runW = 0;
   for (const b of [...settled].reverse()) {
-    if (b.result === 'win' || b.result === 'early_payout') {
+    const isW = b.result === 'win' || b.result === 'early_payout';
+    const isL = b.result === 'loss';
+    if (!isW && !isL) continue;
+    if (isW) {
       runW++;
       if (runW > longestW) longestW = runW;
-    } else if (b.result === 'loss') {
+    } else {
       runW = 0;
     }
   }

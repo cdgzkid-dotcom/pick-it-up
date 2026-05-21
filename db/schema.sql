@@ -78,7 +78,10 @@ create table if not exists bets (
   odds_at_bet numeric,
   final_score text,
   odds_at_close numeric,
-  clv numeric
+  clv numeric,
+  bet_direction text,
+  spread_line numeric,
+  total_line numeric
 );
 
 create index if not exists bets_result_idx on bets(result);

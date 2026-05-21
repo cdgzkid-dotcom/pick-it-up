@@ -8,9 +8,6 @@ export const adjustedEdgeScore = (realProb: number, oddsDecimal: number): number
   return e * Math.sqrt(oddsDecimal);
 };
 
-export const expectedReturn = (realProb: number, oddsDecimal: number): number =>
-  realProb * (oddsDecimal - 1) - (1 - realProb);
-
 export type MarketSource = 'draftkings_ml' | 'espn_bpi' | 'other_book_ml' | 'pinnacle_ml';
 
 export interface MarketConsensus {

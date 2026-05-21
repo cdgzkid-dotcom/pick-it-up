@@ -107,7 +107,3 @@ export async function applyResult(
       .eq('team', awayTeam),
   ]);
 }
-
-export function eloWinProbability(homeElo: number, awayElo: number): number {
-  return 1 / (1 + Math.pow(10, (awayElo - (homeElo + HOME_ADVANTAGE)) / 400));
-}

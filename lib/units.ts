@@ -15,9 +15,6 @@ const TIER_DOWNGRADE: Record<Tier, Tier> = {
   parlay: 'parlay',
 };
 
-export const unitSize = (bankroll: number, unitPercentage: number): number =>
-  bankroll * (unitPercentage / 100);
-
 export const tierForOdds = (tier: Tier, oddsDecimal: number): Tier =>
   oddsDecimal < 1.4 ? TIER_DOWNGRADE[tier] : tier;
 
@@ -26,16 +23,6 @@ export const tierFromConfidence = (confidence: number): Tier => {
   if (confidence >= 70) return 'strong';
   if (confidence >= 55) return 'value';
   return 'parlay';
-};
-
-export const recommendedAmount = (
-  tier: Tier,
-  unit: number,
-  oddsDecimal: number,
-): number => {
-  const adjustedTier = tierForOdds(tier, oddsDecimal);
-  const units = TIER_UNITS[adjustedTier];
-  return Math.round(units * unit);
 };
 
 /**

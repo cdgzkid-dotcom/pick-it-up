@@ -123,7 +123,12 @@ export async function updateFactorPerformance(
 ): Promise<void> {
   try {
     if (!bet.pick_id) return;
-    if (bet.result !== 'win' && bet.result !== 'loss' && bet.result !== 'early_payout') return;
+    if (
+      bet.result !== 'win' &&
+      bet.result !== 'loss' &&
+      bet.result !== 'early_payout' &&
+      bet.result !== 'cashout'
+    ) return;
 
     const { data: pf } = await supabase
       .from('pick_factors')
@@ -132,10 +137,25 @@ export async function updateFactorPerformance(
       .maybeSingle();
     if (!pf) return;
 
-    const isWin = bet.result === 'win' || bet.result === 'early_payout';
     const amount = Number(bet.amount);
-    const payout = Number(bet.payout ?? 0);
-    const profit = isWin ? payout - amount : -amount;
+
+    // Cashout handling: a cashout is treated as win or loss based on P/L.
+    // payout > amount → win (player locked in profit).
+    // payout < amount → loss (player cut losses early).
+    // payout === amount → break-even, skip — no useful learning signal.
+    let isWin: boolean;
+    let profit: number;
+
+    if (bet.result === 'cashout') {
+      const cashoutPayout = Number(bet.payout ?? bet.cashout_amount ?? 0);
+      if (cashoutPayout === amount) return; // break-even cashout — no signal
+      isWin = cashoutPayout > amount;
+      profit = cashoutPayout - amount;
+    } else {
+      isWin = bet.result === 'win' || bet.result === 'early_payout';
+      const payout = Number(bet.payout ?? 0);
+      profit = isWin ? payout - amount : -amount;
+    }
 
     await supabase
       .from('pick_factors')

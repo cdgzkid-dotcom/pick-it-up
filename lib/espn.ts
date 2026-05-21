@@ -413,22 +413,6 @@ interface ScoreboardEventLite {
   }>;
 }
 
-const scoreboardCache = new Map<string, ScoreboardEventLite[]>();
-
-async function fetchScoreboardByDate(sport: string, ymd: string): Promise<ScoreboardEventLite[]> {
-  const cfg = SPORTS[sport];
-  if (!cfg) return [];
-  const key = `${sport}|${ymd}`;
-  const cached = scoreboardCache.get(key);
-  if (cached) return cached;
-  const data = await fetchJson<{ events?: ScoreboardEventLite[] }>(
-    `https://site.api.espn.com/apis/site/v2/sports/${cfg.scoreboardPath}/scoreboard?dates=${ymd}`,
-  );
-  const events = data?.events ?? [];
-  scoreboardCache.set(key, events);
-  return events;
-}
-
 async function fetchScoreboardByDateLive(sport: string, ymd: string): Promise<ScoreboardEventLite[]> {
   const cfg = SPORTS[sport];
   if (!cfg) return [];

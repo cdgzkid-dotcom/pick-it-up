@@ -28,6 +28,7 @@ import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
 import { runHealthChecks, buildHealthSummary } from '@/lib/healthChecks';
 import type { SystemHealthSummary } from '@/lib/healthChecks';
+import { pickedSide } from '@/lib/betEval';
 import type { Bet, Game } from '@/lib/types';
 
 /**
@@ -698,29 +699,6 @@ interface ResolutionForTg {
   away_team?: string | null;
 }
 
-function cronPickedSide(
-  pickText: string,
-  homeAbbr?: string | null,
-  awayAbbr?: string | null,
-  homeName?: string | null,
-  awayName?: string | null,
-): 'home' | 'away' | null {
-  const p = pickText.toLowerCase();
-  const checkAbbr = (a?: string | null) => a && p.includes(a.toLowerCase());
-  if (checkAbbr(homeAbbr)) return 'home';
-  if (checkAbbr(awayAbbr)) return 'away';
-  const lastWord = (s?: string | null) => {
-    if (!s) return null;
-    const w = s.toLowerCase().split(/\s+/).filter(Boolean);
-    return w.length > 0 ? w[w.length - 1] : null;
-  };
-  const hw = lastWord(homeName);
-  const aw = lastWord(awayName);
-  if (hw && hw.length >= 4 && p.includes(hw)) return 'home';
-  if (aw && aw.length >= 4 && p.includes(aw)) return 'away';
-  return null;
-}
-
 async function runResultsCheck(): Promise<{ resolved: number; notified: number }> {
   const supabase = supabaseAdmin();
 
@@ -753,14 +731,14 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
 
     if (isML) {
       if (homeScore === awayScore) continue;
-      const side = cronPickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
       if (!side) continue;
       won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
     } else if (isSpread) {
       const lineMatch = bet.pick.match(/([+-]?\d+(\.\d+)?)/);
       const line = lineMatch ? parseFloat(lineMatch[1]) : NaN;
       if (!Number.isFinite(line)) continue;
-      const side = cronPickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+      const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
       if (!side) continue;
       const adjusted = side === 'home' ? homeScore + line - awayScore : awayScore + line - homeScore;
       if (adjusted === 0) isPush = true;
@@ -813,7 +791,7 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     let oddsAtClose: number | null = null;
     let clvValue: number | null = null;
     if (isML) {
-      const side = cronPickedSide(
+      const side = pickedSide(
         bet.pick,
         bet.home_team_abbr,
         bet.away_team_abbr,

@@ -6,6 +6,7 @@ import { applyResult as applyEloResult } from '@/lib/elo';
 import { updateFactorPerformance } from '@/lib/learning';
 import { sendTelegramMessage, formatResultsMessage } from '@/lib/telegram';
 import { computeStats } from '@/lib/stats';
+import { pickedSide } from '@/lib/betEval';
 import type { Bet } from '@/lib/types';
 
 type ToNotify = {
@@ -37,29 +38,6 @@ interface Resolution {
   away_team?: string | null;
   is_parlay: boolean;
   was_already_notified: boolean;
-}
-
-function pickedSide(
-  pickText: string,
-  homeAbbr?: string | null,
-  awayAbbr?: string | null,
-  homeName?: string | null,
-  awayName?: string | null,
-): 'home' | 'away' | null {
-  const p = pickText.toLowerCase();
-  const checkAbbr = (a?: string | null) => a && p.includes(a.toLowerCase());
-  if (checkAbbr(homeAbbr)) return 'home';
-  if (checkAbbr(awayAbbr)) return 'away';
-  const lastWord = (s?: string | null) => {
-    if (!s) return null;
-    const w = s.toLowerCase().split(/\s+/).filter(Boolean);
-    return w.length > 0 ? w[w.length - 1] : null;
-  };
-  const hw = lastWord(homeName);
-  const aw = lastWord(awayName);
-  if (hw && hw.length >= 4 && p.includes(hw)) return 'home';
-  if (aw && aw.length >= 4 && p.includes(aw)) return 'away';
-  return null;
 }
 
 export async function POST() {

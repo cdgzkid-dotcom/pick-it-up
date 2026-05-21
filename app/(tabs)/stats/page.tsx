@@ -58,7 +58,9 @@ export default async function StatsPage() {
   const bankrollActual = Number(settings?.bankroll_current ?? 0);
   const siGanasTodo = bankrollActual + gananciaPotencial;
   const siPierdesTodo = bankrollActual - enRiesgo;
-  const totalApostado = bets.reduce((s, b) => s + Number(b.amount || 0), 0);
+  const totalApostado = bets
+    .filter((b) => b.result !== 'pending')
+    .reduce((s, b) => s + Number(b.amount || 0), 0);
 
   const bankrollInicial = Number(settings?.bankroll_initial ?? 300);
   const baseChart = logs.map((l) => ({

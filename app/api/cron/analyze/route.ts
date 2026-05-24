@@ -664,6 +664,7 @@ async function runAnalyzeWindow(): Promise<{
       is_parlay: true,
       home_team: p.home_team ?? null,
       away_team: p.away_team ?? null,
+      parlay_legs: (p.parlay_legs as Array<{ game: string; pick: string; tier: string; confidence: number }>) ?? null,
     })),
     earliestStart,
     ctx,

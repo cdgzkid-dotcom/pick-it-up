@@ -9,7 +9,7 @@ import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SU
 import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
 import { fetchPinnacleOddsForEspnEvent, type PinnacleOddsResult } from './pinnacle';
 import type { MarketSource } from './edge';
-import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence, TIER_UNITS } from './units';
+import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence, TIER_UNITS, computeParlayTier } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
@@ -1241,7 +1241,8 @@ export async function analyzeGames(
     recommended_amount: number;
     kelly_fraction: number;
     analysis: string | null;
-    parlay_legs: Array<{ game: string; pick: string; odds_decimal: number; real_probability: number; espn_event_id: string }>;
+    tier: Tier;
+    parlay_legs: Array<{ game: string; pick: string; odds_decimal: number; real_probability: number; espn_event_id: string; tier: Tier; confidence: number }>;
   };
   const generatedParlays: GeneratedParlay[] = [];
   const seen = new Set<string>();
@@ -1267,12 +1268,15 @@ export async function analyzeGames(
       recommended_amount: k.amount,
       kelly_fraction: k.fraction,
       analysis: `Parlay server-side de ${legs.length} legs con consenso de mercado: ${legs.map((l) => `${l.pick} (edge ${(l.edge * 100).toFixed(1)}%, ${l.floor_applied})`).join(', ')}.`,
+      tier: computeParlayTier(legs.map((l) => l.tier)),
       parlay_legs: legs.map((l) => ({
         game: `${l.away_team} @ ${l.home_team}`,
         pick: l.pick,
         odds_decimal: l.odds_decimal,
         real_probability: l.real_probability,
         espn_event_id: l.espn_event_id!,
+        tier: l.tier,
+        confidence: l.confidence,
       })),
     };
   };
@@ -1442,7 +1446,7 @@ export async function analyzeGames(
     floor_applied: null,
     confidence: par.confidence,
     confidence_raw: par.confidence,
-    tier: 'parlay' as Tier,
+    tier: par.tier,
     real_probability: par.real_probability,
     implied_probability: par.implied_probability,
     edge: par.edge,

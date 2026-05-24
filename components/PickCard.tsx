@@ -3,7 +3,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
 import { TeamLogo, SportLogo } from './Logo';
-import { tierLabel } from '@/lib/units';
+import { tierLabel, TIER_EMOJI, TIER_NAME } from '@/lib/units';
 import type { KeyStat, Pick, Tier } from '@/lib/types';
 
 interface Props {
@@ -146,7 +146,7 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
           <span className={`text-xs font-bold ${pick.trap_warning ? 'text-red' : tierColor}`}>
-            {tierLabel(tier, pick.confidence)}
+            {pick.is_parlay ? `${TIER_EMOJI[tier]} ${TIER_NAME[tier]} PARLAY` : tierLabel(tier, pick.confidence)}
             {pick.trap_warning && ' · TRAMPA DETECTADA'}
           </span>
         </div>
@@ -198,12 +198,30 @@ export default function PickCard({ pick, rank }: Props) {
       )}
 
       <div>
-        {pick.is_parlay && (
-          <div className="text-[11px] text-muted uppercase tracking-wider">{pick.game}</div>
-        )}
-        <div className="text-base font-bold mt-0.5">{pick.pick}</div>
-        {pick.pick_detail && (
-          <div className="text-xs text-muted mt-0.5">{pick.pick_detail}</div>
+        {pick.is_parlay && pick.parlay_legs && (pick.parlay_legs as Array<{ game: string; pick: string; tier?: Tier; confidence?: number }>)[0]?.tier ? (
+          <div className="space-y-1">
+            {(pick.parlay_legs as Array<{ game: string; pick: string; tier: Tier; confidence: number }>).map((leg, i) => {
+              const lt = (leg.tier ?? 'value') as Tier;
+              const lColor = lt === 'lock' ? 'text-blue' : lt === 'strong' ? 'text-green' : 'text-yellow';
+              return (
+                <div key={i} className="text-xs">
+                  <span className={`font-bold ${lColor}`}>{TIER_EMOJI[lt]} {TIER_NAME[lt]}{leg.confidence != null ? ` ${Math.round(leg.confidence)}%` : ''}</span>
+                  <span className="text-muted"> · {leg.game}: </span>
+                  <span className="font-medium">{leg.pick}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            {pick.is_parlay && (
+              <div className="text-[11px] text-muted uppercase tracking-wider">{pick.game}</div>
+            )}
+            <div className="text-base font-bold mt-0.5">{pick.pick}</div>
+            {pick.pick_detail && (
+              <div className="text-xs text-muted mt-0.5">{pick.pick_detail}</div>
+            )}
+          </>
         )}
       </div>
 

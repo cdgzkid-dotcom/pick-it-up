@@ -83,6 +83,7 @@ interface PickForMessage {
   /** ESPN BPI implied for the picked side. Used jointly with pinnacle_implied
    *  to render the 3-way market line. Null = BPI didn't contribute. */
   bpi_implied?: number | null;
+  parlay_legs?: Array<{ game: string; pick: string; tier: string; confidence: number }> | null;
 }
 
 const TIER_EMOJI: Record<string, string> = {
@@ -338,12 +339,16 @@ export function formatPicksMessage(
   parlays.forEach((par) => {
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
-    const parlayTag = par.sport ? `${sportEmoji(par.sport)} ` : '';
-    if (par.away_team && par.home_team) {
-      lines.push(`🎯 *Parlay:* ${parlayTag}${par.away_team} @ ${par.home_team}`);
-      lines.push(`Pick: ${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
-    } else {
-      lines.push(`🎯 *Parlay:* ${parlayTag}${par.pick} @ ${par.odds_decimal.toFixed(2)}`);
+    const tierKey = par.tier ?? 'value';
+    const tierEmoji = TIER_EMOJI[tierKey] ?? '🎯';
+    const tierName = TIER_NAME[tierKey] ?? 'PARLAY';
+    lines.push(`${tierEmoji} *${tierName} PARLAY* @ ${par.odds_decimal.toFixed(2)}`);
+    if (par.parlay_legs && par.parlay_legs.length > 0) {
+      for (const leg of par.parlay_legs) {
+        const legEmoji = TIER_EMOJI[leg.tier] ?? '🎯';
+        const legName = TIER_NAME[leg.tier] ?? '';
+        lines.push(`  · ${leg.game}: ${leg.pick} — ${legEmoji} ${legName} ${Math.round(leg.confidence)}%`);
+      }
     }
     if (stake > 0) {
       const phrase = sizingReasonPhrase(par.sizing_reason, par.sport);

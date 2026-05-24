@@ -97,18 +97,33 @@ const TIER_RANGE: Record<Tier, string> = {
   parlay: '',
 };
 
-const TIER_EMOJI: Record<Tier, string> = {
+export const TIER_EMOJI: Record<Tier, string> = {
   lock: '🔒',
   strong: '✅',
   value: '⚠️',
   parlay: '🎯',
 };
 
-const TIER_NAME: Record<Tier, string> = {
+export const TIER_NAME: Record<Tier, string> = {
   lock: 'LOCK',
   strong: 'STRONG',
   value: 'VALUE',
   parlay: 'PARLAY',
+};
+
+const TIER_STRENGTH: Record<Exclude<Tier, 'parlay'>, number> = {
+  lock: 3,
+  strong: 2,
+  value: 1,
+};
+
+export const computeParlayTier = (legTiers: Tier[]): Tier => {
+  let min: Exclude<Tier, 'parlay'> = 'lock';
+  for (const t of legTiers) {
+    const key = t === 'parlay' ? 'value' : t;
+    if (TIER_STRENGTH[key] < TIER_STRENGTH[min]) min = key;
+  }
+  return min;
 };
 
 export const tierLabel = (tier: Tier, confidence?: number | null): string => {

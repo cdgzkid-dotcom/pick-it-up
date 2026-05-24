@@ -1,12 +1,13 @@
 interface Props {
   realProb: number;
   impliedProb: number;
+  edgeVsMarket?: number | null;
 }
 
-export default function EdgeBar({ realProb, impliedProb }: Props) {
+export default function EdgeBar({ realProb, impliedProb, edgeVsMarket }: Props) {
   const realPct = Math.max(0, Math.min(100, realProb * 100));
   const impliedPct = Math.max(0, Math.min(100, impliedProb * 100));
-  const edge = (realProb - impliedProb) * 100;
+  const edge = edgeVsMarket != null ? edgeVsMarket * 100 : (realProb - impliedProb) * 100;
   const positive = edge > 0;
 
   return (

@@ -207,7 +207,7 @@ export default function PickCard({ pick, rank }: Props) {
         )}
       </div>
 
-      <EdgeBar realProb={realProb} impliedProb={impliedProb} />
+      <EdgeBar realProb={realProb} impliedProb={impliedProb} edgeVsMarket={pick.edge_vs_market} />
 
       <div className="flex items-center justify-between text-sm">
         <div>

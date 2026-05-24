@@ -28,33 +28,10 @@ const SPORTS: Record<string, SportConfig> = {
     coreSport: 'hockey',
     coreLeague: 'nhl',
   },
-  'Liga MX': {
-    scoreboardPath: 'soccer/mex.1',
-    coreSport: 'soccer',
-    coreLeague: 'mex.1',
-    league: 'Liga MX',
-  },
-  'Premier League': {
-    scoreboardPath: 'soccer/eng.1',
-    coreSport: 'soccer',
-    coreLeague: 'eng.1',
-    league: 'Premier League',
-  },
-  Champions: {
-    scoreboardPath: 'soccer/uefa.champions',
-    coreSport: 'soccer',
-    coreLeague: 'uefa.champions',
-    league: 'UEFA Champions League',
-  },
-  UFC: {
-    scoreboardPath: 'mma/ufc',
-    coreSport: 'mma',
-    coreLeague: 'ufc',
-  },
 };
 
 export const ESPN_SPORTS = Object.keys(SPORTS);
-export const FAVORITE_SPORTS: string[] = ['NBA', 'MLB', 'NHL', 'Liga MX', 'Premier League'];
+export const FAVORITE_SPORTS: string[] = ['NBA', 'MLB', 'NHL'];
 
 const CACHE_SECONDS = 300;
 

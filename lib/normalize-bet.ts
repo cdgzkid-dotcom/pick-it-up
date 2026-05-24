@@ -25,12 +25,7 @@ const SPORT_MAP: Record<string, string> = {
   fútbol: 'Fútbol',
   futbol: 'Fútbol',
   football: 'Fútbol',
-  'liga mx': 'Liga MX',
-  'premier league': 'Premier League',
-  'champions league': 'Champions League',
   'mls': 'MLS',
-  // Combat
-  mma: 'UFC',
   boxing: 'Boxeo',
   boxeo: 'Boxeo',
 };

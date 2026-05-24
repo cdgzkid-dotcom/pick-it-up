@@ -19,7 +19,7 @@ interface PendingPick {
   recommended_amount: number;
 }
 
-const SPORTS = ['MLB', 'NBA', 'NHL', 'NFL', 'Liga MX', 'Premier League', 'Champions', 'UFC', 'Otro'];
+const SPORTS = ['MLB', 'NBA', 'NHL', 'NFL', 'Otro'];
 
 // Heuristic auto-detection of bet_type from pick text
 function detectBetType(text: string): string {

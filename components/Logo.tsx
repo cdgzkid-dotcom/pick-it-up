@@ -12,7 +12,6 @@ const SPORT_LEAGUE_LOGO: Record<string, string> = {
   NFL: 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png',
   MLB: 'https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png',
   NHL: 'https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png',
-  UFC: 'https://a.espncdn.com/i/teamlogos/leagues/500/ufc.png',
 };
 
 export function teamLogoUrl(sport: string, abbr?: string | null): string | null {

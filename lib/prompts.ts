@@ -257,19 +257,6 @@ DATOS QUE RECIBES (úsalos, NO inventes datos que no estén en el input):
 - NO TIENES: bullpen ERA específico, uso del bullpen últimos 3 días, platoon
   matchups, umpire data, pitcher splits, RISP, FIP. No los menciones.
 
-== SI ES FÚTBOL ==
-- xG (Expected Goals) últimos 5 partidos de cada equipo
-- Posesión promedio
-- Tiros a puerta por juego
-- Record como local vs visitante (importantísimo en fútbol)
-- Clean sheets (porterías a cero) últimos 10
-- Goles a favor y en contra promedio
-- Lesiones de jugadores clave (goleador, portero, defensa central)
-- Motivación: pelea por título, descenso, clasificación, nada que jugar (ENORME en fútbol)
-- Historial de enfrentamientos (derbi, rivalidad)
-- Árbitro asignado: algunos marcan más faltas/penales, algunos sacan más tarjetas
-- Forma en competiciones diferentes (un equipo en Champions puede descuidar liga o viceversa)
-
 == SI ES NFL (cuando haya temporada) ==
 - QB rating / passer rating
 - Yards per play (ofensiva y defensiva)

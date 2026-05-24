@@ -11,8 +11,8 @@ import Anthropic from '@anthropic-ai/sdk';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface DrafteaLeg {
-  sport: string;                  // canonical: 'MLB', 'NBA', 'NHL', 'NFL', 'Fútbol', 'Liga MX', 'UFC', …
-  league: string | null;          // 'Liga MX', 'Champions League', …
+  sport: string;                  // canonical: 'MLB', 'NBA', 'NHL', 'NFL', 'Fútbol', …
+  league: string | null;          // league name when applicable
   teams: string;                  // 'América vs Chivas'
   selection: string;              // 'América gana', 'Más de 2.5 goles', …
   market_type: string;            // 'ganador', 'handicap', 'total', 'jugador_props'
@@ -55,7 +55,7 @@ REGLAS CRÍTICAS:
 - Para combinadas (parlays), extrae el momio total Y los momios individuales de cada leg.
 - IMPORTANTE SOBRE MONTOS EN DRAFTEA: En los tickets de Draftea el campo que dice "Ganancia potencial" o "Posible ganancia" es la GANANCIA NETA (sin incluir la apuesta). Pon ese valor en potential_winnings_mxn. Para potential_payout_mxn SUMA la apuesta: potential_payout_mxn = wager_mxn + potential_winnings_mxn. Ejemplo: si la apuesta es $100 y el ticket dice "Ganancia potencial: $150", entonces potential_winnings_mxn = 150 y potential_payout_mxn = 250.
 - Si el ticket muestra "Pago total" o "Retorno", ese valor YA incluye la apuesta → ponlo en potential_payout_mxn y calcula potential_winnings_mxn = potential_payout_mxn - wager_mxn.
-- VALORES CANÓNICOS para sport: usa SIEMPRE "MLB" (no "Béisbol"), "NBA", "NHL", "NFL", "Fútbol", "Liga MX", "Premier League", "UFC". Si el ticket muestra "Béisbol" → usa "MLB". Si muestra "Baloncesto" → usa "NBA". Si muestra "Hockey" → usa "NHL".
+- VALORES CANÓNICOS para sport: usa SIEMPRE "MLB" (no "Béisbol"), "NBA", "NHL", "NFL", "Fútbol". Si el ticket muestra "Béisbol" → usa "MLB". Si muestra "Baloncesto" → usa "NBA". Si muestra "Hockey" → usa "NHL".
 - VALORES CANÓNICOS para market_type: usa SIEMPRE "ML" para apuestas de ganador directo/moneyline (no "Moneyline", no "Moneyline (PA – Para Ganar)", no "ganador"). Usa "Spread" para handicap/run-line. Usa "Total" para over/under. Usa "Props" para props de jugador.
 
 FORMATO JSON EXACTO:

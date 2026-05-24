@@ -104,11 +104,7 @@ const SPORT_EMOJI: Record<string, string> = {
   NBA: '🏀',
   NHL: '🏒',
   NFL: '🏈',
-  'Liga MX': '⚽',
-  'Premier League': '⚽',
-  Champions: '⚽',
   Soccer: '⚽',
-  UFC: '🥊',
 };
 const sportEmoji = (sport: string): string => SPORT_EMOJI[sport] ?? '🎯';
 

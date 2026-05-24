@@ -38,19 +38,21 @@ export const NBA_TEAMS: TeamEntry[] = [
 ];
 
 export const WNBA_TEAMS: TeamEntry[] = [
-  { name: 'Las Vegas Aces', abbr: 'LVA', aliases: ['Aces'] },
-  { name: 'New York Liberty', abbr: 'NYL', aliases: ['Liberty'] },
-  { name: 'Connecticut Sun', abbr: 'CONN', aliases: ['Sun'] },
-  { name: 'Minnesota Lynx', abbr: 'MIN', aliases: ['Lynx'] },
-  { name: 'Seattle Storm', abbr: 'SEA', aliases: ['Storm'] },
-  { name: 'Indiana Fever', abbr: 'IND', aliases: ['Fever'] },
-  { name: 'Chicago Sky', abbr: 'CHI', aliases: ['Sky'] },
-  { name: 'Dallas Wings', abbr: 'DAL', aliases: ['Wings'] },
-  { name: 'Phoenix Mercury', abbr: 'PHX', aliases: ['Mercury'] },
   { name: 'Atlanta Dream', abbr: 'ATL', aliases: ['Dream'] },
-  { name: 'Washington Mystics', abbr: 'WSH', aliases: ['Mystics'] },
+  { name: 'Chicago Sky', abbr: 'CHI', aliases: ['Sky'] },
+  { name: 'Connecticut Sun', abbr: 'CON', aliases: ['Sun'] },
+  { name: 'Dallas Wings', abbr: 'DAL', aliases: ['Wings'] },
+  { name: 'Golden State Valkyries', abbr: 'GS', aliases: ['Valkyries'] },
+  { name: 'Indiana Fever', abbr: 'IND', aliases: ['Fever'] },
+  { name: 'Las Vegas Aces', abbr: 'LV', aliases: ['Aces'] },
   { name: 'Los Angeles Sparks', abbr: 'LA', aliases: ['Sparks', 'LA Sparks'] },
-  { name: 'Golden State Valkyries', abbr: 'GSV', aliases: ['Valkyries'] },
+  { name: 'Minnesota Lynx', abbr: 'MIN', aliases: ['Lynx'] },
+  { name: 'New York Liberty', abbr: 'NY', aliases: ['Liberty'] },
+  { name: 'Phoenix Mercury', abbr: 'PHX', aliases: ['Mercury'] },
+  { name: 'Portland Fire', abbr: 'POR', aliases: ['Fire'] },
+  { name: 'Seattle Storm', abbr: 'SEA', aliases: ['Storm'] },
+  { name: 'Toronto Tempo', abbr: 'TOR', aliases: ['Tempo'] },
+  { name: 'Washington Mystics', abbr: 'WSH', aliases: ['Mystics'] },
 ];
 
 function matchesTeam(query: string, team: TeamEntry): boolean {

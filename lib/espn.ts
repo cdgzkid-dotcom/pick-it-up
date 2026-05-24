@@ -646,8 +646,16 @@ export async function fetchEspnPredictor(
   );
   if (!data || data.error) return null;
 
+  const statNames: Record<string, string[]> = {
+    'basketball/nba': ['gameProjection'],
+    'basketball/wnba': ['teamPredWinpct'],
+    'football/nfl': ['gameProjection'],
+    'baseball/mlb': ['gameProjection'],
+  };
+  const validNames = statNames[`${cfg.coreSport}/${cfg.coreLeague}`] ?? ['gameProjection'];
+
   const findProj = (team?: { statistics?: Array<{ name?: string; value?: number }> }) => {
-    const stat = team?.statistics?.find((s) => s.name === 'gameProjection');
+    const stat = team?.statistics?.find((s) => validNames.includes(s.name!));
     return typeof stat?.value === 'number' ? stat.value : null;
   };
 

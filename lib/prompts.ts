@@ -100,6 +100,10 @@ DATOS QUE RECIBES (varían por deporte):
   · NBA: standings (W-L, home/away record, L10, racha, PPG, OPP PPG, point differential),
     team stats (FG%, 3PT%, FT%, rebounds, assists, turnovers, steals, blocks),
     últimos 10 juegos con scores, y opcionalmente Pace/OffRtg/DefRtg/NetRtg
+  · WNBA: standings (W-L, home/away record, L10, racha, PPG, OPP PPG, point differential),
+    team stats (FG%, 3PT%, FT%, rebounds, assists, turnovers, steals, blocks),
+    últimos 10 juegos con scores. Nota: NO incluye Pace/OffRtg/DefRtg/NetRtg
+    (stats.nba.com no cubre WNBA). Si real_data.pace es null para WNBA, es normal.
   · NHL: standings (W-L-OTL, points, racha, home/away, L10, GF/GA, goal diff),
     team summary (GF/GP, GA/GP, PP%, PK%, shots, faceoff%), top 2 goalies (GAA, SV%,
     record), últimos 10 juegos con scores, ESPN stats (shooting%, faceoff%, save%)
@@ -113,6 +117,7 @@ DATOS QUE RECIBES (varían por deporte):
 BASE RATES HISTÓRICOS (usa como punto de partida, no como respuesta final):
   - MLB: home team gana ~54% | favorito ML gana ~58%
   - NBA: home team gana ~58% | favorito ML gana ~67%
+  - WNBA: home team gana ~55% | favorito ML gana ~63%
   - NHL: home team gana ~55% | favorito ML gana ~59%
   - NFL: home team gana ~57% | favorito ML gana ~66%
 Si tu análisis no tiene datos fuertes para mover la probabilidad lejos del base rate,

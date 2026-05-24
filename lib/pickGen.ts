@@ -14,7 +14,7 @@ import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
 import { buildNhlGameContext } from './nhlStats';
-import { buildNbaGameContext } from './nbaStats';
+import { buildNbaGameContext, buildWnbaGameContext } from './nbaStats';
 import { buildNflGameContext } from './nflStats';
 import { fetchEspnGameOdds, fetchEspnPredictor } from './espn';
 import type { EspnOddsResult, EspnPredictor } from './espn';
@@ -471,6 +471,13 @@ export async function analyzeGames(
             buildNbaGameContext(g.home_team, g.away_team),
             ENRICH_TIMEOUT_MS,
             {} as Awaited<ReturnType<typeof buildNbaGameContext>>,
+          );
+          g.real_data = ctx as unknown as Record<string, unknown>;
+        } else if (g.sport === 'WNBA') {
+          const ctx = await withTimeout(
+            buildWnbaGameContext(g.home_team, g.away_team),
+            ENRICH_TIMEOUT_MS,
+            {} as Awaited<ReturnType<typeof buildWnbaGameContext>>,
           );
           g.real_data = ctx as unknown as Record<string, unknown>;
         } else if (g.sport === 'NFL') {

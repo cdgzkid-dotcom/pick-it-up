@@ -2,6 +2,7 @@ import Image from 'next/image';
 
 const TEAM_LOGO_SPORT: Record<string, string> = {
   NBA: 'nba',
+  WNBA: 'wnba',
   NFL: 'nfl',
   MLB: 'mlb',
   NHL: 'nhl',
@@ -9,6 +10,7 @@ const TEAM_LOGO_SPORT: Record<string, string> = {
 
 const SPORT_LEAGUE_LOGO: Record<string, string> = {
   NBA: 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png',
+  WNBA: 'https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png',
   NFL: 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png',
   MLB: 'https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png',
   NHL: 'https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png',

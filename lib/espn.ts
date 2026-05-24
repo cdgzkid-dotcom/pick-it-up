@@ -28,6 +28,11 @@ const SPORTS: Record<string, SportConfig> = {
     coreSport: 'hockey',
     coreLeague: 'nhl',
   },
+  WNBA: {
+    scoreboardPath: 'basketball/wnba',
+    coreSport: 'basketball',
+    coreLeague: 'wnba',
+  },
 };
 
 export const ESPN_SPORTS = Object.keys(SPORTS);
@@ -286,6 +291,7 @@ const INJURY_PATHS: Record<string, string> = {
   NHL: 'hockey/nhl',
   MLB: 'baseball/mlb',
   NFL: 'football/nfl',
+  WNBA: 'basketball/wnba',
 };
 
 interface EspnInjuriesResponse {

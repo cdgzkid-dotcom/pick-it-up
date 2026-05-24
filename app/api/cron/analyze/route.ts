@@ -104,6 +104,12 @@ function isPlayoffSeason(sport: string, date: Date = new Date()): boolean {
     if (m === 2 && d <= 15) return true;
     return false;
   }
+  if (sport === 'WNBA') {
+    if (m === 8 && d >= 20) return true;
+    if (m === 9) return true;
+    if (m === 10 && d <= 20) return true;
+    return false;
+  }
   return false;
 }
 

@@ -11,8 +11,12 @@ const SPORT_MAP: Record<string, string> = {
   'mlb baseball': 'MLB',
   // Basketball
   basketball: 'NBA',
+  baloncesto: 'NBA',
   'nba basketball': 'NBA',
   wnba: 'WNBA',
+  'baloncesto femenino': 'WNBA',
+  "women's basketball": 'WNBA',
+  'wnba basketball': 'WNBA',
   // Hockey
   hockey: 'NHL',
   'nhl hockey': 'NHL',
@@ -78,3 +82,5 @@ export function normalizeBetType(raw: string): string {
   const key = raw.trim().toLowerCase();
   return BET_TYPE_MAP[key] ?? raw.trim();
 }
+
+export { resolveLeagueByTeamName } from './teams';

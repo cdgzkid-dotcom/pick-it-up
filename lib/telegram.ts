@@ -102,6 +102,7 @@ const TIER_NAME: Record<string, string> = {
 const SPORT_EMOJI: Record<string, string> = {
   MLB: '⚾',
   NBA: '🏀',
+  WNBA: '🏀',
   NHL: '🏒',
   NFL: '🏈',
   Soccer: '⚽',

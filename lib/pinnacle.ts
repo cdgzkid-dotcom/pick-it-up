@@ -32,6 +32,7 @@ const SPORT_TO_PINNACLE_ID: Record<string, number> = {
   NBA: 4,
   NFL: 15,
   NHL: 19,
+  WNBA: 4,
 };
 
 const PINNACLE_CACHE_TTL_SEC = 600; // 10 min — Pinnacle moves slowly enough

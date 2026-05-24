@@ -179,7 +179,7 @@ async function checkEspnScoreboard(): Promise<HealthCheckResult> {
  *   MLB  active Mar–Oct  (off-season Nov–Feb)
  */
 function isLeagueOffSeason(
-  sport: 'mlb' | 'nba' | 'nfl' | 'nhl',
+  sport: 'mlb' | 'nba' | 'nfl' | 'nhl' | 'wnba',
   date: Date = new Date(),
 ): boolean {
   const m = date.getUTCMonth() + 1; // 1..12
@@ -188,11 +188,12 @@ function isLeagueOffSeason(
     case 'nba': return m >= 7 && m <= 9;
     case 'nhl': return m >= 7 && m <= 9;
     case 'mlb': return m >= 11 || m <= 2;
+    case 'wnba': return m >= 11 || m <= 4;
   }
 }
 
 async function checkEspnPredictor(
-  sport: 'mlb' | 'nba' | 'nfl' | 'nhl',
+  sport: 'mlb' | 'nba' | 'nfl' | 'nhl' | 'wnba',
 ): Promise<HealthCheckResult> {
   const t0 = Date.now();
   if (isLeagueOffSeason(sport)) {
@@ -208,6 +209,7 @@ async function checkEspnPredictor(
     nba: 'basketball/nba',
     nfl: 'football/nfl',
     nhl: 'hockey/nhl',
+    wnba: 'basketball/wnba',
   };
   try {
     const sbRes = await fetch(
@@ -546,7 +548,7 @@ async function checkPinnacleApi(): Promise<HealthCheckResult> {
 }
 
 /**
- * Run all 14 health checks in parallel and return the raw results.
+ * Run all 15 health checks in parallel and return the raw results.
  * Consumers: /api/health (HTTP wrapper) and cron/analyze (Telegram indicator).
  */
 export async function runHealthChecks(): Promise<HealthCheckResult[]> {
@@ -559,6 +561,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkEspnPredictor('nba'),
     checkEspnPredictor('nfl'),
     checkEspnPredictor('nhl'),
+    checkEspnPredictor('wnba'),
     checkAnthropic(),
     checkTelegram(),
     checkRecentCronActivity(),

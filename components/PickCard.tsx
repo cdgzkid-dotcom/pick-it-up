@@ -146,7 +146,7 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
           <span className={`text-xs font-bold ${pick.trap_warning ? 'text-red' : tierColor}`}>
-            {pick.is_parlay ? `${TIER_EMOJI[tier]} ${TIER_NAME[tier]} PARLAY` : tierLabel(tier, pick.confidence)}
+            {pick.is_parlay ? `${TIER_EMOJI[tier]} ${tier === 'parlay' ? 'PARLAY' : `${TIER_NAME[tier]} PARLAY`}` : tierLabel(tier, pick.confidence)}
             {pick.trap_warning && ' · TRAMPA DETECTADA'}
           </span>
         </div>

@@ -342,7 +342,8 @@ export function formatPicksMessage(
     const tierKey = par.tier ?? 'value';
     const tierEmoji = TIER_EMOJI[tierKey] ?? '🎯';
     const tierName = TIER_NAME[tierKey] ?? 'PARLAY';
-    lines.push(`${tierEmoji} *${tierName} PARLAY* @ ${par.odds_decimal.toFixed(2)}`);
+    const parlayLabel = tierKey === 'parlay' ? 'PARLAY' : `${tierName} PARLAY`;
+    lines.push(`${tierEmoji} *${parlayLabel}* @ ${par.odds_decimal.toFixed(2)}`);
     if (par.parlay_legs && par.parlay_legs.length > 0) {
       for (const leg of par.parlay_legs) {
         const legEmoji = TIER_EMOJI[leg.tier] ?? '🎯';

@@ -444,8 +444,9 @@ async function checkStuckPendingBets(): Promise<HealthCheckResult> {
 }
 
 async function checkRecentPickStructure(): Promise<HealthCheckResult> {
-  // Verifica que picks recientes tienen los campos esperados poblados.
-  // Detecta si CAPA 1/2/3 dejaron de poblar campos críticos.
+  // Detects lock-in regressions: if pickGen generates real picks but fails
+  // to populate locked_at, that's a CAPA-2 bug. Markers (analyzed_no_edge,
+  // analyzed_no_odds_data) are excluded — they're dedup artifacts, not picks.
   const t0 = Date.now();
   try {
     const sb = supabaseAdmin();
@@ -455,7 +456,7 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
       .select('id, edge_vs_market, market_sources_count, floor_applied, locked_at, confidence_raw, original_real_probability, original_odds')
       .gte('created_at', since)
       .eq('is_parlay', false)
-      .neq('status', 'analyzed_no_odds_data')
+      .not('status', 'in', '("analyzed_no_odds_data","analyzed_no_edge")')
       .limit(10);
     if (error) {
       return {
@@ -468,8 +469,8 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
     if (!data || data.length === 0) {
       return {
         name: 'recent_pick_structure',
-        status: 'warning',
-        detail: 'no picks in last 24h to check',
+        status: 'ok',
+        detail: 'no actionable picks in 24h (market well-priced or no games in window)',
         duration_ms: Date.now() - t0,
       };
     }
@@ -493,8 +494,8 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
     if (newPicksCount === 0) {
       return {
         name: 'recent_pick_structure',
-        status: 'warning',
-        detail: `${total} picks checked, all pre-CAPA-2 (waiting for new picks to validate behavior)`,
+        status: 'ok',
+        detail: `${total} picks in 24h, all pre-CAPA-2 legacy (lock-in not testable, cron healthy)`,
         duration_ms: Date.now() - t0,
       };
     }

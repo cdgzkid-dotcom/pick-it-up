@@ -106,7 +106,7 @@ create table if not exists settings (
   id int primary key default 1,
   bankroll_current numeric not null default 300,
   unit_percentage numeric not null default 5,
-  auto_sports text[] not null default array['NBA','MLB','NHL','Liga MX','Premier League']::text[],
+  auto_sports text[] not null default array['NBA','MLB','NHL','NFL','WNBA']::text[],
   auto_enabled boolean not null default true,
   constraint settings_singleton check (id = 1)
 );

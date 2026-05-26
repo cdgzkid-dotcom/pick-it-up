@@ -8,22 +8,35 @@ export const TIER_UNITS: Record<Tier, number> = {
   parlay: 0.5,
 };
 
-const TIER_DOWNGRADE: Record<Tier, Tier> = {
-  lock: 'strong',
-  strong: 'value',
-  value: 'value',
-  parlay: 'parlay',
-};
+export function tierFromProbability(
+  realProbability: number,
+  sport: string,
+  oddsDecimal?: number,
+): Tier | null {
+  const thresholds: Record<string, { lock: number; strong: number; value: number }> = {
+    MLB:  { lock: 0.65, strong: 0.60, value: 0.55 },
+    NHL:  { lock: 0.65, strong: 0.60, value: 0.55 },
+    NBA:  { lock: 0.68, strong: 0.62, value: 0.55 },
+    NFL:  { lock: 0.68, strong: 0.62, value: 0.55 },
+    WNBA: { lock: 0.68, strong: 0.62, value: 0.55 },
+  };
 
-export const tierForOdds = (tier: Tier, oddsDecimal: number): Tier =>
-  oddsDecimal < 1.4 ? TIER_DOWNGRADE[tier] : tier;
+  const t = thresholds[sport] ?? thresholds.MLB;
 
-export const tierFromConfidence = (confidence: number): Tier => {
-  if (confidence >= 85) return 'lock';
-  if (confidence >= 70) return 'strong';
-  if (confidence >= 55) return 'value';
-  return 'parlay';
-};
+  let tier: Tier | null = null;
+  if (realProbability >= t.lock) tier = 'lock';
+  else if (realProbability >= t.strong) tier = 'strong';
+  else if (realProbability >= t.value) tier = 'value';
+  else return null;
+
+  if (oddsDecimal != null && oddsDecimal < 1.40) {
+    if (tier === 'lock') return 'strong';
+    if (tier === 'strong') return 'value';
+    if (tier === 'value') return null;
+  }
+
+  return tier;
+}
 
 /**
  * Half Kelly fractional bet sizing.

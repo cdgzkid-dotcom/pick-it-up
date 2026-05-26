@@ -9,7 +9,7 @@ import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SU
 import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
 import { fetchPinnacleOddsForEspnEvent, type PinnacleOddsResult } from './pinnacle';
 import type { MarketSource } from './edge';
-import { kellyAmount, sportKellyMultiplier, tierForOdds, tierFromConfidence, TIER_UNITS, computeParlayTier } from './units';
+import { kellyAmount, sportKellyMultiplier, tierFromProbability, TIER_UNITS, computeParlayTier } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
@@ -1019,57 +1019,20 @@ export async function analyzeGames(
     const mergedTrap = [p.trap_warning, rlmTrapNote].filter(Boolean).join(' · ') || null;
 
     const confRaw = p.confidence;
-    let conf = p.confidence;
-    let floorApplied: 'lock' | 'strong' | 'none' = 'none';
-    const oddsOk = pickedOdds > 1.5;
-    const noTrap = !mergedTrap;
-    const fullConsensus = sourcesCount >= 2;
-    const lockMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.03;
-    const strongMarketOk = fullConsensus && edgeVsMarket != null && edgeVsMarket >= 0.02;
-    const EDGE_SUSPICIOUS = 0.10;
-    const edgeSuspicious = e >= EDGE_SUSPICIOUS;
+    const conf = p.confidence;
+    const floorApplied: 'lock' | 'strong' | 'none' = 'none';
 
-    if (edgeSuspicious) {
-      console.log('[FLOOR_BLOCKED_SUSPICIOUS_EDGE]', {
+    const adjustedTier = tierFromProbability(pickedProb, p.sport, pickedOdds);
+    if (adjustedTier === null) {
+      console.log('[TIER_NULL_FILTERED]', {
         pick: pickText,
-        edge: Number(e.toFixed(4)),
-        edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
-        threshold: EDGE_SUSPICIOUS,
-        reason: 'edge too high — Claude likely overestimating, keeping raw confidence',
+        sport: p.sport,
+        real_probability: Number(pickedProb.toFixed(4)),
+        odds_decimal: pickedOdds,
       });
-    } else if (e > 0.07 && oddsOk && noTrap && lockMarketOk) {
-      conf = Math.max(conf, 85);
-      floorApplied = 'lock';
-    } else if (e > 0.05 && oddsOk && noTrap && strongMarketOk) {
-      conf = Math.max(conf, 70);
-      floorApplied = 'strong';
-    } else if (e > 0.05 && noTrap) {
-      let reason: string;
-      if (!oddsOk) reason = 'odds_too_low_for_floor';
-      else if (sourcesCount === 0) reason = 'no_market_data';
-      else if (sourcesCount === 1) reason = `partial_consensus_${sourcesList[0]}`;
-      else reason = 'market_below_threshold';
-      console.log('[FLOOR_BLOCKED]', {
-        pick: pickText,
-        edge: Number(e.toFixed(4)),
-        edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
-        odds: pickedOdds,
-        sources: sourcesList,
-        reason,
-      });
+      reasons.fail_confidence++;
+      return [];
     }
-    if (floorApplied !== 'none') {
-      console.log('[FLOOR_APPLIED]', {
-        pick: pickText,
-        tier_promoted_to: floorApplied,
-        edge: Number(e.toFixed(4)),
-        edge_vs_market: edgeVsMarket != null ? Number(edgeVsMarket.toFixed(4)) : null,
-        sources: sourcesList,
-      });
-    }
-
-    const baseTier: Tier = tierFromConfidence(conf);
-    const adjustedTier = tierForOdds(baseTier, pickedOdds);
     const hasTrap = !!mergedTrap;
     // Sizing transparency — compute the tier ceiling BEFORE Kelly so we can
     // later attribute any shortfall to the dominant cutting factor.
@@ -1224,7 +1187,7 @@ export async function analyzeGames(
 
   // ── Server-side parlay generation ───────────────────────────────────────
   // Replaces Claude-side parlays. Rules (D1):
-  //   • Only legs with edge ≥ 3% AND floor_applied ≠ 'none' (STRONG/LOCK)
+  //   • Only legs with tier LOCK or STRONG (high-conviction picks)
   //   • Max 3 legs per parlay
   //   • Different espn_event_id required between legs
   //   • combined_edge ≥ 5% to keep
@@ -1232,7 +1195,7 @@ export async function analyzeGames(
   //   • Filtered-audit singles excluded (status !== 'filtered_quality_audit'
   //     implicit: we use auditedSingles, not enrichedSingles).
   const parlayCandidates = auditedSingles.filter(
-    (p) => p.edge >= 0.03 && p.floor_applied !== 'none' && p.espn_event_id,
+    (p) => p.edge >= 0.03 && (p.tier === 'lock' || p.tier === 'strong') && p.espn_event_id,
   );
   type GeneratedParlay = {
     pick: string;

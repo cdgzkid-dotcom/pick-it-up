@@ -14,7 +14,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
 import { normalizeSport, normalizeBetType } from '@/lib/normalize-bet';
-import { auditPickQuality, type AuditablePick } from '@/lib/pickAudit';
+import { auditPickQuality } from '@/lib/pickAudit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

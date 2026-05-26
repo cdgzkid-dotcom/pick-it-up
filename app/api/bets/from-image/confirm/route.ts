@@ -14,6 +14,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
 import { normalizeSport, normalizeBetType } from '@/lib/normalize-bet';
+import { auditPickQuality, type AuditablePick } from '@/lib/pickAudit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -182,6 +183,68 @@ export async function POST(req: Request) {
       console.error('[confirm] pick odds update failed', leg.matched_pick_id, error);
     } else {
       oddsUpdated.push({ pick_id: leg.matched_pick_id!, new_odds: leg.odds_decimal });
+    }
+  }
+
+  // ── Step 1b: Re-audit picks whose odds changed ───────────────────────
+  // The original quality audit ran at analysis time. When the user confirms
+  // with different odds, edge shifts — re-run the audit so any new failures
+  // are tracked in audit_failures (non-blocking, Option B).
+
+  for (const updated of oddsUpdated) {
+    const { data: rawRow } = await supabase
+      .from('picks')
+      .select(
+        'tier, edge, edge_vs_market, market_sources_count, floor_applied, ' +
+        'confidence, confidence_raw, odds_decimal, risk_factors, ' +
+        'pinnacle_status, edge_vs_pinnacle, audit_failures',
+      )
+      .eq('id', updated.pick_id)
+      .single();
+
+    const pickRow = rawRow as {
+      tier: string; edge: number; edge_vs_market: number | null;
+      market_sources_count: number; floor_applied: 'lock' | 'strong' | 'none' | null;
+      confidence: number; confidence_raw: number; odds_decimal: number;
+      risk_factors: string | null; pinnacle_status?: string | null;
+      edge_vs_pinnacle?: number | null; audit_failures: string[] | null;
+    } | null;
+
+    if (!pickRow) continue;
+
+    const audit = auditPickQuality({
+      tier: pickRow.tier,
+      edge: pickRow.edge,
+      edge_vs_market: pickRow.edge_vs_market,
+      market_sources_count: pickRow.market_sources_count,
+      floor_applied: pickRow.floor_applied,
+      confidence: pickRow.confidence,
+      confidence_raw: pickRow.confidence_raw,
+      odds_decimal: pickRow.odds_decimal,
+      risk_factors: pickRow.risk_factors,
+      pinnacle_status: pickRow.pinnacle_status,
+      edge_vs_pinnacle: pickRow.edge_vs_pinnacle,
+    });
+
+    const newIssues = [
+      ...audit.failures.map((f) => `post_confirm_fail:${f}`),
+      ...audit.warnings.map((w) => `post_confirm_warn:${w}`),
+    ];
+
+    if (newIssues.length > 0) {
+      const existing: string[] = pickRow.audit_failures ?? [];
+      const merged = [...existing, ...newIssues];
+
+      await supabase
+        .from('picks')
+        .update({ audit_failures: merged, updated_at: new Date().toISOString() })
+        .eq('id', updated.pick_id);
+
+      console.warn(
+        '[confirm] post-confirm re-audit issues for pick',
+        updated.pick_id,
+        newIssues,
+      );
     }
   }
 

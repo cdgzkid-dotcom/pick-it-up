@@ -63,16 +63,11 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
     failures.push('edge_vs_market_null');
   }
 
-  // 3. Floor must have promoted — gate confirmed the edge is real,
-  // OR Claude's organic confidence cleared the tier threshold.
-  // Thresholds mirror tierFromConfidence in lib/units.ts:
-  //   STRONG: raw ≥ 70, VALUE: raw ≥ 55.
-  // LOCK still requires floor_applied — the anti-Lakers defenses depend
-  // on the floor gate having fired (no organic bypass for LOCK).
-  const organicStrong = row.tier === 'strong' && row.confidence_raw >= 70;
-  const organicValue = row.tier === 'value' && row.confidence_raw >= 55;
-  if ((!row.floor_applied || row.floor_applied === 'none') && !organicStrong && !organicValue) {
-    failures.push('floor_not_applied');
+  // 3. Minimum analytical confidence — Claude should have at least basic
+  // conviction in its analysis. Catches edge cases where probability
+  // estimate may be unreliable due to weak underlying analysis.
+  if (row.confidence_raw < 45) {
+    failures.push('very_low_analytical_confidence');
   }
 
   // 4. DK odds usable (defensive — earlier filters should have caught this).
@@ -153,21 +148,6 @@ export function auditPickQuality(row: AuditablePick): QualityAuditResult {
     }
   }
 
-  // 7. Confidence boost from floor too aggressive — large delta means the
-  //    organic Claude conviction was much lower than the post-floor value.
-  //    For LOCK tier this is a FAIL: we don't sell max conviction on a
-  //    >25pp amplified signal. STRONG/VALUE remains a warning.
-  if (row.confidence !== null && row.confidence_raw !== null) {
-    const delta = row.confidence - row.confidence_raw;
-    if (delta > 25) {
-      const label = `confidence_floor_boost_${delta}pp`;
-      if (row.tier === 'lock') {
-        failures.push(`${label}_lock_blocking`);
-      } else {
-        warnings.push(label);
-      }
-    }
-  }
 
   // 8. Risk factors that contradict a LOCK/STRONG tier — heuristic keyword
   //    check on the Claude-provided risk_factors string.

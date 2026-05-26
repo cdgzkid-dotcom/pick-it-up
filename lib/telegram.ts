@@ -83,7 +83,7 @@ interface PickForMessage {
   /** ESPN BPI implied for the picked side. Used jointly with pinnacle_implied
    *  to render the 3-way market line. Null = BPI didn't contribute. */
   bpi_implied?: number | null;
-  parlay_legs?: Array<{ game: string; pick: string; tier: string; confidence: number }> | null;
+  parlay_legs?: Array<{ game: string; pick: string; tier: string; confidence: number; real_probability?: number }> | null;
 }
 
 const TIER_EMOJI: Record<string, string> = {
@@ -129,12 +129,14 @@ function sizingReasonPhrase(
   }
 }
 
-function tierBadge(tier?: string | null, confidence?: number | null): string {
+function tierBadge(tier?: string | null, realProbability?: number | null, edge?: number | null): string {
   if (!tier) return '';
   const e = TIER_EMOJI[tier] ?? '';
   const name = TIER_NAME[tier] ?? tier.toUpperCase();
-  const conf = confidence != null ? ` ${Math.round(confidence)}%` : '';
-  return `${e} ${name}${conf}`.trim();
+  const parts = [`${e} ${name}`];
+  if (realProbability != null) parts.push(`Prob ${Math.round(realProbability * 100)}%`);
+  if (edge != null) parts.push(`Edge ${edge >= 0 ? '+' : ''}${(edge * 100).toFixed(1)}%`);
+  return parts.join(' · ').trim();
 }
 
 function oneLineSummary(analysis?: string | null): string {
@@ -285,26 +287,15 @@ export function formatPicksMessage(
     const trap = p.trap_warning ? ' · ⚠️ TRAMPA' : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
-    const edgePct = p.edge != null ? `${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)}%` : null;
-    const realPct = p.real_probability != null ? `${Math.round(p.real_probability * 100)}%` : null;
-    const marketTag =
-      p.edge_vs_market != null && p.edge_vs_market > 0 && (p.market_sources_count ?? 0) >= 2
-        ? ' vs mercado'
-        : '';
     const bookTag = p.best_odds_source ? ` (${p.best_odds_source})` : '';
 
     const sportTag = p.sport ? `${sportEmoji(p.sport)} ` : '';
-    lines.push(`*#${i + 1} ${tierBadge(p.tier, p.confidence)}${trap}*`);
+    lines.push(`*#${i + 1} ${tierBadge(p.tier, p.real_probability, p.edge)}${trap}*`);
     if (p.away_team && p.home_team) {
       lines.push(`${sportTag}${p.away_team} @ ${p.home_team}`);
       lines.push(`Pick: ${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
     } else {
       lines.push(`${sportTag}${p.pick} @ ${p.odds_decimal.toFixed(2)}${bookTag}`);
-    }
-    if (edgePct && realPct) {
-      lines.push(`📊 Edge: ${edgePct}${marketTag} · Prob: ${realPct}`);
-    } else if (edgePct) {
-      lines.push(`📊 Edge: ${edgePct}${marketTag}`);
     }
     // Pinnacle integration: when Pinnacle's ML contributed, show all
     // three probability sources side-by-side so the user can see the
@@ -340,15 +331,16 @@ export function formatPicksMessage(
     const stake = par.recommended_amount != null ? Math.round(par.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (par.odds_decimal - 1)) : 0;
     const tierKey = par.tier ?? 'value';
-    const tierEmoji = TIER_EMOJI[tierKey] ?? '🎯';
     const tierName = TIER_NAME[tierKey] ?? 'PARLAY';
-    const parlayLabel = tierKey === 'parlay' ? 'PARLAY' : `${tierName} PARLAY`;
-    lines.push(`${tierEmoji} *${parlayLabel}* @ ${par.odds_decimal.toFixed(2)}`);
+    const parlayEdge = par.edge != null ? ` · Edge ${par.edge >= 0 ? '+' : ''}${(par.edge * 100).toFixed(1)}%` : '';
+    const parlayLabel = tierKey === 'parlay' ? 'PARLAY' : `PARLAY · ${tierName}`;
+    lines.push(`🎯 *${parlayLabel}${parlayEdge}* @ ${par.odds_decimal.toFixed(2)}`);
     if (par.parlay_legs && par.parlay_legs.length > 0) {
       for (const leg of par.parlay_legs) {
         const legEmoji = TIER_EMOJI[leg.tier] ?? '🎯';
         const legName = TIER_NAME[leg.tier] ?? '';
-        lines.push(`  · ${leg.game}: ${leg.pick} — ${legEmoji} ${legName} ${Math.round(leg.confidence)}%`);
+        const legProb = leg.real_probability != null ? ` · Prob ${Math.round(leg.real_probability * 100)}%` : '';
+        lines.push(`  · ${leg.game}: ${leg.pick} — ${legEmoji} ${legName}${legProb}`);
       }
     }
     if (stake > 0) {

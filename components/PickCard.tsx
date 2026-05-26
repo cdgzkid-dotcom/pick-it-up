@@ -3,7 +3,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import EdgeBar from './EdgeBar';
 import { TeamLogo, SportLogo } from './Logo';
-import { tierLabel, TIER_EMOJI, TIER_NAME } from '@/lib/units';
+import { TIER_EMOJI, TIER_NAME } from '@/lib/units';
 import type { KeyStat, Pick, Tier } from '@/lib/types';
 
 interface Props {
@@ -146,7 +146,9 @@ export default function PickCard({ pick, rank }: Props) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
           <span className={`text-xs font-bold ${pick.trap_warning ? 'text-red' : tierColor}`}>
-            {pick.is_parlay ? `${TIER_EMOJI[tier]} ${tier === 'parlay' ? 'PARLAY' : `${TIER_NAME[tier]} PARLAY`}` : tierLabel(tier, pick.confidence)}
+            {pick.is_parlay
+              ? `${TIER_EMOJI[tier]} ${tier === 'parlay' ? 'PARLAY' : `${TIER_NAME[tier]} PARLAY`}`
+              : `${TIER_EMOJI[tier]} ${TIER_NAME[tier]}${pick.real_probability != null ? ` · Prob ${Math.round(pick.real_probability * 100)}%` : ''}${pick.edge != null ? ` · Edge ${pick.edge >= 0 ? '+' : ''}${(pick.edge * 100).toFixed(1)}%` : ''}`}
             {pick.trap_warning && ' · TRAMPA DETECTADA'}
           </span>
         </div>
@@ -198,14 +200,14 @@ export default function PickCard({ pick, rank }: Props) {
       )}
 
       <div>
-        {pick.is_parlay && pick.parlay_legs && (pick.parlay_legs as Array<{ game: string; pick: string; tier?: Tier; confidence?: number }>)[0]?.tier ? (
+        {pick.is_parlay && pick.parlay_legs && (pick.parlay_legs as Array<{ game: string; pick: string; tier?: Tier; real_probability?: number }>)[0]?.tier ? (
           <div className="space-y-1">
-            {(pick.parlay_legs as Array<{ game: string; pick: string; tier: Tier; confidence: number }>).map((leg, i) => {
+            {(pick.parlay_legs as Array<{ game: string; pick: string; tier: Tier; real_probability?: number }>).map((leg, i) => {
               const lt = (leg.tier ?? 'value') as Tier;
               const lColor = lt === 'lock' ? 'text-blue' : lt === 'strong' ? 'text-green' : 'text-yellow';
               return (
                 <div key={i} className="text-xs">
-                  <span className={`font-bold ${lColor}`}>{TIER_EMOJI[lt]} {TIER_NAME[lt]}{leg.confidence != null ? ` ${Math.round(leg.confidence)}%` : ''}</span>
+                  <span className={`font-bold ${lColor}`}>{TIER_EMOJI[lt]} {TIER_NAME[lt]}{leg.real_probability != null ? ` · Prob ${Math.round(leg.real_probability * 100)}%` : ''}</span>
                   <span className="text-muted"> · {leg.game}: </span>
                   <span className="font-medium">{leg.pick}</span>
                 </div>

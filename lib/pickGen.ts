@@ -973,8 +973,8 @@ export async function analyzeGames(
       pinnacleImplied,
       pickedProb,
     );
-    const edgeVsMarket = consensus?.edge_vs_market ?? null;
-    const edgeVsPinnacle = consensus?.edge_vs_pinnacle ?? null;
+    let edgeVsMarket = consensus?.edge_vs_market ?? null;
+    let edgeVsPinnacle = consensus?.edge_vs_pinnacle ?? null;
     const sourcesCount = consensus?.sources_count ?? 0;
     const consensusImplied = consensus?.avg_implied_prob ?? null;
     const sourcesList: MarketSource[] = consensus?.sources ?? [];
@@ -996,6 +996,10 @@ export async function analyzeGames(
       });
       pickedProb = dampened;
       e = pickedProb - implied;
+      edgeVsMarket = pickedProb - consensus.avg_implied_prob;
+      if (pinnacleImplied != null && pinnacleImplied > 0 && pinnacleImplied < 1) {
+        edgeVsPinnacle = pickedProb - pinnacleImplied;
+      }
     }
 
     const bestOddsSource = dkOdds.source ?? 'DraftKings';

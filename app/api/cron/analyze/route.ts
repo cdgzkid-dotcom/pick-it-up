@@ -41,7 +41,7 @@ import type { Bet, Game } from '@/lib/types';
  * Side note: runHealthChecks itself uses 5-10s per-check timeouts, but
  * waiting for all 13 worst-cases would push past the cron's maxDuration.
  */
-async function computeSystemHealthBounded(timeoutMs = 5000): Promise<SystemHealthSummary> {
+async function computeSystemHealthBounded(timeoutMs = 12000): Promise<SystemHealthSummary> {
   const timeoutFallback: SystemHealthSummary = {
     status: 'warning',
     errors: 0,

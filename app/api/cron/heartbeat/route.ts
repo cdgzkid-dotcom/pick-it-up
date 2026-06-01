@@ -23,6 +23,17 @@ async function buildHeartbeat(): Promise<string> {
     )
     .gte('created_at', since24h);
   const generated = picks24h?.length ?? 0;
+  const actionable = picks24h?.filter((p) => p.status === 'pending' || p.status === 'bet').length ?? 0;
+  const noEdge = picks24h?.filter((p) => p.status === 'analyzed_no_edge').length ?? 0;
+  const noOdds = picks24h?.filter((p) => p.status === 'analyzed_no_odds_data').length ?? 0;
+  const auditFiltered = picks24h?.filter((p) => p.status === 'filtered_quality_audit').length ?? 0;
+  const skipped = picks24h?.filter((p) => p.status === 'skipped').length ?? 0;
+  const breakdownParts = [`${actionable} actionable`];
+  if (noEdge > 0) breakdownParts.push(`${noEdge} no_edge`);
+  if (noOdds > 0) breakdownParts.push(`${noOdds} no_odds`);
+  if (auditFiltered > 0) breakdownParts.push(`${auditFiltered} audit_filtered`);
+  if (skipped > 0) breakdownParts.push(`${skipped} skipped`);
+  const picksBreakdown = `${generated} total (${breakdownParts.join(', ')})`;
   const notified = picks24h?.filter((p) => p.telegram_notified_at).length ?? 0;
   // Split CAPA-2/3 supersedes (real lock-in flow) from legacy bare 'superseded'
   // (pre-CAPA-2 mechanism, kept around as 'superseded_legacy' for audit).
@@ -267,7 +278,7 @@ async function buildHeartbeat(): Promise<string> {
 
   return `📊 *Daily Health · ${today}*
 ─────────────────────
-Picks generated 24h: ${generated}
+Picks 24h: ${picksBreakdown}
 Notified: ${notified} (${supersededStr})
 Bets resolved: ${wins}W-${losses}L (P/L ${plSign}$${pl.toFixed(2)})
 Bankroll: $${bankroll.toFixed(2)}

@@ -20,8 +20,9 @@ export function pickedSide(
   };
   const hw = lastWord(homeName);
   const aw = lastWord(awayName);
-  if (hw && hw.length >= 4 && p.includes(hw)) return 'home';
-  if (aw && aw.length >= 4 && p.includes(aw)) return 'away';
+  if (hw && hw.length >= 3 && p.includes(hw)) return 'home';
+  if (aw && aw.length >= 3 && p.includes(aw)) return 'away';
+  console.warn('[pickedSide] no match', { pick: pickText, homeAbbr, awayAbbr, homeName, awayName });
   return null;
 }
 

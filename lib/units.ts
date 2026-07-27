@@ -8,20 +8,33 @@ export const TIER_UNITS: Record<Tier, number> = {
   parlay: 0.5,
 };
 
+/**
+ * Per-sport tier thresholds on real_probability.
+ *
+ * The VALUE floor must sit ABOVE the sport's home base rate, otherwise the
+ * tier measures home-field advantage instead of edge. MLB is the reference
+ * relationship: 54% base rate → 55% floor. NFL follows it (57% base → 59%
+ * floor, ~2pp above). LOCK stays where the average favorite's hit rate
+ * (~66.6%) is already cleared.
+ *
+ * NFL used to be a verbatim copy of NBA, which combined with the prompt caps
+ * in lib/prompts.ts made LOCK reachable only at exactly p=0.68 and away picks
+ * arithmetically impossible (cap 55% == VALUE floor 55%).
+ */
+export const SPORT_THRESHOLDS: Record<string, { lock: number; strong: number; value: number }> = {
+  MLB:  { lock: 0.65, strong: 0.60, value: 0.55 },
+  NHL:  { lock: 0.65, strong: 0.60, value: 0.55 },
+  NBA:  { lock: 0.68, strong: 0.62, value: 0.55 },
+  NFL:  { lock: 0.68, strong: 0.63, value: 0.59 },
+  WNBA: { lock: 0.68, strong: 0.62, value: 0.55 },
+};
+
 export function tierFromProbability(
   realProbability: number,
   sport: string,
   oddsDecimal?: number,
 ): Tier | null {
-  const thresholds: Record<string, { lock: number; strong: number; value: number }> = {
-    MLB:  { lock: 0.65, strong: 0.60, value: 0.55 },
-    NHL:  { lock: 0.65, strong: 0.60, value: 0.55 },
-    NBA:  { lock: 0.68, strong: 0.62, value: 0.55 },
-    NFL:  { lock: 0.68, strong: 0.62, value: 0.55 },
-    WNBA: { lock: 0.68, strong: 0.62, value: 0.55 },
-  };
-
-  const t = thresholds[sport] ?? thresholds.MLB;
+  const t = SPORT_THRESHOLDS[sport] ?? SPORT_THRESHOLDS.MLB;
 
   let tier: Tier | null = null;
   if (realProbability >= t.lock) tier = 'lock';

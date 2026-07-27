@@ -320,7 +320,7 @@ solo factor. Límites máximos de probabilidad:
   - MLB: max 58% visitante, max 66% local
   - NBA: max 70% local, max 55% visitante
   - NHL: max 65% local, max 55% visitante
-  - NFL: max 68% local, max 55% visitante
+  - NFL: max 73% local, max 62% visitante
 Para exceder estos límites necesitas algo que el mercado NO pueda ver (lesión de
 último minuto no priced-in, dato no público). L10 records, pitcher matchups y
 rachas SON datos públicos que el mercado ya incorporó.

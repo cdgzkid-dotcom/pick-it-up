@@ -17,9 +17,9 @@ export const TIER_UNITS: Record<Tier, number> = {
  * floor, ~2pp above). LOCK stays where the average favorite's hit rate
  * (~66.6%) is already cleared.
  *
- * NFL used to be a verbatim copy of NBA, which combined with the prompt caps
- * in lib/prompts.ts made LOCK reachable only at exactly p=0.68 and away picks
- * arithmetically impossible (cap 55% == VALUE floor 55%).
+ * Exported because tierRange() derives the user-facing labels from the same
+ * numbers — the legend used to be a hardcoded second source of truth and
+ * drifted (it showed "LOCK 85-100%" while the system emitted LOCK from 65%).
  */
 export const SPORT_THRESHOLDS: Record<string, { lock: number; strong: number; value: number }> = {
   MLB:  { lock: 0.65, strong: 0.60, value: 0.55 },
@@ -116,11 +116,20 @@ export async function sportKellyMultiplier(
   }
 }
 
-const TIER_RANGE: Record<Tier, string> = {
-  lock: '85-100%',
-  strong: '70-84%',
-  value: '55-69%',
-  parlay: '',
+const pct = (n: number) => Math.round(n * 100);
+
+/**
+ * User-facing probability band for a tier, derived from SPORT_THRESHOLDS so
+ * the legend can never drift from the thresholds that actually emit the tier.
+ * Falls back to MLB when the sport is unknown/absent, matching
+ * tierFromProbability.
+ */
+export const tierRange = (tier: Tier, sport?: string | null): string => {
+  if (tier === 'parlay') return '';
+  const t = (sport ? SPORT_THRESHOLDS[sport] : undefined) ?? SPORT_THRESHOLDS.MLB;
+  if (tier === 'lock') return `${pct(t.lock)}-100%`;
+  if (tier === 'strong') return `${pct(t.strong)}-${pct(t.lock) - 1}%`;
+  return `${pct(t.value)}-${pct(t.strong) - 1}%`;
 };
 
 export const TIER_EMOJI: Record<Tier, string> = {
@@ -152,10 +161,14 @@ export const computeParlayTier = (legTiers: Tier[]): Tier => {
   return min;
 };
 
-export const tierLabel = (tier: Tier, confidence?: number | null): string => {
+export const tierLabel = (
+  tier: Tier,
+  sport?: string | null,
+  confidence?: number | null,
+): string => {
   const base = `${TIER_EMOJI[tier]} ${TIER_NAME[tier]}`;
-  const range = TIER_RANGE[tier];
   if (tier === 'parlay') return base;
+  const range = tierRange(tier, sport);
   const conf = confidence != null ? ` · ${Math.round(confidence)}%` : '';
   return `${base} ${range}${conf}`;
 };

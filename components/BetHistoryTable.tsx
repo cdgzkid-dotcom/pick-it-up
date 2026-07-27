@@ -179,7 +179,7 @@ function Row({ bet }: { bet: Bet }) {
         <span className="text-[10px] text-muted uppercase">{date}</span>
         {bet.tier && (
           <span className="text-[10px] text-muted ml-auto">
-            {tierLabel(bet.tier as Tier)}
+            {tierLabel(bet.tier as Tier, bet.sport)}
           </span>
         )}
       </div>

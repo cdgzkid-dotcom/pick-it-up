@@ -225,7 +225,7 @@ export default function BetResolver({ bet }: Props) {
       <div className="flex justify-between items-start gap-2">
         <div className="min-w-0">
           {bet.tier && (
-            <div className="text-[10px] text-muted">{tierLabel(bet.tier as Tier)}</div>
+            <div className="text-[10px] text-muted">{tierLabel(bet.tier as Tier, bet.sport)}</div>
           )}
           <div className="font-bold text-sm">{bet.pick}</div>
         </div>

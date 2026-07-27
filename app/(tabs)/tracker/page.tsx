@@ -174,7 +174,7 @@ function HistoryRow({ bet }: { bet: Bet }) {
           <div className="break-words">{bet.pick}</div>
           <div className="text-[10px] text-muted">
             {bet.bet_type} · {Number(bet.odds_decimal).toFixed(2)}
-            {bet.tier ? ` · ${tierLabel(bet.tier as Tier)}` : ''}
+            {bet.tier ? ` · ${tierLabel(bet.tier as Tier, bet.sport)}` : ''}
             {push ? ' · PUSH' : ''}
           </div>
           {bet.final_score && (

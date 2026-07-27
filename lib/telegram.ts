@@ -11,6 +11,10 @@ interface SendOptions {
   disableLinkPreview?: boolean;
 }
 
+const TELEGRAM_MAX_ATTEMPTS = 3;
+const TELEGRAM_BASE_RETRY_MS = 250;
+const TELEGRAM_MAX_RETRY_MS = 1_000;
+
 export async function sendTelegramMessage(
   text: string,
   opts: SendOptions = {},
@@ -29,22 +33,61 @@ export async function sendTelegramMessage(
   };
   if (opts.parseMode !== null) body.parse_mode = opts.parseMode ?? 'Markdown';
 
-  try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) {
+  let lastError = 'unknown';
+  for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
+    let retryDelayMs = TELEGRAM_BASE_RETRY_MS * 2 ** (attempt - 1);
+
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) return { ok: true };
+
       const detail = await r.text().catch(() => '');
-      console.error(`[telegram] send failed (${r.status}): ${detail}`);
-      return { ok: false, error: `http_${r.status}` };
+      lastError = `http_${r.status}`;
+      console.error(
+        `[telegram] send failed (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS}, ${r.status}): ${detail}`,
+      );
+
+      // Client errors are permanent, except Telegram rate limiting.
+      if (r.status >= 400 && r.status < 500 && r.status !== 429) {
+        return { ok: false, error: lastError };
+      }
+      if (r.status !== 429 && r.status < 500) {
+        return { ok: false, error: lastError };
+      }
+
+      if (r.status === 429 && detail) {
+        try {
+          const retryAfter = JSON.parse(detail) as { parameters?: { retry_after?: unknown } };
+          if (typeof retryAfter.parameters?.retry_after === 'number') {
+            retryDelayMs = retryAfter.parameters.retry_after * 1_000;
+          }
+        } catch {
+          // A malformed Telegram error body falls back to exponential backoff.
+        }
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      console.error(
+        `[telegram] send threw (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS})`,
+        e,
+      );
     }
-    return { ok: true };
-  } catch (e) {
-    console.error('[telegram] send threw', e);
-    return { ok: false, error: (e as Error).message };
+
+    if (attempt < TELEGRAM_MAX_ATTEMPTS) {
+      // Keep retries bounded for short-lived Vercel handlers. A larger
+      // Telegram retry_after is honored up to this one-second ceiling.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(retryDelayMs, TELEGRAM_MAX_RETRY_MS)),
+      );
+    }
   }
+
+  console.error(`[telegram] send exhausted ${TELEGRAM_MAX_ATTEMPTS} attempts: ${lastError}`);
+  return { ok: false, error: lastError };
 }
 
 interface PickForMessage {

@@ -89,6 +89,22 @@ export async function fetchNflStandings(): Promise<Map<string, NflStandingRow>> 
         });
       }
     }
+
+    // ESPN serves a full 32-team standings table for a season that has not
+    // started yet, with every record at 0-0-0. Those zeros are indistinguishable
+    // from real data downstream: build() finds a row for each team and produces
+    // a complete NflTeamRow with record "0-0" and pointsFor 0, so the model
+    // reasons over an empty slate as if it were evidence.
+    //
+    // Verified 27 Jul 2026: season=2026 returned 32 rows all at 0-0-0, while
+    // season=2025 returned real records. Collapsing to an empty map makes
+    // "no data yet" detectable by callers instead of silently truthy.
+    let anyGamesPlayed = false;
+    map.forEach((r) => {
+      if (r.wins + r.losses + r.ties > 0) anyGamesPlayed = true;
+    });
+    if (!anyGamesPlayed) return new Map();
+
     return map;
   });
 }

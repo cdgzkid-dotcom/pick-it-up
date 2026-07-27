@@ -173,7 +173,7 @@ async function checkEspnScoreboard(): Promise<HealthCheckResult> {
  * health indicator stays green when all active leagues are healthy.
  *
  * Season windows (inclusive, UTC month 1-12):
- *   NFL  active Sep–Feb  (off-season Mar–Aug)
+ *   NFL  active 9 Sep–Feb (off-season Mar–8 Sep, see below)
  *   NBA  active Oct–Jun  (off-season Jul–Sep)
  *   NHL  active Oct–Jun  (off-season Jul–Sep)
  *   MLB  active Mar–Oct  (off-season Nov–Feb)
@@ -184,7 +184,15 @@ function isLeagueOffSeason(
 ): boolean {
   const m = date.getUTCMonth() + 1; // 1..12
   switch (sport) {
-    case 'nfl': return m >= 3 && m <= 8;
+    // NFL preseason (6 Aug – early Sep 2026) is excluded from the pipeline by
+    // ALLOWED_SEASON_TYPES in lib/espn.ts, so the league stays effectively
+    // off-season until the regular-season opener on 9 Sep 2026. The old
+    // month-only window ended 31 Aug and would have flipped the predictor
+    // check "active" during the first week of September, when the only NFL
+    // events on the board are still exhibition games we deliberately drop —
+    // producing a spurious "no event to test" warning every year.
+    // Week 18 closes 9-10 Jan 2027; playoffs run to the Super Bowl in Feb.
+    case 'nfl': return m >= 3 && (m <= 8 || (m === 9 && date.getUTCDate() < 9));
     case 'nba': return m >= 7 && m <= 9;
     case 'nhl': return m >= 7 && m <= 9;
     case 'mlb': return m >= 11 || m <= 2;

@@ -83,6 +83,7 @@ interface EspnEvent {
   date: string;
   name: string;
   shortName?: string;
+  season?: { year?: number; type?: number; slug?: string };
   status: { type: { state: 'pre' | 'in' | 'post'; completed: boolean; name?: string } };
   competitions: EspnCompetition[];
 }
@@ -124,13 +125,42 @@ async function fetchJson<T>(url: string): Promise<T | null> {
   }
 }
 
+// ESPN seasontype: 1 = preseason, 2 = regular season, 3 = postseason.
+//
+// NFL preseason (Hall of Fame Game, 6 Aug 2026, through early Sep) is
+// exhibition football: starters play a series or two, and ESPN's standings /
+// team-stats for the new season are all 0-0 until the Week 1 opener on
+// 9 Sep 2026. Feeding those games to the model means analyzing a coin flip
+// against empty data, so NFL processes only regular season and playoffs.
+//
+// SCOPED TO NFL ON PURPOSE — do not make this generic. Verified 27 Jul 2026:
+// the NBA and NHL default scoreboards currently return ONLY seasontype=1
+// events (2027 preseason), so a league-agnostic filter would empty their
+// pipelines outright. MLB and WNBA are mid regular season (type=2) and would
+// be unaffected today, but they run their own preseason in Feb-Mar / Apr and
+// nobody asked for that behavior change.
+const ALLOWED_SEASON_TYPES: Record<string, number[]> = {
+  NFL: [2, 3],
+};
+
+function isProcessableSeasonType(sport: string, ev: EspnEvent): boolean {
+  const allowed = ALLOWED_SEASON_TYPES[sport];
+  if (!allowed) return true;
+  const t = ev.season?.type;
+  // Missing seasontype → keep the event. ESPN omits the field on some
+  // payloads, and silently dropping real games on absent metadata is a worse
+  // failure than letting an occasional exhibition game through.
+  if (typeof t !== 'number') return true;
+  return allowed.includes(t);
+}
+
 async function fetchScoreboard(sport: string): Promise<EspnEvent[]> {
   const cfg = SPORTS[sport];
   if (!cfg) return [];
   const data = await fetchJson<EspnScoreboard>(
     `https://site.api.espn.com/apis/site/v2/sports/${cfg.scoreboardPath}/scoreboard`,
   );
-  return data?.events ?? [];
+  return (data?.events ?? []).filter((ev) => isProcessableSeasonType(sport, ev));
 }
 
 async function fetchCoreOdds(sport: string, eventId: string, competitionId: string): Promise<CoreOddsItem[]> {
@@ -396,6 +426,10 @@ interface ScoreboardEventLite {
   }>;
 }
 
+// NOTE: intentionally NOT filtered by seasontype (unlike fetchScoreboard).
+// This path resolves bets that were ALREADY placed, looked up by event id.
+// Filtering here would strand any such bet as permanently unresolved — the
+// exact failure this endpoint was introduced to fix.
 async function fetchScoreboardByDateLive(sport: string, ymd: string): Promise<ScoreboardEventLite[]> {
   const cfg = SPORTS[sport];
   if (!cfg) return [];

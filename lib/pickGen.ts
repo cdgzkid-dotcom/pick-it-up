@@ -9,7 +9,7 @@ import { PICK_GENERATION_SYSTEM, buildPickGenerationUserPrompt, LEGACY_SCHEMA_SU
 import { adjustedEdgeScore, impliedProbability, computeMarketConsensus } from './edge';
 import { fetchPinnacleOddsForEspnEvent, type PinnacleOddsResult } from './pinnacle';
 import type { MarketSource } from './edge';
-import { kellyAmount, sportKellyMultiplier, tierFromProbability, TIER_UNITS, computeParlayTier } from './units';
+import { kellyAmount, sportKellyMultiplier, tierFromProbability, TIER_UNITS, computeParlayTier, BOOK_SPREAD_DISCOUNT } from './units';
 import { getRatingsForGames } from './elo';
 import { fetchGameWeather, isDome } from './weather';
 import { buildMlbGameContext } from './mlbStats';
@@ -25,6 +25,11 @@ import { recordPickFactors, getWeightsForPrompt } from './learning';
 import type { Game, Pick, Tier } from './types';
 
 const BATCH_SIZE = 2;
+
+// Minimum edge (vs. DK, post book-spread discount) required for a candidate
+// to clear the selection gate. Exported so it's importable/testable instead
+// of a magic number buried inside the flatMap.
+export const EDGE_THRESHOLD = 0.05;
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -326,6 +331,10 @@ interface PickRow {
   real_probability: number;
   implied_probability: number;
   edge: number;
+  /** Edge bruto vs DraftKings al análisis. No se reescribe (S1). */
+  edge_vs_dk?: number | null;
+  /** edge_vs_dk - BOOK_SPREAD_DISCOUNT.draftea (S1). */
+  edge_after_spread?: number | null;
   recommended_amount: number;
   analysis: string | null;
   risk_factors: string | null;
@@ -758,6 +767,12 @@ export async function analyzeGames(
     real_probability: number; // for the picked side, post-normalization
     implied_probability: number;
     edge: number;
+    // Draftea spread discount (S1). edge_vs_dk mirrors `edge` (raw, vs DK);
+    // edge_after_spread = edge_vs_dk - BOOK_SPREAD_DISCOUNT.draftea. The
+    // selection gates downstream consume edge_after_spread; `edge` keeps its
+    // existing (display) semantics untouched.
+    edge_vs_dk: number;
+    edge_after_spread: number;
     confidence: number; // floor-adjusted
     confidence_raw: number; // pre-floor snapshot
     tier: Tier;
@@ -939,7 +954,6 @@ export async function analyzeGames(
     }
 
     // (5) Pick the side with the larger positive edge.
-    const EDGE_THRESHOLD = 0.05;
     if (edgeHome <= 0 && edgeAway <= 0) {
       console.log('[NO_POSITIVE_EDGE]', {
         teams: `${p.away_team}@${p.home_team}`,
@@ -961,11 +975,16 @@ export async function analyzeGames(
     }
     const side: 'home' | 'away' = edgeHome >= edgeAway ? 'home' : 'away';
     const bestEdge = side === 'home' ? edgeHome : edgeAway;
-    if (bestEdge < EDGE_THRESHOLD) {
+    // Draftea (where the user actually bets) pays worse than DK. Discount the
+    // calibrated book spread before the gate, so the threshold reflects the
+    // edge actually available at the book we bet on.
+    const bestEdgeAfterSpread = bestEdge - BOOK_SPREAD_DISCOUNT.draftea;
+    if (bestEdgeAfterSpread < EDGE_THRESHOLD) {
       console.log('[EDGE_BELOW_THRESHOLD]', {
         teams: `${p.away_team}@${p.home_team}`,
         side,
-        edge: Number(bestEdge.toFixed(4)),
+        edge_vs_dk: Number(bestEdge.toFixed(4)),
+        edge_after_spread: Number(bestEdgeAfterSpread.toFixed(4)),
         threshold: EDGE_THRESHOLD,
       });
       reasons.fail_edge_below_threshold++;
@@ -1126,6 +1145,8 @@ export async function analyzeGames(
       real_probability: pickedProb,
       implied_probability: implied,
       edge: e,
+      edge_vs_dk: e,
+      edge_after_spread: e - BOOK_SPREAD_DISCOUNT.draftea,
       confidence: conf,
       confidence_raw: confRaw,
       tier: adjustedTier,
@@ -1168,7 +1189,7 @@ export async function analyzeGames(
       const reasons_for_this: string[] = [];
       if (!(p.confidence >= 55)) reasons_for_this.push(`conf<55 (${p.confidence})`);
       if (!(p.recommended_amount > 0)) reasons_for_this.push('kelly=0');
-      if (p.odds_decimal < 1.4 && p.edge < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
+      if (p.odds_decimal < 1.4 && p.edge_after_spread < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
       if (reasons_for_this.length > 0) {
         console.log(
           `[AUDIT] DISCARD ${p.pick} (${p.sport}) — reasons: ${reasons_for_this.join('; ')} | conf=${p.confidence} odds=${p.odds_decimal} real=${(p.real_probability * 100).toFixed(1)}% edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount}`,
@@ -1242,7 +1263,7 @@ export async function analyzeGames(
   //     game the system is only watching.
   const parlayCandidates = auditedSingles.filter(
     (p) =>
-      p.edge >= 0.03 &&
+      p.edge_after_spread >= 0.03 &&
       (p.tier === 'lock' || p.tier === 'strong') &&
       p.espn_event_id &&
       !p.observation_only,
@@ -1269,7 +1290,11 @@ export async function analyzeGames(
     const realProb = legs.reduce((a, l) => a * l.real_probability, 1);
     const implied = 1 / odds;
     const edge = realProb - implied;
-    if (edge < 0.05) return null;
+    // Combined edge is priced against DK's combined odds; the parlay is a
+    // single ticket placed at Draftea, so the book-spread discount applies
+    // once (not per leg) before the total gate.
+    const edgeAfterSpread = edge - BOOK_SPREAD_DISCOUNT.draftea;
+    if (edgeAfterSpread < 0.05) return null;
     const k = kellyAmount(opts.bankroll, realProb, odds);
     if (k.amount <= 0) return null;
     const conf = Math.round(realProb * 100);
@@ -1363,6 +1388,8 @@ export async function analyzeGames(
     real_probability: p.real_probability,
     implied_probability: p.implied_probability,
     edge: p.edge,
+    edge_vs_dk: p.edge_vs_dk,
+    edge_after_spread: p.edge_after_spread,
     recommended_amount: p.recommended_amount,
     analysis: p.analysis,
     risk_factors: p.risk_factors,
@@ -1837,6 +1864,8 @@ export async function analyzeGames(
         best_odds_source: row.best_odds_source,
         odds_comparison: row.odds_comparison,
         edge: row.edge,
+        edge_vs_dk: row.edge_vs_dk,
+        edge_after_spread: row.edge_after_spread,
         edge_vs_market: row.edge_vs_market,
         market_consensus_implied: row.market_consensus_implied,
         market_sources_count: row.market_sources_count,

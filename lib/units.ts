@@ -31,6 +31,15 @@ export const SPORT_THRESHOLDS: Record<string, { lock: number; strong: number; va
   WNBA: { lock: 0.68, strong: 0.62, value: 0.55 },
 };
 
+export const BOOK_SPREAD_DISCOUNT: Record<string, number> = {
+  // Mediana del spread de precio Draftea vs DraftKings, en puntos de
+  // probabilidad implícita. CALIBRADA CON n=11 (captura simultánea
+  // 2026-07-28; rango 0.65–7.34pp; 2/11 con matching dudoso por hora
+  // exacta). RECALIBRAR cuando bets.book_spread_pp acumule n>=30 —
+  // trigger documentado en el scratchpad de deuda técnica.
+  draftea: 0.0235,
+};
+
 export function tierFromProbability(
   realProbability: number,
   sport: string,

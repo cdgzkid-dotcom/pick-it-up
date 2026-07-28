@@ -309,10 +309,13 @@ export async function POST(req: Request) {
   let pickAwayTeam: string | null = null;
   let pickHomeTeamAbbr: string | null = null;
   let pickAwayTeamAbbr: string | null = null;
+  // Etapa 3 (spread constante): original_odds del pick, para calcular
+  // book_spread_pp del bet una vez colocado. null si el pick no lo tiene.
+  let pickOriginalOdds: number | null = null;
   if (pick_id) {
     const { data: pickRow } = await supabase
       .from('picks')
-      .select('tier, espn_event_id, game_start_time, home_team, away_team, home_team_abbr, away_team_abbr')
+      .select('tier, espn_event_id, game_start_time, home_team, away_team, home_team_abbr, away_team_abbr, original_odds')
       .eq('id', pick_id)
       .single();
     pickTier = pickRow?.tier ?? null;
@@ -322,6 +325,7 @@ export async function POST(req: Request) {
     pickAwayTeam = pickRow?.away_team ?? null;
     pickHomeTeamAbbr = pickRow?.home_team_abbr ?? null;
     pickAwayTeamAbbr = pickRow?.away_team_abbr ?? null;
+    pickOriginalOdds = pickRow?.original_odds ?? null;
   }
 
   // ── Step 3a: PENDIENTE → place_bet_atomic (debits bankroll) ──────────
@@ -373,6 +377,17 @@ export async function POST(req: Request) {
       await supabase
         .from('bets')
         .update({ draftea_ticket_id: data.bet_id_draftea })
+        .eq('id', rpc.bet_id);
+    }
+
+    // Etapa 3 (spread constante): muestra del spread Draftea/DK observado en
+    // este ticket. Solo si el pick tiene original_odds — si es NULL, se deja
+    // NULL (nunca 0).
+    if (pickOriginalOdds != null) {
+      const bookSpreadPp = (1 / data.total_odds_decimal - 1 / pickOriginalOdds) * 100;
+      await supabase
+        .from('bets')
+        .update({ book_spread_pp: bookSpreadPp })
         .eq('id', rpc.bet_id);
     }
 

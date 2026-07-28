@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { sendTelegramMessage } from '@/lib/telegram';
+import { modelBets } from '@/lib/stats';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -130,16 +131,21 @@ async function buildHeartbeat(): Promise<string> {
     }
   }
 
-  const { data: bets24h } = await sb
+  const { data: bets24hRaw } = await sb
     .from('bets')
     .select(
-      'id, result, amount, payout, pick_id, created_at, game_start_time, odds_at_bet, odds_at_close, clv',
+      'id, result, amount, payout, pick_id, created_at, game_start_time, odds_at_bet, odds_at_close, clv, excluded_from_stats',
     )
     .gte('created_at', since24h)
     .in('result', ['win', 'loss', 'push']);
-  const wins = bets24h?.filter((b) => b.result === 'win').length ?? 0;
-  const losses = bets24h?.filter((b) => b.result === 'loss').length ?? 0;
-  const pl = bets24h?.reduce(
+  // Everything below this line judges the system: W-L, P/L, CLV and the
+  // pick->bet / bet->game gaps. Bets not produced by the pipeline (manual
+  // backfills) are real money but say nothing about the model, so they are
+  // filtered once here — the column is the source of truth, not `notes`.
+  const bets24h = modelBets(bets24hRaw ?? []);
+  const wins = bets24h.filter((b) => b.result === 'win').length;
+  const losses = bets24h.filter((b) => b.result === 'loss').length;
+  const pl = bets24h.reduce(
     (s, b) => s + (Number(b.payout ?? 0) - Number(b.amount ?? 0)),
     0,
   ) ?? 0;

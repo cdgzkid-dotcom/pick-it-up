@@ -23,6 +23,15 @@ const INITIAL_SEED = 300;
  * Ignores `stake/win/loss/push/cashout` log entries — those are an audit
  * trail of bet impacts and would double-count if added to bets.
  *
+ * DELIBERATELY UNFILTERED: this is the one aggregation over `bets` that must
+ * NOT apply isModelBet()/excluded_from_stats. Bets flagged excluded are real
+ * money — manual backfills reconciled from Draftea screenshots — and the
+ * balance only reconstructs correctly if every stake and payout counts. What
+ * that flag excludes is *model performance*, not *money*. The counts in the
+ * breakdown below are money buckets (which rows moved the balance and by how
+ * much), not a W-L record; the record lives in computeStats(), which filters.
+ * If you ever add a real performance metric here, filter that metric alone.
+ *
  * GET returns the calc without writing. POST writes settings.bankroll_current.
  */
 async function compute() {

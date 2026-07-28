@@ -10,6 +10,7 @@ import {
   computeClv,
   computeWeeklyWinRate,
   computeKellyVsFixed,
+  modelBets,
 } from '@/lib/stats';
 import type { Bet, BankrollLog, Settings } from '@/lib/types';
 
@@ -58,9 +59,13 @@ export default async function StatsPage() {
   const bankrollActual = Number(settings?.bankroll_current ?? 0);
   const siGanasTodo = bankrollActual + gananciaPotencial;
   const siPierdesTodo = bankrollActual - enRiesgo;
-  const totalApostado = bets
-    .filter((b) => b.result !== 'pending')
-    .reduce((s, b) => s + Number(b.amount || 0), 0);
+  // Model-only view: the KPI grid and the breakdown tables below are claims
+  // about the system, so they drop bets that never came out of the pipeline
+  // (computeStats/computeClv/... already filter internally; these local
+  // aggregations have to do it explicitly). The money blocks above — en
+  // riesgo, bankroll, chart — deliberately keep every bet.
+  const modelSettled = modelBets(bets).filter((b) => b.result !== 'pending');
+  const totalApostado = modelSettled.reduce((s, b) => s + Number(b.amount || 0), 0);
 
   const bankrollInicial = Number(settings?.bankroll_initial ?? 300);
   const baseChart = logs.map((l) => ({
@@ -76,10 +81,9 @@ export default async function StatsPage() {
         ]
       : [{ x: 'INICIO', y: bankrollInicial }, ...baseChart, { x: 'AHORA', y: efectivo }];
 
-  const settled = bets.filter((b) => b.result !== 'pending');
-  const bySport = groupBy(settled, (b) => b.sport);
-  const byType = groupBy(settled, (b) => b.bet_type);
-  const byTier = groupBy(settled, (b) => b.tier ?? 'unknown');
+  const bySport = groupBy(modelSettled, (b) => b.sport);
+  const byType = groupBy(modelSettled, (b) => b.bet_type);
+  const byTier = groupBy(modelSettled, (b) => b.tier ?? 'unknown');
 
   const ELO_MIN_GAMES = 20;
   const eloBySport: Record<string, EloRow[]> = {};

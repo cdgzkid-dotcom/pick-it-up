@@ -7,6 +7,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Bet, KeyStat, Pick } from './types';
+import { isModelBet } from './stats';
 
 type PickWithFactors = Partial<Pick> & {
   id: string;
@@ -123,6 +124,10 @@ export async function updateFactorPerformance(
 ): Promise<void> {
   try {
     if (!bet.pick_id) return;
+    // Factor win rates feed system_weights, which feed the next pick prompt.
+    // A bet that didn't come out of the pipeline is not evidence about any
+    // factor — teaching the model from it closes a loop on noise.
+    if (!isModelBet(bet)) return;
     if (
       bet.result !== 'win' &&
       bet.result !== 'loss' &&

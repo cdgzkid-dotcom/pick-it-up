@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { sendTelegramMessage } from '@/lib/telegram';
-import { computeStats } from '@/lib/stats';
+import { computeStats, modelBets } from '@/lib/stats';
 import type { Bet } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -97,7 +97,10 @@ async function handle(req: Request) {
     .from('bets')
     .select('*')
     .gte('created_at', weekAgo);
-  const weeklyBets = (weeklyBetsData as Bet[]) ?? [];
+  // Single filter point for the whole weekly report: record/ROI, per-sport,
+  // per-tier and CLV all derive from `weeklyBets`. Backfilled bets are real
+  // money but not model output, so they would corrupt the calibration signal.
+  const weeklyBets = modelBets((weeklyBetsData as Bet[]) ?? []);
   const weeklyStats = computeStats(weeklyBets);
   const weeklyPl = weeklyStats.pl;
 

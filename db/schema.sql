@@ -83,8 +83,15 @@ create table if not exists bets (
   spread_line numeric,
   total_line numeric,
   game_start_time timestamptz,
-  draftea_ticket_id text
+  draftea_ticket_id text,
+  -- Real money that is NOT model output (manual backfills). Counts toward the
+  -- bankroll, excluded from every performance metric. See migration
+  -- 20260727130000_bets_excluded_from_stats.sql and lib/stats.ts isModelBet().
+  excluded_from_stats boolean not null default false
 );
+
+create index if not exists bets_excluded_from_stats_idx
+  on bets(excluded_from_stats) where excluded_from_stats = true;
 
 create index if not exists bets_result_idx on bets(result);
 create index if not exists bets_created_at_idx on bets(created_at desc);

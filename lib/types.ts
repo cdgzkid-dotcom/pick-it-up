@@ -88,6 +88,12 @@ export interface Bet {
   odds_at_bet?: number | null;
   odds_at_close?: number | null;
   clv?: number | null;
+  /**
+   * True when the bet is real money but not model output (manual backfill).
+   * Counts toward the bankroll, excluded from every performance metric via
+   * isModelBet() in lib/stats.ts. Never filter on `notes` instead.
+   */
+  excluded_from_stats?: boolean | null;
   spread_line?: number | null;
   total_line?: number | null;
   bet_direction?: 'over' | 'under' | string | null;

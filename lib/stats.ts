@@ -1,5 +1,34 @@
 import type { Bet } from './types';
 
+/**
+ * A bet is evidence about the model only when it came out of the pick
+ * pipeline. `excluded_from_stats` marks bets that are real money but NOT
+ * model output (manual backfills, reconciliations from screenshots): they
+ * belong in the bankroll and stay visible in the history, but counting them
+ * as performance inflates the record — on 2026-07-27 eleven backfilled rows
+ * showed 44W-35L/+19.0% ROI when the system had actually done 35W-33L/-5.0%.
+ *
+ * Every performance, calibration and learning aggregation funnels through
+ * this helper so a new aggregation point can't silently be born unfiltered.
+ * Filter on the column, never on a substring of `notes` — the free-text
+ * marker is exactly the fragile protection this replaces.
+ *
+ * DO NOT use in bankroll reconstruction: excluded bets are real money and
+ * must keep moving the balance (see app/api/bankroll/recalculate).
+ */
+export function isModelBet<T extends { excluded_from_stats?: boolean | null }>(
+  bet: T,
+): boolean {
+  return bet.excluded_from_stats !== true;
+}
+
+/** Keeps only the bets that are evidence about the model. See isModelBet. */
+export function modelBets<T extends { excluded_from_stats?: boolean | null }>(
+  bets: T[],
+): T[] {
+  return bets.filter(isModelBet);
+}
+
 export interface BetStats {
   total: number;
   pending: number;
@@ -16,7 +45,8 @@ export interface BetStats {
   longest_win_streak: number;
 }
 
-export function computeStats(bets: Bet[]): BetStats {
+export function computeStats(allBets: Bet[]): BetStats {
+  const bets = modelBets(allBets);
   const settled = bets.filter((b) => b.result !== 'pending');
   const wins = settled.filter((b) => b.result === 'win' || b.result === 'early_payout');
   const losses = settled.filter((b) => b.result === 'loss');
@@ -97,7 +127,9 @@ export interface ClvSummary {
 }
 
 export function computeClv(bets: Bet[]): { overall: ClvSummary; bySport: Record<string, ClvSummary> } {
-  const withClv = bets.filter((b) => b.clv != null && Number.isFinite(Number(b.clv)));
+  const withClv = modelBets(bets).filter(
+    (b) => b.clv != null && Number.isFinite(Number(b.clv)),
+  );
   const summary = (xs: Bet[]): ClvSummary => {
     if (xs.length === 0) return { count: 0, average: 0, positive_count: 0, negative_count: 0 };
     const vals = xs.map((b) => Number(b.clv));
@@ -129,7 +161,9 @@ const TIER_UNITS_FIXED: Record<string, number> = {
 };
 
 export function computeWeeklyWinRate(bets: Bet[]): WeekPoint[] {
-  const settled = bets.filter((b) => b.result === 'win' || b.result === 'loss' || b.result === 'early_payout');
+  const settled = modelBets(bets).filter(
+    (b) => b.result === 'win' || b.result === 'loss' || b.result === 'early_payout',
+  );
   const byWeek = new Map<string, Bet[]>();
   for (const b of settled) {
     const d = new Date(b.created_at);
@@ -183,7 +217,13 @@ export function computeKellyVsFixed(
   currentBankroll: number,
   unitPercentage = 5,
 ): KellyVsFixed {
-  const settled = bets.filter((b) => b.result === 'win' || b.result === 'loss' || b.result === 'early_payout' || b.result === 'cashout');
+  const settled = modelBets(bets).filter(
+    (b) =>
+      b.result === 'win' ||
+      b.result === 'loss' ||
+      b.result === 'early_payout' ||
+      b.result === 'cashout',
+  );
   let kelly_staked = 0;
   let kelly_returned = 0;
   let fixed_staked = 0;

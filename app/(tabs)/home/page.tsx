@@ -7,6 +7,7 @@ import UpcomingGames from '@/components/UpcomingGames';
 import AnalyzeNowButton from '@/components/AnalyzeNowButton';
 import BoostEvaluator from '@/components/BoostEvaluator';
 import { computeStats } from '@/lib/stats';
+import { TIER_UNITS, tierBands } from '@/lib/units';
 import { ESPN_SPORTS, FAVORITE_SPORTS, fetchGames, gameCountsBySport } from '@/lib/espn';
 import { sportLeagueLogoUrl } from '@/components/Logo';
 import type { Bet, Settings } from '@/lib/types';
@@ -158,10 +159,10 @@ export default async function HomePage() {
       <details className="text-xs">
         <summary className="text-muted cursor-pointer">▶ Leyenda de tiers</summary>
         <div className="mt-2 space-y-1 text-muted pl-3 border-l border-line">
-          <div><span className="text-blue font-bold">🔒 LOCK</span> · 2 units · MLB/NHL 65%+ | NBA/NFL 68%+</div>
-          <div><span className="text-green font-bold">✅ STRONG</span> · 1.5 units · MLB/NHL 60-64% | NBA/NFL 62-67%</div>
-          <div><span className="text-yellow font-bold">⚠️ VALUE</span> · 1 unit · 55%+ todos los deportes</div>
-          <div><span className="text-orange font-bold">🎯 PARLAY</span> · 0.5 unit</div>
+          <div><span className="text-blue font-bold">🔒 LOCK</span> · {TIER_UNITS.lock} units · {tierBands('lock')}</div>
+          <div><span className="text-green font-bold">✅ STRONG</span> · {TIER_UNITS.strong} units · {tierBands('strong')}</div>
+          <div><span className="text-yellow font-bold">⚠️ VALUE</span> · {TIER_UNITS.value} unit · {tierBands('value')}</div>
+          <div><span className="text-orange font-bold">🎯 PARLAY</span> · {TIER_UNITS.parlay} unit</div>
           <div className="pt-1">Momio &lt;1.40 → baja un tier</div>
           <div className="pt-1 text-[10px]">Datos: ESPN · momios: DraftKings/FanDuel/etc.</div>
         </div>

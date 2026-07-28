@@ -17,9 +17,11 @@ export const TIER_UNITS: Record<Tier, number> = {
  * floor, ~2pp above). LOCK stays where the average favorite's hit rate
  * (~66.6%) is already cleared.
  *
- * Exported because tierRange() derives the user-facing labels from the same
- * numbers — the legend used to be a hardcoded second source of truth and
- * drifted (it showed "LOCK 85-100%" while the system emitted LOCK from 65%).
+ * Exported because tierRange() and tierBands() derive every user-facing label
+ * from these numbers. Hardcoded legends have drifted twice: TIER_RANGE showed
+ * "LOCK 85-100%" while the system emitted LOCK from 65% (fixed in 24af709),
+ * and the home-page legend claimed "VALUE 55%+ todos los deportes" while NFL
+ * had required 59% since 25804d7. Do not write these numbers anywhere else.
  */
 export const SPORT_THRESHOLDS: Record<string, { lock: number; strong: number; value: number }> = {
   MLB:  { lock: 0.65, strong: 0.60, value: 0.55 },
@@ -130,6 +132,25 @@ export const tierRange = (tier: Tier, sport?: string | null): string => {
   if (tier === 'lock') return `${pct(t.lock)}-100%`;
   if (tier === 'strong') return `${pct(t.strong)}-${pct(t.lock) - 1}%`;
   return `${pct(t.value)}-${pct(t.strong) - 1}%`;
+};
+
+/**
+ * Same band as tierRange(), but across every sport at once and collapsed by
+ * shared range: "MLB/NHL 60-64% | NBA/WNBA 62-67% | NFL 63-67%".
+ *
+ * Exists so the tier legend can list per-sport bands without hardcoding either
+ * the numbers or which sports happen to share them today — both drifted before
+ * (see the note on SPORT_THRESHOLDS).
+ */
+export const tierBands = (tier: Exclude<Tier, 'parlay'>): string => {
+  const groups: { range: string; sports: string[] }[] = [];
+  for (const sport of Object.keys(SPORT_THRESHOLDS)) {
+    const range = tierRange(tier, sport);
+    const existing = groups.find((g) => g.range === range);
+    if (existing) existing.sports.push(sport);
+    else groups.push({ range, sports: [sport] });
+  }
+  return groups.map((g) => `${g.sports.join('/')} ${g.range}`).join(' | ');
 };
 
 export const TIER_EMOJI: Record<Tier, string> = {

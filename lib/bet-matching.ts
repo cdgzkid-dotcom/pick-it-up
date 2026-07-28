@@ -12,6 +12,9 @@ export interface PickCandidate {
   odds_decimal: number;
   tier: string | null;
   recommended_amount: number;
+  /** Preseason observation pick — surfaced so the UI can warn before the user
+   *  hits confirm (which rejects the whole ticket). */
+  observation_only?: boolean | null;
 }
 
 export interface LegMatch {
@@ -58,7 +61,10 @@ export async function matchExtractedBetToPicks(
   const supabase = supabaseAdmin();
   const { data: pendingPicks } = await supabase
     .from('picks')
-    .select('id, sport, game, home_team, away_team, pick, bet_type, odds_decimal, tier, recommended_amount')
+    // observation_only is selected (not filtered out) on purpose: matching an
+    // exhibition pick lets /confirm reject the ticket with the pick's name
+    // instead of silently recording it as an unlinked manual bet.
+    .select('id, sport, game, home_team, away_team, pick, bet_type, odds_decimal, tier, recommended_amount, observation_only')
     .eq('status', 'pending')
     .gt('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
     .order('created_at', { ascending: false });

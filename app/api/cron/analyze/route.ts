@@ -256,6 +256,15 @@ async function runAnalyzeWindow(): Promise<{
     console.log(`[AUDIT][cron] capping ${fresh.length} → ${MAX_FRESH_GAMES} (playoffs first, then closest to start)`);
   }
 
+  // Preseason observation lookup — marker rows built from AnalyzeResult
+  // payloads (which carry only ids/teams) need the flag too, otherwise a
+  // preseason event could leave an unflagged row in `picks`.
+  const observationByEventId = new Map<string, boolean>(
+    toAnalyze
+      .filter((g) => g.espn_event_id)
+      .map((g) => [g.espn_event_id as string, g.observation_only === true]),
+  );
+
   const result = await analyzeGames(toAnalyze, supabase, {
     bankroll: Number(settings.bankroll_current),
     unitPercentage: Number(settings.unit_percentage),
@@ -297,6 +306,7 @@ async function runAnalyzeWindow(): Promise<{
       is_parlay: false,
       game_start_time: g.start_time ?? null,
       picks_generated_at: new Date().toISOString(),
+      observation_only: g.observation_only === true,
     }));
     const { error: markerErr } = await supabase.from('picks').insert(markers);
     if (markerErr) console.error('[cron] no_edge markers insert failed', markerErr);
@@ -350,6 +360,7 @@ async function runAnalyzeWindow(): Promise<{
       is_parlay: false,
       game_start_time: null,
       picks_generated_at: new Date().toISOString(),
+      observation_only: observationByEventId.get(e.espn_event_id as string) === true,
     }));
     const { error: regularMarkerErr } = await supabase.from('picks').insert(regularMarkers);
     if (regularMarkerErr) {
@@ -612,11 +623,18 @@ async function runAnalyzeWindow(): Promise<{
 
   // Run Monte Carlo on the slate (singles only — parlays already have their
   // probability baked into the legs).
-  const mcInput = result.insertedPicks.map((p) => ({
-    real_probability: Number(p.real_probability),
-    odds_decimal: Number(p.odds_decimal),
-    recommended_amount: Number(p.recommended_amount),
-  }));
+  //
+  // Metric exclusion: observation-only (preseason) picks are dropped. The
+  // simulation answers "how much money is this slate expected to make", and
+  // exhibition picks stake nothing — including them would inflate both the
+  // expected value and the risk range with money that will never be wagered.
+  const mcInput = result.insertedPicks
+    .filter((p) => !(p as { observation_only?: boolean | null }).observation_only)
+    .map((p) => ({
+      real_probability: Number(p.real_probability),
+      odds_decimal: Number(p.odds_decimal),
+      recommended_amount: Number(p.recommended_amount),
+    }));
   const mc = simulateDay(mcInput);
 
   const picksMsg = formatPicksMessage(
@@ -649,6 +667,9 @@ async function runAnalyzeWindow(): Promise<{
       units_actual: (p as { units_actual?: number | null }).units_actual ?? null,
       units_theoretical: (p as { units_theoretical?: number | null }).units_theoretical ?? null,
       sport: p.sport ?? null,
+      // Preseason: routes the pick into the "🔬 OBSERVACIÓN — NO APOSTAR" block.
+      observation_only:
+        (p as { observation_only?: boolean | null }).observation_only ?? false,
     })),
     result.insertedParlays.map((p) => ({
       tier: p.tier,

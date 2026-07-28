@@ -44,10 +44,16 @@ create table if not exists picks (
   parlay_legs jsonb,
   game_start_time timestamptz,
   picks_generated_at timestamptz,
-  telegram_notified_at timestamptz
+  telegram_notified_at timestamptz,
+  -- Preseason observation mode (2026-07-27). See migration
+  -- 20260727120000_preseason_observation_only.sql: true = exhibition game,
+  -- pick is display-only (never bettable, excluded from all aggregates).
+  observation_only boolean not null default false
 );
 
 create index if not exists picks_created_at_idx on picks(created_at desc);
+create index if not exists picks_observation_only_idx
+  on picks(observation_only) where observation_only = true;
 create index if not exists picks_status_idx on picks(status);
 create index if not exists picks_sport_idx on picks(sport);
 create index if not exists picks_game_start_time_idx on picks(game_start_time);
@@ -92,7 +98,6 @@ create table if not exists bets (
 
 create index if not exists bets_excluded_from_stats_idx
   on bets(excluded_from_stats) where excluded_from_stats = true;
-
 create index if not exists bets_result_idx on bets(result);
 create index if not exists bets_created_at_idx on bets(created_at desc);
 create index if not exists bets_pick_id_idx on bets(pick_id);

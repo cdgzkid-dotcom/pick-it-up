@@ -21,6 +21,11 @@ export default function PickCard({ pick, rank }: Props) {
     pick.status === 'bet' ? 'APOSTADO ✓' : pick.status === 'skipped' ? 'SKIPPED' : null;
   const [done, setDone] = useState<string | null>(initialDone);
 
+  // Preseason observation pick: rendered read-only. No APOSTAR button, no
+  // stake, no bet form. The API rejects it too (422) — this just keeps the
+  // user from ever reaching that error.
+  const observationOnly = pick.observation_only === true;
+
   const tier = (pick.tier ?? 'value') as Tier;
   const tierColor =
     tier === 'lock'
@@ -57,6 +62,12 @@ export default function PickCard({ pick, rank }: Props) {
 
   const confirmar = async () => {
     setErr(null);
+    if (observationOnly) {
+      // Unreachable through the UI (the form never renders) — kept so a future
+      // refactor can't quietly re-enable betting on an exhibition pick.
+      setErr('Pick de pretemporada: no se puede apostar.');
+      return;
+    }
     if (amountNum <= 0) {
       setErr('Monto inválido');
       return;
@@ -141,7 +152,21 @@ export default function PickCard({ pick, rank }: Props) {
   }
 
   return (
-    <div className="bg-card border border-line rounded-lg p-4 space-y-3">
+    <div
+      className={`bg-card border rounded-lg p-4 space-y-3 ${
+        observationOnly ? 'border-blue/60' : 'border-line'
+      }`}
+    >
+      {observationOnly && (
+        <div className="text-[11px] text-blue bg-blue/10 border border-blue/50 rounded px-2 py-1.5 font-bold leading-snug">
+          🔬 OBSERVACIÓN — NO APOSTAR (preseason)
+          <div className="font-normal text-[10px] text-muted mt-0.5">
+            Juego de pretemporada. Este pick no se puede apostar y no cuenta para
+            stats, tiers ni calibración.
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-muted text-xs">#{rank}</span>
@@ -235,6 +260,10 @@ export default function PickCard({ pick, rank }: Props) {
           <span className="font-bold text-blue">{odds.toFixed(2)}</span>
         </div>
         <div className="text-right">
+          {observationOnly ? (
+            <span className="text-blue text-xs font-bold">sin monto · observación</span>
+          ) : (
+            <>
           <span className="text-muted text-xs">recomendado </span>
           <span className="font-bold text-green">${recommended}</span>
           {(() => {
@@ -247,6 +276,8 @@ export default function PickCard({ pick, rank }: Props) {
               <span className="text-muted text-[10px]"> (Kelly {(half * 100).toFixed(1)}%)</span>
             );
           })()}
+            </>
+          )}
         </div>
       </div>
 
@@ -344,7 +375,19 @@ export default function PickCard({ pick, rank }: Props) {
 
       {err && <div className="text-red text-xs">{err}</div>}
 
-      {!showForm ? (
+      {observationOnly ? (
+        <div className="flex gap-2 pt-1">
+          <div className="flex-1 py-3 border border-blue/50 bg-blue/10 text-blue rounded font-bold text-sm text-center">
+            🔬 SOLO OBSERVACIÓN
+          </div>
+          <button
+            onClick={skip}
+            className="tap px-4 py-3 border border-line text-muted rounded font-bold text-sm"
+          >
+            OCULTAR
+          </button>
+        </div>
+      ) : !showForm ? (
         <div className="flex gap-2 pt-1">
           <button
             onClick={() => {

@@ -16,7 +16,7 @@ import { buildMlbGameContext } from './mlbStats';
 import { buildNhlGameContext } from './nhlStats';
 import { buildNbaGameContext, buildWnbaGameContext } from './nbaStats';
 import { buildNflGameContext } from './nflStats';
-import { fetchEspnGameOdds, fetchEspnPredictor } from './espn';
+import { fetchEspnGameOdds, fetchEspnPredictor, OBSERVATION_SEASON_TYPE } from './espn';
 import type { EspnOddsResult, EspnPredictor } from './espn';
 import { captureOrLoadOpening, computeMovement } from './lineMovement';
 import { auditPickQuality } from './pickAudit';
@@ -199,6 +199,13 @@ export interface AnalyzeResult {
   kellyByKey: Record<string, number>;
   withEdge: number;
   parlayCount: number;
+  /**
+   * How many of the picks that survived every filter are preseason
+   * observation-only. Reported separately so `withEdge` (a raw pipeline
+   * counter, not a performance metric) can still be read at face value while
+   * callers know how much of it is unbettable exhibition football.
+   */
+  observationOnly: number;
   /** CAPA-2 + CAPA-3 counters for the lock-in flow. */
   supersededEdgeEvaporated: number;
   supersededLineMoved: number;
@@ -343,6 +350,11 @@ interface PickRow {
   // Quality-audit findings (failures for Rail 5 rows, warnings for healthy
   // singleRows). Persists as jsonb in DB.
   audit_failures?: string[] | null;
+  // Preseason observation mode (2026-07-27). Persistent, non-nullable flag:
+  // true → the pick is displayed but can never be converted into a bet and is
+  // excluded from every aggregate metric. Requires the picks.observation_only
+  // column (migration 20260727120000_preseason_observation_only.sql).
+  observation_only: boolean;
   // Fix B (no-odds retry): counts how many times the marker for an event
   // has been re-evaluated. Bounded by the dedup guard in cron/analyze
   // (currently retry_count<3 + age>20min). Only set on analyzed_no_odds_data
@@ -490,6 +502,32 @@ export async function analyzeGames(
         }
       } catch (e) {
         console.warn(`[pickGen] real-data enrichment failed for ${g.sport} ${g.game_label}`, e);
+      }
+
+      // ── Preseason observation marker ────────────────────────────────────
+      // Exhibition games reach Claude with an EXPLICIT statement that this is
+      // preseason and (for NFL) that standings simply don't exist yet. The
+      // alternative — handing over an empty real_data object — lets the model
+      // read silence as "nothing notable" instead of "no data". Never refill
+      // with zeros: fetchNflStandings collapses an all-0-0 table to an empty
+      // map on purpose (bdb6fc1) and that blindaje stays.
+      if (g.observation_only) {
+        const rd = g.real_data as Record<string, unknown>;
+        const nflCtx = rd as { standings_available?: boolean; data_note?: string };
+        rd.data_availability = {
+          season_type: g.season_type ?? OBSERVATION_SEASON_TYPE,
+          season_phase: 'preseason',
+          observation_only: true,
+          standings_available: nflCtx.standings_available ?? false,
+          note:
+            nflCtx.data_note ??
+            'Juego de PRETEMPORADA (exhibición). Las estadísticas de temporada ' +
+              'todavía no existen. No inventes récords ni forma reciente.',
+          guidance:
+            'PRETEMPORADA: los titulares juegan una o dos series, el resultado lo ' +
+            'deciden suplentes. Ancla en el base rate del deporte y ELO, mantén ' +
+            'confidence baja, y di explícitamente en el análisis que no tienes datos.',
+        };
       }
 
       // Market consensus enrichment — three independent zero-key sources:
@@ -754,6 +792,8 @@ export async function analyzeGames(
     // when set on a row routed to Rail 5 (audit.passed=false) these are
     // the blocking failures.
     audit_failures?: string[] | null;
+    // Preseason observation mode — copied from the matched Game.
+    observation_only: boolean;
     // Sizing transparency — see PickRow for semantics.
     theoretical_amount: number;
     sizing_reason: string | null;
@@ -789,6 +829,7 @@ export async function analyzeGames(
     away_team_abbr: string | null;
     espn_event_id: string;
     game_start_time: string | null;
+    observation_only: boolean;
   }> = [];
 
   // Pick Digest accumulator — populated in the flatMap when Claude's pick
@@ -870,6 +911,7 @@ export async function analyzeGames(
           away_team_abbr: p.away_team_abbr ?? null,
           espn_event_id: matchedGame.espn_event_id,
           game_start_time: matchedGame.start_time ?? null,
+          observation_only: matchedGame.observation_only === true,
         });
       }
       return [];
@@ -1114,6 +1156,7 @@ export async function analyzeGames(
       pinnacle_implied: pinnacleImplied,
       pinnacle_status: pinnacleStatus,
       edge_vs_pinnacle: edgeVsPinnacle,
+      observation_only: matchedGame.observation_only === true,
       _score: score,
     }];
   });
@@ -1194,8 +1237,15 @@ export async function analyzeGames(
   //   • Cap to top 5 parlays by combined_edge
   //   • Filtered-audit singles excluded (status !== 'filtered_quality_audit'
   //     implicit: we use auditedSingles, not enrichedSingles).
+  //   • observation_only (preseason) singles excluded — a parlay is a bettable
+  //     product, and one exhibition leg would drag a real-money ticket into a
+  //     game the system is only watching.
   const parlayCandidates = auditedSingles.filter(
-    (p) => p.edge >= 0.03 && (p.tier === 'lock' || p.tier === 'strong') && p.espn_event_id,
+    (p) =>
+      p.edge >= 0.03 &&
+      (p.tier === 'lock' || p.tier === 'strong') &&
+      p.espn_event_id &&
+      !p.observation_only,
   );
   type GeneratedParlay = {
     pick: string;
@@ -1329,11 +1379,21 @@ export async function analyzeGames(
     game_start_time: p.game_start_time,
     updated_at: now,
     audit_failures: p.audit_failures ?? null,
+    observation_only: p.observation_only,
     theoretical_amount: p.theoretical_amount,
     sizing_reason: p.sizing_reason,
     units_actual: p.units_actual,
     units_theoretical: p.units_theoretical,
   }));
+
+  const observationCount = singleRows.filter((r) => r.observation_only).length;
+  if (observationCount > 0) {
+    console.log('[OBSERVATION_PICKS]', {
+      count: observationCount,
+      picks: singleRows.filter((r) => r.observation_only).map((r) => `${r.sport}:${r.pick}`),
+      note: 'preseason — not bettable, excluded from metrics',
+    });
+  }
 
   // Rail 5 source: rows that failed the quality audit. Persisted with
   // status='filtered_quality_audit', visible in /tracker for manual review,
@@ -1384,6 +1444,7 @@ export async function analyzeGames(
     game_start_time: p.game_start_time,
     updated_at: now,
     audit_failures: p.audit_failures ?? null,
+    observation_only: p.observation_only,
     theoretical_amount: p.theoretical_amount,
     sizing_reason: p.sizing_reason,
     units_actual: p.units_actual,
@@ -1433,6 +1494,9 @@ export async function analyzeGames(
     game_start_time: null,
     updated_at: now,
     audit_failures: null,
+    // Always false: parlayCandidates already excludes observation legs, so a
+    // generated parlay can never contain one.
+    observation_only: false,
   }));
 
   // Marker rows for games whose Phase 3 enrichment didn't yield DK odds —
@@ -1481,6 +1545,7 @@ export async function analyzeGames(
     game_start_time: m.game_start_time,
     updated_at: now,
     audit_failures: null,
+    observation_only: m.observation_only,
   }));
 
   // Build a lookup of kelly fractions per pick — caller (cron) passes this to
@@ -1730,7 +1795,20 @@ export async function analyzeGames(
         insertedCount++;
         insertedSinglesOut.push(ins as PickRow);
         if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
-        if ((ins as PickRow).id) {
+        // Metric exclusion #1: pick_factors is the entry point of the whole
+        // learning pipeline (pick_factors → factor_performance →
+        // system_weights → prompt weights → sportKellyMultiplier). An
+        // observation pick never resolves into a bet, so recording its factors
+        // would only ever add dead rows — and if one were ever back-filled it
+        // would calibrate the model on exhibition football.
+        if ((ins as PickRow).id && row.observation_only) {
+          console.log('[OBSERVATION_SKIP_LEARNING]', {
+            pick_id: (ins as PickRow).id,
+            pick: row.pick,
+            reason: 'preseason observation pick — excluded from pick_factors',
+          });
+        }
+        if ((ins as PickRow).id && !row.observation_only) {
           await recordPickFactors(supabase, {
             id: (ins as PickRow).id!,
             sport: row.sport,
@@ -1992,6 +2070,7 @@ export async function analyzeGames(
     kellyByKey,
     withEdge: enrichedSingles.length,
     parlayCount: enrichedParlays.length,
+    observationOnly: enrichedSingles.filter((p) => p.observation_only).length,
     supersededEdgeEvaporated: supersededEdgeEvaporatedCount,
     supersededLineMoved: supersededLineMovedCount,
     flippedSideIgnored: flippedSideIgnoredCount,

@@ -304,6 +304,17 @@ export interface NflTeamRow {
 export interface NflGameContext {
   home?: NflTeamRow;
   away?: NflTeamRow;
+  /**
+   * False when fetchNflStandings collapsed to an empty map — i.e. ESPN served
+   * a full 32-team table with every record at 0-0-0 because the season hasn't
+   * started (the normal state through NFL preseason). Explicit so the prompt
+   * can TELL the model it has no standings instead of handing it an empty
+   * object it might read as "nothing notable". See the blindaje in
+   * fetchNflStandings (commit bdb6fc1) — never silently refill with zeros.
+   */
+  standings_available: boolean;
+  /** Human-readable reason surfaced to the model when data is missing. */
+  data_note?: string;
 }
 
 export async function buildNflGameContext(
@@ -311,6 +322,7 @@ export async function buildNflGameContext(
   awayName: string,
 ): Promise<NflGameContext> {
   const standings = await fetchNflStandings().catch(() => new Map<string, NflStandingRow>());
+  const standingsAvailable = standings.size > 0;
 
   const build = async (teamName: string): Promise<NflTeamRow | undefined> => {
     const key = teamName.toUpperCase();
@@ -362,5 +374,18 @@ export async function buildNflGameContext(
     );
   }
 
-  return { home, away };
+  if (!standingsAvailable) {
+    console.log('[DATA][NFL] standings unavailable (all rows 0-0-0 for the season) —', `${awayName} @ ${homeName}`);
+    return {
+      home,
+      away,
+      standings_available: false,
+      data_note:
+        'ESPN no publica standings ni team stats para esta temporada todavía ' +
+        '(toda la tabla está en 0-0). NO hay récords, PF/PA, ni forma reciente ' +
+        'para estos equipos. No asumas 0-0 como evidencia: es ausencia de datos.',
+    };
+  }
+
+  return { home, away, standings_available: true };
 }

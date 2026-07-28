@@ -9,6 +9,10 @@ export const dynamic = 'force-dynamic';
  * Returns picks that the AI generated today but the user hasn't yet bet on
  * (status='pending'). Used by ManualBetForm to surface the un-bet picks
  * before falling back to fully-manual entry.
+ *
+ * Preseason observation picks are excluded: this endpoint exists to answer
+ * "which pick am I about to bet?", and those can't be bet at all. They stay
+ * visible in /picks, which is the surface meant for reading them.
  */
 export async function GET() {
   const supabase = supabaseAdmin();
@@ -20,6 +24,7 @@ export async function GET() {
     )
     .gte('updated_at', since)
     .eq('status', 'pending')
+    .eq('observation_only', false)
     .order('edge', { ascending: false });
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

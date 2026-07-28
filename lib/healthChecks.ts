@@ -112,6 +112,10 @@ async function checkDbColumns(): Promise<HealthCheckResult> {
           'market_sources',
           'floor_applied',
           'confidence_raw',
+          // Preseason observation mode (2026-07-27). Without this column every
+          // pick INSERT fails — it must show up here as a red check, not as a
+          // mysterious cron error.
+          'observation_only',
         ].join(', '),
       )
       .limit(1);

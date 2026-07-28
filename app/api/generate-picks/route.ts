@@ -131,6 +131,8 @@ export async function POST(req: Request) {
     analyzed: toAnalyze.length,
     total_available: totalAvailable,
     with_edge: result.withEdge,
+    // Subset of with_edge that is preseason observation-only (not bettable).
+    observation_only: result.observationOnly,
     parlays: result.parlayCount,
     inserted: result.inserted,
     updated: result.updated,

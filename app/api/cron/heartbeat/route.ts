@@ -20,16 +20,24 @@ async function buildHeartbeat(): Promise<string> {
   const { data: picks24h } = await sb
     .from('picks')
     .select(
-      'id, status, locked_at, telegram_notified_at, tier, edge, edge_vs_market, market_sources_count, floor_applied, confidence, confidence_raw, is_parlay',
+      'id, status, locked_at, telegram_notified_at, tier, edge, edge_vs_market, market_sources_count, floor_applied, confidence, confidence_raw, is_parlay, observation_only',
     )
     .gte('created_at', since24h);
   const generated = picks24h?.length ?? 0;
-  const actionable = picks24h?.filter((p) => p.status === 'pending' || p.status === 'bet').length ?? 0;
+  const actionable =
+    picks24h?.filter(
+      (p) => (p.status === 'pending' || p.status === 'bet') && p.observation_only !== true,
+    ).length ?? 0;
   const noEdge = picks24h?.filter((p) => p.status === 'analyzed_no_edge').length ?? 0;
   const noOdds = picks24h?.filter((p) => p.status === 'analyzed_no_odds_data').length ?? 0;
   const auditFiltered = picks24h?.filter((p) => p.status === 'filtered_quality_audit').length ?? 0;
   const skipped = picks24h?.filter((p) => p.status === 'skipped').length ?? 0;
+  // Preseason observation picks are counted and shown separately — they are
+  // real rows the user can see, but they are not actionable and they are
+  // excluded from every quality metric computed below.
+  const observation = picks24h?.filter((p) => p.observation_only === true).length ?? 0;
   const breakdownParts = [`${actionable} actionable`];
+  if (observation > 0) breakdownParts.push(`${observation} observación`);
   if (noEdge > 0) breakdownParts.push(`${noEdge} no_edge`);
   if (noOdds > 0) breakdownParts.push(`${noOdds} no_odds`);
   if (auditFiltered > 0) breakdownParts.push(`${auditFiltered} audit_filtered`);
@@ -38,10 +46,14 @@ async function buildHeartbeat(): Promise<string> {
   const notified = picks24h?.filter((p) => p.telegram_notified_at).length ?? 0;
   // Split CAPA-2/3 supersedes (real lock-in flow) from legacy bare 'superseded'
   // (pre-CAPA-2 mechanism, kept around as 'superseded_legacy' for audit).
+  // Observation picks excluded — the ratio below divides this by
+  // lockablePicks, which excludes them too; mixing the two would skew it.
   const supersededCapa = picks24h?.filter((p) =>
-    p.status === 'superseded_edge_evaporated' ||
-    p.status === 'superseded_line_moved_against' ||
-    p.status === 'superseded_flipped_side',
+    p.observation_only !== true && (
+      p.status === 'superseded_edge_evaporated' ||
+      p.status === 'superseded_line_moved_against' ||
+      p.status === 'superseded_flipped_side'
+    ),
   ).length ?? 0;
   const supersededLegacy = picks24h?.filter((p) =>
     p.status === 'superseded' || p.status === 'superseded_legacy',
@@ -51,7 +63,14 @@ async function buildHeartbeat(): Promise<string> {
   // them out defensively even though they normally have locked_at=null.
   // This is the canonical sample for BOTH the supersede-ratio auto-alert
   // and the CAPA-3 quality metrics block.
-  const lockablePicks = picks24h?.filter((p) => p.locked_at !== null && !p.is_parlay) ?? [];
+  //
+  // Preseason observation picks are excluded from this sample: every metric
+  // built on it (avg edge vs market, consensus %, floor %, supersede ratio)
+  // is a judgement about picks the user might bet. Exhibition picks would
+  // move those numbers without ever risking a peso.
+  const lockablePicks =
+    picks24h?.filter((p) => p.locked_at !== null && !p.is_parlay && p.observation_only !== true) ??
+    [];
   // Auto-alert (existing): supersede ratio. Threshold of 30% picked because
   // 0-15% is normal and >30% is pathological for a sticky lock-in.
   const capaSupersedeRatio =
@@ -139,7 +158,7 @@ async function buildHeartbeat(): Promise<string> {
     .gte('created_at', since24h)
     .in('result', ['win', 'loss', 'push']);
   // Everything below this line judges the system: W-L, P/L, CLV and the
-  // pick->bet / bet->game gaps. Bets not produced by the pipeline (manual
+  // pick→bet / bet→game gaps. Bets not produced by the pipeline (manual
   // backfills) are real money but say nothing about the model, so they are
   // filtered once here — the column is the source of truth, not `notes`.
   const bets24h = modelBets(bets24hRaw ?? []);
@@ -148,13 +167,13 @@ async function buildHeartbeat(): Promise<string> {
   const pl = bets24h.reduce(
     (s, b) => s + (Number(b.payout ?? 0) - Number(b.amount ?? 0)),
     0,
-  ) ?? 0;
+  );
 
   // ── Decision quality 24h (Auditoría 4) ─────────────────────────────────
   // CLV (Closing Line Value) per bet is already persisted with the implied-
   // probability-difference convention. Here we average across resolved
   // wins/losses + compute response-time gaps for the user behavior side.
-  const resolvedBets = bets24h?.filter((b) => b.result === 'win' || b.result === 'loss') ?? [];
+  const resolvedBets = bets24h.filter((b) => b.result === 'win' || b.result === 'loss');
   const betsWithClv = resolvedBets.filter((b) => b.clv !== null && b.clv !== undefined);
   const clvSum = betsWithClv.reduce((s, b) => s + Number(b.clv), 0);
   const clvCount = betsWithClv.length;

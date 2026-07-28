@@ -77,6 +77,13 @@ export interface Pick {
   // status='filtered_quality_audit' have failures here; healthy picks
   // (status='pending') may have non-blocking warnings.
   audit_failures?: string[] | null;
+  // Preseason observation mode (2026-07-27). True when the pick comes from an
+  // ESPN event with season.type=1 (exhibition). Such picks are generated,
+  // persisted and displayed, but can NEVER become a bet and are excluded from
+  // every aggregate metric (calibration, tier stats, factor_performance,
+  // heartbeat quality metrics, Monte Carlo). See lib/espn.ts
+  // OBSERVATION_SEASON_TYPE.
+  observation_only?: boolean | null;
 }
 
 export interface Bet {
@@ -88,12 +95,6 @@ export interface Bet {
   odds_at_bet?: number | null;
   odds_at_close?: number | null;
   clv?: number | null;
-  /**
-   * True when the bet is real money but not model output (manual backfill).
-   * Counts toward the bankroll, excluded from every performance metric via
-   * isModelBet() in lib/stats.ts. Never filter on `notes` instead.
-   */
-  excluded_from_stats?: boolean | null;
   spread_line?: number | null;
   total_line?: number | null;
   bet_direction?: 'over' | 'under' | string | null;
@@ -114,6 +115,13 @@ export interface Bet {
   payout?: number | null;
   date?: string | null;
   notes?: string | null;
+  /**
+   * True when the bet is real money but NOT model output (manual backfills,
+   * reconciliations). It counts toward the bankroll and stays in the history,
+   * but every performance/calibration/learning metric filters it out through
+   * isModelBet() in lib/stats.ts. Never filter on `notes` instead.
+   */
+  excluded_from_stats?: boolean | null;
 }
 
 export interface BankrollLog {
@@ -137,6 +145,13 @@ export interface Settings {
 export interface Game {
   sport: string;
   league?: string;
+  /** ESPN season.type for the event: 1 = preseason, 2 = regular, 3 = post. */
+  season_type?: number;
+  /**
+   * True when the event is exhibition (season_type=1). Picks derived from it
+   * are observation-only: visible but not bettable and excluded from metrics.
+   */
+  observation_only?: boolean;
   home_team: string;
   away_team: string;
   home_team_abbr?: string;

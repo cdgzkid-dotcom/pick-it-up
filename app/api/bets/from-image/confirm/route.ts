@@ -147,6 +147,50 @@ export async function POST(req: Request) {
   const betResult = drafteaStatusToBetResult(data.status_draftea);
   const isPending = betResult === 'pending';
 
+  // ── Step 0: preseason observation guard ───────────────────────────────
+  // Runs BEFORE any write. A pick flagged observation_only (ESPN
+  // season.type=1, exhibition) can never become a bet — not via
+  // place_bet_atomic, and not via the historical INSERT path either, which
+  // would otherwise slip an exhibition game straight into `bets` and from
+  // there into every aggregate metric. Reject the whole ticket loudly rather
+  // than silently dropping the link and recording it as a manual bet.
+  const matchedPickIds = data.legs
+    .map((l) => l.matched_pick_id)
+    .filter((x): x is string => Boolean(x));
+  if (matchedPickIds.length > 0) {
+    const { data: matchedRows, error: matchedErr } = await supabase
+      .from('picks')
+      .select('id, pick, observation_only')
+      .in('id', matchedPickIds);
+    if (matchedErr) {
+      console.error('[confirm] observation_only lookup failed', matchedErr);
+      return NextResponse.json(
+        { error: 'No se pudo validar los picks de la boleta', detail: matchedErr.message },
+        { status: 500 },
+      );
+    }
+    const observation = (matchedRows ?? []).filter((r) => r.observation_only === true);
+    if (observation.length > 0) {
+      console.error('[confirm] REJECTED ticket containing observation_only pick(s)', {
+        pick_ids: observation.map((r) => r.id),
+        picks: observation.map((r) => r.pick),
+        wager_mxn: data.wager_mxn,
+        status_draftea: data.status_draftea,
+        reason: 'preseason observation picks cannot become bets',
+      });
+      return NextResponse.json(
+        {
+          error:
+            'La boleta incluye un pick de PRETEMPORADA (observación): ' +
+            observation.map((r) => r.pick).join(', ') +
+            '. Esos picks no se pueden registrar como apuesta.',
+          code: 'observation_only_pick',
+        },
+        { status: 422 },
+      );
+    }
+  }
+
   // ── Step 1: Update pick odds if they changed ──────────────────────────
 
   const changedLegs = data.legs.filter(

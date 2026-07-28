@@ -126,21 +126,50 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 }
 
 // ESPN seasontype: 1 = preseason, 2 = regular season, 3 = postseason.
+export const OBSERVATION_SEASON_TYPE = 1;
+
+/**
+ * Sports whose preseason enters the pipeline in observation mode. Picks built
+ * from a season.type=1 event of these leagues are flagged `observation_only`:
+ * generated, stored and displayed, but never bettable and never counted in
+ * aggregates.
+ *
+ * SCOPED TO NFL ON PURPOSE. Preseason is exhibition in every league, so the
+ * argument for widening this is sound in principle — but widening it today
+ * would silently change behavior for the 9 NBA/NHL games currently sitting on
+ * their default scoreboards as 2027 preseason, and nobody asked for that.
+ * Preseason NBA/NHL deserves its own decision, not inheritance from a change
+ * scoped to NFL. The mechanism is league-agnostic: enabling them later is
+ * adding a key here.
+ */
+const OBSERVATION_SPORTS = new Set(['NFL']);
+
+export function isObservationOnlySeasonType(
+  sport: string,
+  seasonType: number | undefined | null,
+): boolean {
+  if (!OBSERVATION_SPORTS.has(sport)) return false;
+  return seasonType === OBSERVATION_SEASON_TYPE;
+}
+
+// NFL preseason (Hall of Fame Game, 6 Aug 2026; weeks 1-3, 13-29 Aug) used to
+// be dropped outright here: starters play a series or two and ESPN's standings
+// for the new season are all 0-0 until the Week 1 opener, so the model would
+// analyze a coin flip against empty data.
 //
-// NFL preseason (Hall of Fame Game, 6 Aug 2026, through early Sep) is
-// exhibition football: starters play a series or two, and ESPN's standings /
-// team-stats for the new season are all 0-0 until the Week 1 opener on
-// 9 Sep 2026. Feeding those games to the model means analyzing a coin flip
-// against empty data, so NFL processes only regular season and playoffs.
+// 2026-07-27: preseason is allowed back in for NFL, but ONLY in observation
+// mode — every pick built from a season.type=1 event carries
+// `observation_only=true` (see eventToGame below), which blocks bet placement
+// and excludes it from calibration/tier stats/factor_performance. The point is
+// to watch what the model does with exhibition football, not to bet it.
 //
-// SCOPED TO NFL ON PURPOSE — do not make this generic. Verified 27 Jul 2026:
-// the NBA and NHL default scoreboards currently return ONLY seasontype=1
-// events (2027 preseason), so a league-agnostic filter would empty their
-// pipelines outright. MLB and WNBA are mid regular season (type=2) and would
-// be unaffected today, but they run their own preseason in Feb-Mar / Apr and
-// nobody asked for that behavior change.
+// STILL SCOPED TO NFL ON PURPOSE — do not make this generic. Verified
+// 27 Jul 2026: the NBA and NHL default scoreboards currently return ONLY
+// seasontype=1 events (2027 preseason). The early return below is what keeps
+// their pipelines alive; a league-agnostic allow-list here changes nothing for
+// them, but a league-agnostic *filter* would empty them outright.
 const ALLOWED_SEASON_TYPES: Record<string, number[]> = {
-  NFL: [2, 3],
+  NFL: [1, 2, 3],
 };
 
 function isProcessableSeasonType(sport: string, ev: EspnEvent): boolean {
@@ -248,9 +277,23 @@ async function eventToGame(sport: string, ev: EspnEvent): Promise<Game | null> {
 
   const notes = comp.notes?.map((n) => n.headline).filter(Boolean) ?? [];
 
+  const seasonType = typeof ev.season?.type === 'number' ? ev.season.type : undefined;
+  const observationOnly = isObservationOnlySeasonType(sport, seasonType);
+  if (observationOnly) {
+    console.log('[PRESEASON_OBSERVATION]', {
+      sport,
+      espn_event_id: ev.id,
+      game: `${away.team.displayName} @ ${home.team.displayName}`,
+      season_type: seasonType,
+      season_slug: ev.season?.slug ?? null,
+    });
+  }
+
   const game: Game = {
     sport,
     league: cfg.league,
+    season_type: seasonType,
+    observation_only: observationOnly,
     home_team: home.team.displayName,
     away_team: away.team.displayName,
     home_team_abbr: home.team.abbreviation?.toLowerCase(),

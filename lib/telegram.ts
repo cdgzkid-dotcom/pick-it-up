@@ -113,6 +113,9 @@ interface PickForMessage {
   units_theoretical?: number | null;
   /** Sport needed to phrase the sport_multiplier reason. */
   sport?: string | null;
+  /** Preseason observation pick — rendered in its own NO APOSTAR block, never
+   *  with a stake line, never counted in the header total. */
+  observation_only?: boolean | null;
   trap_warning?: string | null;
   analysis?: string | null;
   is_parlay?: boolean;
@@ -309,6 +312,15 @@ const TIER_LABEL: Record<string, string> = {
   parlay: 'PARLAY',
 };
 
+/**
+ * Preseason observation banner. Deliberately unmissable: emoji + all-caps
+ * "NO APOSTAR" + the reason, on its own line. The failure mode this guards
+ * against is a half-asleep user at 11pm reading a pick and tapping Apostar —
+ * so an observation pick never renders a stake, never renders a "Ganas" line,
+ * and never sits in the same visual block as a real pick.
+ */
+const OBSERVATION_BANNER = '🔬 *OBSERVACIÓN — NO APOSTAR (preseason)*';
+
 export function formatPicksMessage(
   picks: PickForMessage[],
   parlays: PickForMessage[],
@@ -316,17 +328,28 @@ export function formatPicksMessage(
   ctx: PicksContext = {},
 ): string {
   const lines: string[] = [];
-  const total = picks.length + parlays.length;
+  const observationPicks = picks.filter((p) => p.observation_only === true);
+  const bettablePicks = picks.filter((p) => p.observation_only !== true);
+  const total = bettablePicks.length + parlays.length;
 
   // ─── HEADER ─────────────────────────────────────────────────────────────
-  lines.push(`🎯 *PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
+  // When the whole slate is preseason, the banner IS the header — no
+  // "N picks listos" line that could be mistaken for actionable picks.
+  if (total === 0 && observationPicks.length > 0) {
+    lines.push(OBSERVATION_BANNER);
+    lines.push(
+      `${observationPicks.length} pick${observationPicks.length === 1 ? '' : 's'} de pretemporada — solo para observar.`,
+    );
+  } else {
+    lines.push(`🎯 *PICK IT UP* — ${total} pick${total === 1 ? '' : 's'} listo${total === 1 ? '' : 's'}`);
+  }
   if (ctx.bankrollCurrent != null) {
     lines.push(`💰 Bankroll: $${Math.round(ctx.bankrollCurrent)} MXN`);
   }
   lines.push('');
 
   // ─── PICKS ──────────────────────────────────────────────────────────────
-  picks.forEach((p, i) => {
+  bettablePicks.forEach((p, i) => {
     const trap = p.trap_warning ? ' · ⚠️ TRAMPA' : '';
     const stake = p.recommended_amount != null ? Math.round(p.recommended_amount) : 0;
     const win = stake > 0 ? Math.round(stake * (p.odds_decimal - 1)) : 0;
@@ -398,6 +421,33 @@ export function formatPicksMessage(
     }
     lines.push('');
   });
+
+  // ─── OBSERVACIÓN (PRESEASON) ────────────────────────────────────────────
+  // Own block, own banner, repeated after the list. No stake, no payout, no
+  // "Apostar" wording anywhere inside it.
+  if (observationPicks.length > 0) {
+    lines.push('━━━━━━━━━━━━━━━━━━━━');
+    lines.push(OBSERVATION_BANNER);
+    lines.push('Pretemporada = exhibición. Estos picks NO se pueden apostar:');
+    lines.push('la app los rechaza y no cuentan para stats, tiers ni calibración.');
+    lines.push('');
+    observationPicks.forEach((p, i) => {
+      const sportTag = p.sport ? `${sportEmoji(p.sport)} ` : '';
+      lines.push(`🔬 *#${i + 1} OBSERVACIÓN · ${tierBadge(p.tier, p.real_probability, p.edge)}*`);
+      if (p.away_team && p.home_team) {
+        lines.push(`${sportTag}${p.away_team} @ ${p.home_team}`);
+        lines.push(`Lectura: ${p.pick} @ ${p.odds_decimal.toFixed(2)}`);
+      } else {
+        lines.push(`${sportTag}${p.pick} @ ${p.odds_decimal.toFixed(2)}`);
+      }
+      lines.push('🚫 Sin monto — NO APOSTAR (preseason)');
+      const summary = oneLineSummary(p.analysis);
+      if (summary) lines.push(`📋 ${summary}`);
+      lines.push('');
+    });
+    lines.push(OBSERVATION_BANNER);
+    lines.push('');
+  }
 
   // ─── FOOTER ─────────────────────────────────────────────────────────────
   if (gameStartTime) {

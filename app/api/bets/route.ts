@@ -51,9 +51,32 @@ export async function POST(req: Request) {
   if (pick_id) {
     const { data: pickRow } = await supabase
       .from('picks')
-      .select('espn_event_id, game_start_time')
+      .select('espn_event_id, game_start_time, observation_only')
       .eq('id', pick_id)
       .maybeSingle();
+
+    // Preseason observation picks are NOT bettable. Reject loudly here (and
+    // again inside place_bet_atomic) rather than letting an exhibition game
+    // reach the bankroll. Fails closed: if the row can't be read at all we
+    // still proceed as before, but a row that says observation_only stops.
+    if (pickRow?.observation_only === true) {
+      console.error('[POST /api/bets] REJECTED observation_only pick', {
+        pick_id,
+        pick: parsed.data.pick,
+        sport: parsed.data.sport,
+        amount: parsed.data.amount,
+        reason: 'preseason observation pick — betting is disabled for this pick',
+      });
+      return NextResponse.json(
+        {
+          error:
+            'Este pick es de PRETEMPORADA (observación). No se puede apostar ni registrar como apuesta.',
+          code: 'observation_only_pick',
+        },
+        { status: 422 },
+      );
+    }
+
     if (!espn_event_id) espn_event_id = pickRow?.espn_event_id ?? null;
     game_start_time = pickRow?.game_start_time ?? null;
   }
@@ -89,6 +112,22 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: 'Bankroll insuficiente para esta apuesta', detail: msg },
         { status: 409 },
+      );
+    }
+    if (msg.startsWith('observation_only_pick')) {
+      // Raised by place_bet_atomic — the DB-level backstop for the check
+      // above. Reaching this means something bypassed the route guard.
+      console.error('[POST /api/bets] place_bet_atomic rejected observation_only pick', {
+        pick_id,
+        detail: msg,
+      });
+      return NextResponse.json(
+        {
+          error:
+            'Este pick es de PRETEMPORADA (observación). No se puede apostar ni registrar como apuesta.',
+          code: 'observation_only_pick',
+        },
+        { status: 422 },
       );
     }
     if (msg.startsWith('settings_missing')) {

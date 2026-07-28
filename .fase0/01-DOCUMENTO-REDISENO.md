@@ -21,6 +21,32 @@ absoluta de ganar y pasa a depender del valor esperado y la calidad del
 precio. Un underdog al 45% con momio 2.50 tiene EV +12.5% y debe poder
 recomendarse.
 
+JUSTIFICACIÓN CORREGIDA TRAS LA FASE 0 (2026-07-28). La versión
+original de este documento decía que el piso de 55% impide recomendar
+underdogs. Eso es FALSO medido por momio: 148 de 271 picks MLB con
+momio válido son underdog (54.6%), y 25 de 68 apuestas ejecutadas.
+
+La razón real es peor. El filtro de lib/pickGen.ts:1067-1077, vía
+lib/units.ts:43, corta por PROBABILIDAD DE MODELO, no por precio. Por
+tanto elimina exactamente los underdogs cuya probabilidad el modelo
+estima honestamente por debajo del piso — que son los de EV positivo
+POR PRECIO — y conserva solo aquellos a los que el modelo asigna ≥55%,
+es decir los que dependen de que Claude discrepe del mercado.
+
+El sesgo no es "no hay underdogs". Es "solo hay underdogs por opinión,
+nunca por precio": el sistema se queda con la clase más frágil y
+descarta la más sólida. El underdog canónico de arriba (p=0.45, momio
+2.50) pasa el gate de edge y muere en el tier.
+
+Filtros adicionales por precio que hay que retirar junto con el piso:
+  lib/pickGen.ts:1171   descarta si odds<1.4 && edge<0.05
+  lib/units.ts:45-49    degrada tier si odds<1.40, hasta null en VALUE
+  lib/pickGen.ts:1028-1045  dampening asimétrico: recorta la
+                        probabilidad solo hacia arriba
+  lib/pickGen.ts:1169   confidence>=55, umbral sobre una magnitud que
+                        este mismo documento advierte no confundir con
+                        probabilidad
+
 Fórmula base: expected_value = model_probability * odds_decimal - 1
 
 Pero el diseño NO debe confiar ciegamente en model_probability. Debe
@@ -65,6 +91,38 @@ desconocida. NULL cuando el valor no existe. Este bug ya destruyó
 información histórica (188 analyzed_no_edge con real_probability=0).
 
 ## FASE 2 — NORMALIZACIÓN Y ELIMINACIÓN DEL VIG
+
+PRERREQUISITO DURO, NO DETALLE DE IMPLEMENTACIÓN (Fase 0, 2026-07-28):
+persistir AMBOS LADOS del moneyline por fuente y por snapshot.
+
+Hoy no se persisten. Se capturan en memoria —ESPN exige home+away
+(lib/espn.ts:207-216, :657-695) y Pinnacle rechaza mercados asimétricos
+(lib/pinnacle.ts:146-170)— pero al mapear el candidato se elige un lado
+(lib/pickGen.ts:923-993), cada book se reduce a {source, ml} del lado
+elegido (:1047-1051) y picks guarda un solo odds_decimal. Las únicas
+excepciones parciales son pinnacle_cache (ambos lados, TTL 600s) y
+line_openings (ambos lados de la casa primaria al primer avistamiento,
+sin nombre de casa).
+
+Consecuencias, ambas bloqueantes:
+  - Sin los dos lados no hay overround y por tanto no hay de-vig. Toda
+    la Fase 2 es inejecutable.
+  - El histórico NO es reconstruible. No se puede de-viggear hacia
+    atrás y NUNCA debe fabricarse el lado faltante a partir del lado
+    apostado.
+
+Modo de fallo si se ignora: la normalización proporcional devuelve un
+número plausible sobre un solo lado, las probabilidades salen
+silenciosamente sesgadas, y todo aguas abajo hereda el sesgo sin señal
+de error. El pipeline corre verde.
+
+Además, el consenso actual mezcla magnitudes incompatibles y hay que
+rehacerlo aquí: computeMarketConsensus (lib/edge.ts:44-79) promedia el
+implícito CON vig de DK, el CON vig de Pinnacle y el espn_bpi, que es
+probabilidad de modelo y ya viene SIN vig. Con overround 1.048 cada
+implícito de casa está inflado ~2.4pp y el BPI no, así que el sesgo del
+promedio varía según cuántas fuentes de casa entraron ese día. Corolario:
+edge_vs_market histórico NO es comparable entre picks.
 
 Capa única que: empareja ambos lados del moneyline, convierte a
 probabilidades implícitas, elimina el vig, detecta mercados incompletos,
@@ -158,11 +216,33 @@ El tier depende de combinación explícita de: EV conservador, edge contra
 consenso sharp, número de fuentes, dispersión, frescura, calidad de
 datos, incertidumbre, CLV esperado.
 
-NO fijar thresholds definitivos sin analizar primero la distribución
-histórica. Los thresholds van en configuración centralizada y versionada,
-NO hardcodeados en múltiples archivos. Este proyecto ya tuvo el mismo
-rango de tier hardcodeado en dos lugares que se desincronizaron y
-mintieron al usuario durante semanas.
+DEPENDENCIA INVERTIDA TRAS LA FASE 0 (2026-07-28): LA FASE 6 DEPENDE
+DE LA FASE 7, NO AL REVÉS.
+
+La instrucción original —"no fijar thresholds sin analizar primero la
+distribución histórica"— es correcta pero inejecutable: esa distribución
+YA NO EXISTE. Los 511 analyzed_no_edge (57% de las 896 filas de picks)
+se guardaron con real_probability=0, implied_probability=0, edge=0,
+edge_vs_market NULL y original_odds NULL. El 100% de ellos.
+
+Lo que queda es una muestra truncada justo por encima del propio piso
+que se quiere retirar: sobre los 369 picks válidos, la mediana de
+real_probability es 0.560 y el P25 es 0.480. Esa masa pegada al 0.55 es
+la firma del filtro, no una propiedad del deporte. Fijar cortes ahí es
+calibrar contra el sesgo que se está intentando eliminar.
+
+Por tanto: los cortes por EV se fijan con la distribución que GENERE el
+modo observación de la Fase 7, guardando probabilidades crudas sin
+placeholders. Hasta entonces, cualquier valor es provisional y debe
+declararse como tal.
+
+Los thresholds van en configuración centralizada y versionada, NO
+hardcodeados en múltiples archivos. Este proyecto ya tuvo el mismo rango
+de tier hardcodeado en dos lugares que se desincronizaron y mintieron al
+usuario durante semanas — y en la Fase 0 apareció una SEGUNDA copia viva
+(app/(tabs)/home/page.tsx:161-165, que afirmaba "VALUE 55%+ todos los
+deportes" cuando NFL exige 59%). Corregida en b0e2b0c derivándola de
+SPORT_THRESHOLDS. Van dos.
 
 Favoritos y underdogs recorren EXACTAMENTE el mismo pipeline. Ningún
 filtro tipo probability >= 0.55 que impida estructuralmente un lado del
@@ -196,6 +276,35 @@ NO declarar ganador por ROI con muestra pequeña. Criterio principal: CLV
 — SIEMPRE QUE la contradicción del CLV esté resuelta (ver W1).
 
 ## FASE 8 — CRITERIOS DE ACTIVACIÓN SELLADOS
+
+EL CRITERIO DE CLV QUEDA EN PAUSA (Fase 0, 2026-07-28).
+
+No se sella ningún criterio basado en CLV hasta que exista
+instrumentación correcta. Razón: el CLV histórico (−1.003pp sobre n=41)
+es 98% spread entre casas y NO dice nada sobre el modelo.
+
+  CLV total almacenado          −1.003 pp
+  brecha cross-book Draftea/DK  −0.985 pp
+  movimiento real de DK         −0.018 pp   (sd 0.822 — ruido)
+
+odds_at_bet es el precio de DRAFTEA leído por visión del ticket
+(confirm/route.ts:337 → place_bet_atomic); odds_at_close es el cierre de
+DRAFTKINGS vía ESPN. La prueba: odds_at_close nunca coincide con
+odds_at_bet (0/39) y sí con original_odds en 14/39, porque ambos son DK.
+
+Requisitos mínimos para reactivar el criterio: CLV medido contra LA
+MISMA CASA, el MISMO LADO y un MOMENTO de cierre definido y registrado.
+En concreto:
+  - clv_market = (1/close_DK) − (1/original_odds_DK), de-vigged
+  - book_gap   = (1/odds_at_bet) − (1/original_odds_DK), medido aparte
+    y monitoreado, nunca sumado dentro del CLV
+  - persistir casa, endpoint y timestamp de captura del cierre
+  - fallback debe dar clv NULL, jamás 0 (hoy 5 de 44 filas están
+    contaminadas así, indistinguibles de línea inmóvil)
+
+Mientras tanto, la comparación de variantes de la Fase 7 no puede
+declararse por CLV. Si hace falta un criterio provisional, usar Brier
+score y log loss, que no dependen del precio de ejecución.
 
 Antes de ver ningún resultado, persistir criterios explícitos para
 considerar activar apuestas reales. Propón valores conservadores para

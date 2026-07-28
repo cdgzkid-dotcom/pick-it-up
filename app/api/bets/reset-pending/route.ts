@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST() {
+  const disabled = await systemDisabledResponse('bets/reset-pending');
+  if (disabled) return disabled;
+
   const supabase = supabaseAdmin();
 
   const { data: pending, error: fetchErr } = await supabase

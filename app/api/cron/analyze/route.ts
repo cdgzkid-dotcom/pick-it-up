@@ -11,6 +11,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { fetchGames, fetchInjuriesForSports, fetchEventStatus, fetchEspnClosingLine } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import { potentialWin } from '@/lib/units';
@@ -1018,6 +1019,13 @@ async function handle(req: Request) {
   if (!authOk(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  // Kill switch: gates the WHOLE handler — analyze, resultsCheck and orphan
+  // cleanup. auto_enabled only pauses pick generation (:146); this stops
+  // everything. 503 body is distinguishable on purpose: "switched off" must
+  // never look like "silently broken" from a curl.
+  const disabled = await systemDisabledResponse('cron/analyze');
+  if (disabled) return disabled;
 
   const t0 = Date.now();
   const errors: Record<string, string> = {};

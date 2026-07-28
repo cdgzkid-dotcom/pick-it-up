@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import type { Bet, BankrollLog } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -119,6 +120,9 @@ export async function GET() {
 }
 
 export async function POST() {
+  const disabled = await systemDisabledResponse('bankroll/recalculate');
+  if (disabled) return disabled;
+
   try {
     const supabase = supabaseAdmin();
     const calc = await compute();

@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { sendTelegramMessage } from '@/lib/telegram';
 import { computeStats, modelBets } from '@/lib/stats';
 import type { Bet } from '@/lib/types';
@@ -44,6 +45,9 @@ async function handle(req: Request) {
   if (!authOk(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const disabled = await systemDisabledResponse('cron/calibrate');
+  if (disabled) return disabled;
 
   const supabase = supabaseAdmin();
 

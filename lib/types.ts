@@ -140,6 +140,10 @@ export interface Settings {
   unit_percentage: number;
   auto_sports?: string[];
   auto_enabled?: boolean;
+  /** Kill switch. false = no write path runs (503 + RPC guard). Distinct from auto_enabled. */
+  system_enabled?: boolean;
+  system_disabled_reason?: string | null;
+  system_disabled_at?: string | null;
 }
 
 export interface Game {

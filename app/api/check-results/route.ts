@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { fetchEventStatus, fetchEspnClosingLine } from '@/lib/espn';
 import { potentialWin } from '@/lib/units';
 import { applyResult as applyEloResult } from '@/lib/elo';
@@ -41,6 +42,9 @@ interface Resolution {
 }
 
 export async function POST() {
+  const disabled = await systemDisabledResponse('check-results');
+  if (disabled) return disabled;
+
   const supabase = supabaseAdmin();
   const { data: pendingBets, error } = await supabase
     .from('bets')

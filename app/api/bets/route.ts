@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,9 @@ const CreateBetSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const disabled = await systemDisabledResponse('bets');
+  if (disabled) return disabled;
+
   let body: unknown;
   try {
     body = await req.json();

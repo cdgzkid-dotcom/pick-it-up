@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { normalizeSport, normalizeBetType } from '@/lib/normalize-bet';
 import { auditPickQuality } from '@/lib/pickAudit';
 
@@ -127,6 +128,9 @@ function buildBetDescription(data: ConfirmData): {
 // ── Handler ────────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
+  const disabled = await systemDisabledResponse('bets/from-image/confirm');
+  if (disabled) return disabled;
+
   let body: unknown;
   try {
     body = await req.json();

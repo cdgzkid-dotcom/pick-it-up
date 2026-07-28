@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { potentialWin } from '@/lib/units';
 
 export const runtime = 'nodejs';
@@ -15,6 +16,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } },
 ) {
+  const disabled = await systemDisabledResponse('bets/[id]');
+  if (disabled) return disabled;
+
   const id = params.id;
   let body: unknown;
   try {

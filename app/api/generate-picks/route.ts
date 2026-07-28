@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase';
+import { systemDisabledResponse } from '@/lib/systemState';
 import { fetchGames, fetchInjuriesForSports } from '@/lib/espn';
 import { analyzeGames } from '@/lib/pickGen';
 import type { Game } from '@/lib/types';
@@ -41,6 +42,9 @@ function selectTopGames(games: Game[], requestedSports: string[], max: number): 
 }
 
 export async function POST(req: Request) {
+  const disabled = await systemDisabledResponse('generate-picks');
+  if (disabled) return disabled;
+
   let body: unknown;
   try {
     body = await req.json();

@@ -768,9 +768,10 @@ export async function analyzeGames(
     implied_probability: number;
     edge: number;
     // Draftea spread discount (S1). edge_vs_dk mirrors `edge` (raw, vs DK);
-    // edge_after_spread = edge_vs_dk - BOOK_SPREAD_DISCOUNT.draftea. The
-    // selection gates downstream consume edge_after_spread; `edge` keeps its
-    // existing (display) semantics untouched.
+    // edge_after_spread = edge_vs_dk - BOOK_SPREAD_DISCOUNT.draftea. Reverted
+    // 2026-07-28: selection gates consume raw `edge` again; edge_after_spread
+    // is computed and persisted for the Telegram message only (no longer a
+    // gate input).
     edge_vs_dk: number;
     edge_after_spread: number;
     confidence: number; // floor-adjusted
@@ -978,8 +979,12 @@ export async function analyzeGames(
     // Draftea (where the user actually bets) pays worse than DK. Discount the
     // calibrated book spread before the gate, so the threshold reflects the
     // edge actually available at the book we bet on.
+    // Gate reverted to raw edge vs DK 2026-07-28 (Christian's decision). The
+    // Draftea/DK spread is no longer a selection gate — it's contextual info
+    // rendered in the Telegram message, checkpointed by Christian against the
+    // real Draftea price at bet time.
     const bestEdgeAfterSpread = bestEdge - BOOK_SPREAD_DISCOUNT.draftea;
-    if (bestEdgeAfterSpread < EDGE_THRESHOLD) {
+    if (bestEdge < EDGE_THRESHOLD) {
       console.log('[EDGE_BELOW_THRESHOLD]', {
         teams: `${p.away_team}@${p.home_team}`,
         side,
@@ -1189,7 +1194,7 @@ export async function analyzeGames(
       const reasons_for_this: string[] = [];
       if (!(p.confidence >= 55)) reasons_for_this.push(`conf<55 (${p.confidence})`);
       if (!(p.recommended_amount > 0)) reasons_for_this.push('kelly=0');
-      if (p.odds_decimal < 1.4 && p.edge_after_spread < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
+      if (p.odds_decimal < 1.4 && p.edge < 0.05) reasons_for_this.push(`culero (odds=${p.odds_decimal} edge=${(p.edge * 100).toFixed(1)}%)`);
       if (reasons_for_this.length > 0) {
         console.log(
           `[AUDIT] DISCARD ${p.pick} (${p.sport}) — reasons: ${reasons_for_this.join('; ')} | conf=${p.confidence} odds=${p.odds_decimal} real=${(p.real_probability * 100).toFixed(1)}% edge=${(p.edge * 100).toFixed(2)}% kelly=$${p.recommended_amount}`,
@@ -1263,7 +1268,7 @@ export async function analyzeGames(
   //     game the system is only watching.
   const parlayCandidates = auditedSingles.filter(
     (p) =>
-      p.edge_after_spread >= 0.03 &&
+      p.edge >= 0.03 &&
       (p.tier === 'lock' || p.tier === 'strong') &&
       p.espn_event_id &&
       !p.observation_only,
@@ -1290,11 +1295,10 @@ export async function analyzeGames(
     const realProb = legs.reduce((a, l) => a * l.real_probability, 1);
     const implied = 1 / odds;
     const edge = realProb - implied;
-    // Combined edge is priced against DK's combined odds; the parlay is a
-    // single ticket placed at Draftea, so the book-spread discount applies
-    // once (not per leg) before the total gate.
-    const edgeAfterSpread = edge - BOOK_SPREAD_DISCOUNT.draftea;
-    if (edgeAfterSpread < 0.05) return null;
+    // Gate reverted to raw combined edge vs DK 2026-07-28 (Christian's
+    // decision) — the book-spread discount is no longer a selection gate,
+    // only contextual info in the Telegram message.
+    if (edge < 0.05) return null;
     const k = kellyAmount(opts.bankroll, realProb, odds);
     if (k.amount <= 0) return null;
     const conf = Math.round(realProb * 100);

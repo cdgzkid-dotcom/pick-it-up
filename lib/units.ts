@@ -40,6 +40,16 @@ export const BOOK_SPREAD_DISCOUNT: Record<string, number> = {
   draftea: 0.0235,
 };
 
+/**
+ * Minimum decimal odds at which a pick is still worth taking at the
+ * execution book. 1.05 preserves the original +5% EV bar
+ * (p × odds >= 1.05). That 5% is INHERITED from EDGE_THRESHOLD, not
+ * calibrated — documented per Christian's decision 2026-07-28.
+ * Rounds UP to 2 decimals (conservative: never understate the bar).
+ */
+export const minAcceptableOdds = (realProbability: number): number =>
+  Math.ceil((1.05 / realProbability) * 100 - 1e-9) / 100;
+
 export function tierFromProbability(
   realProbability: number,
   sport: string,

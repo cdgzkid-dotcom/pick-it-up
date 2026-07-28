@@ -3,6 +3,7 @@
 // variant — no need to escape every punctuation character like MarkdownV2).
 
 import type { SystemHealthSummary } from '@/lib/healthChecks';
+import { BOOK_SPREAD_DISCOUNT, minAcceptableOdds } from '@/lib/units';
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://pick-it-up.vercel.app';
 
@@ -389,6 +390,16 @@ export function formatPicksMessage(
     }
     const summary = oneLineSummary(p.analysis);
     if (summary) lines.push(`📋 ${summary}`);
+    // Minimum-odds checkpoint (2026-07-28, Christian's decision — Opción C).
+    // The book-spread constant is no longer a selection gate; it's shown here
+    // as context, and the real checkpoint is Christian reading the Draftea
+    // price against this floor. Omit entirely when real_probability isn't
+    // available in this shape — never show a fabricated 0.
+    if (p.real_probability != null && p.edge != null) {
+      const netoEstimado = (p.edge - BOOK_SPREAD_DISCOUNT.draftea) * 100;
+      lines.push(`💰 Edge vs DK: ${(p.edge * 100).toFixed(1)}% · Neto estimado: ~${netoEstimado.toFixed(1)}pp`);
+      lines.push(`✅ Apuesta SOLO si Draftea paga ≥ ${minAcceptableOdds(p.real_probability).toFixed(2)}`);
+    }
     lines.push('');
   });
 
@@ -418,6 +429,15 @@ export function formatPicksMessage(
       } else {
         lines.push(`💰 Apostar: $${stake} → Ganas: $${win}`);
       }
+    }
+    // Same minimum-odds checkpoint as singles, against the combined
+    // probability and the parlay's total odds. real_probability on
+    // GeneratedParlay is the combined leg probability, so it's available
+    // here directly — no refactor needed to reach it.
+    if (par.real_probability != null && par.edge != null) {
+      const netoEstimado = (par.edge - BOOK_SPREAD_DISCOUNT.draftea) * 100;
+      lines.push(`💰 Edge vs DK: ${(par.edge * 100).toFixed(1)}% · Neto estimado: ~${netoEstimado.toFixed(1)}pp`);
+      lines.push(`✅ Apuesta SOLO si Draftea paga ≥ ${minAcceptableOdds(par.real_probability).toFixed(2)}`);
     }
     lines.push('');
   });

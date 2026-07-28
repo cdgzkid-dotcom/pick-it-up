@@ -1,8 +1,20 @@
-# DISEÑO — Etapa 2: checkpoint humano de precio Draftea (NO implementar aún)
+# DISEÑO — Etapa 2: checkpoint humano de precio Draftea
 
-Para aprobación de Christian junto con el rediseño. Fecha: 2026-07-28.
-Estado: **diseño**. La Etapa 1 (constante 2.35pp) ya está en producción (`ef4632e`);
-esto la complementa, no la reemplaza.
+> ⚠️ **SUPERSEDIDO EN PARTE — decisión de Christian del 28-jul (Opción C + momio
+> mínimo).** Lo vigente:
+> - La fórmula del mínimo es **`1.05 / real_probability`** (preserva EV ≥ +5%,
+>   `p × odds ≥ 1.05`), redondeada a 2 decimales HACIA ARRIBA — **no** la
+>   `1/(p − 0.05)` propuesta abajo (que preservaba edge aditivo; barra distinta).
+>   El 1.05 es heredado del EDGE_THRESHOLD de 5%, no calibrado.
+> - El bloque en Telegram se implementa YA (no "con el rediseño"), sin persistir
+>   `min_acceptable_odds` — display solamente.
+> - Los gates de generación vuelven al edge BRUTO contra DK (la constante 2.35pp
+>   no gatea nada; es contexto "neto estimado" en la notificación).
+>
+> El resto del documento se conserva como razonamiento de diseño (la idea del
+> checkpoint humano, la métrica de disciplina, la interacción con la Fase 6).
+
+Fecha original: 2026-07-28.
 
 ## LA IDEA EN UNA LÍNEA
 

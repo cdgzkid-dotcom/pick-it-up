@@ -486,7 +486,7 @@ async function fetchScoreboardByDateLive(sport: string, ymd: string): Promise<Sc
       `https://site.api.espn.com/apis/site/v2/sports/${cfg.scoreboardPath}/scoreboard?dates=${ymd}`,
       {
         cache: 'no-store',
-        headers: { Accept: 'application/json', 'User-Agent': 'pick-it-up/1.0' },
+        headers: { Accept: 'application/json' }, // no custom UA — see fetchJson
       },
     );
     if (!res.ok) return [];

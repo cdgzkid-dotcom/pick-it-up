@@ -112,13 +112,16 @@ const americanToDecimal = (american: number | null | undefined): number | null =
 
 async function fetchJson<T>(url: string): Promise<T | null> {
   try {
-    // no-store on purpose (2026-08-27): with `next.revalidate` the Vercel Data
-    // Cache served a frozen 2026-08-04 scoreboard for 3 weeks → 0 games in
-    // window → 0 picks, while health stayed green. The cron runs every 10 min;
-    // a 5-min cache buys nothing and can silently blind the whole pipeline.
+    // 2026-08-27 incident: ESPN's edge (Akamai) started answering 403 to the
+    // custom 'pick-it-up/1.0' User-Agent (~2026-08-04). The Vercel Data Cache
+    // (`next.revalidate`) then kept serving the last good scoreboard for 3
+    // weeks → 0 games in window → 0 picks, health green. Two rules now:
+    //   - NO custom User-Agent (Node's default passes; healthChecks proves it).
+    //   - NO caching: the cron runs every 10 min, a 5-min cache buys nothing
+    //     and can silently blind the whole pipeline.
     const res = await fetch(url, {
       cache: 'no-store',
-      headers: { Accept: 'application/json', 'User-Agent': 'pick-it-up/1.0' },
+      headers: { Accept: 'application/json' },
     });
     if (!res.ok) return null;
     return (await res.json()) as T;

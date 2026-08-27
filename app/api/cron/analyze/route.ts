@@ -167,6 +167,24 @@ async function runAnalyzeWindow(): Promise<{
   for (const g of games) bySport[g.sport] = (bySport[g.sport] ?? 0) + 1;
   console.log(`[AUDIT][cron] ESPN games found by sport: ${JSON.stringify(bySport)} (total ${games.length})`);
 
+  // Staleness guard (2026-08-27): a live scoreboard never shows a game still
+  // in state 'pre' 3h after its start time (it moves to 'in'/'post'); a frozen
+  // cache does. If EVERY fetched game (2+) is 'pre' and started >3h ago, throw
+  // so the run lands in cron_runs.errors and /api/health/full turns red
+  // instead of reporting "no games in window". In-progress games are excluded
+  // on purpose (extra innings / OT would otherwise false-positive late at night).
+  if (games.length >= 2) {
+    const staleCutoff = Date.now() - 3 * 60 * 60_000;
+    const allStale = games.every((g) => {
+      const t = g.start_time ? new Date(g.start_time).getTime() : NaN;
+      return g.notable_stats?.status === 'pre' && Number.isFinite(t) && t < staleCutoff;
+    });
+    if (allStale) {
+      const oldest = games.map((g) => g.start_time).sort()[0];
+      throw new Error(`stale_espn_data: all ${games.length} games started >3h ago (oldest ${oldest})`);
+    }
+  }
+
   const inWindow = games.filter((g) => withinWindow(g.sport, g.start_time));
   const playoffsInWindow = inWindow.filter((g) => isPlayoffSeason(g.sport));
   console.log(`[AUDIT][cron] in-window games: ${inWindow.length} (filtered out ${games.length - inWindow.length} outside window) · playoffs in window: ${playoffsInWindow.length}`);

@@ -75,6 +75,15 @@ export async function GET() {
     .eq('workflow', 'analyze')
     .gte('started_at', todayStartCdmx);
 
+  // Last 12 runs cover roughly two hours at the normal 10-minute cadence.
+  const { data: recentRows } = await supabase
+    .from('cron_runs')
+    .select('games_fetched')
+    .eq('workflow', 'analyze')
+    .gte('started_at', new Date(now.getTime() - 150 * 60_000).toISOString()) // bound to ~2.5h so a stalled cron can't fake a streak
+    .order('started_at', { ascending: false })
+    .limit(12);
+
   const runs = (todayRows ?? []) as Pick<CronRunRow, 'games_fetched' | 'games_analyzed'>[];
 
   // games_today_total: max(games_fetched) — represents the ESPN slate size at peak
@@ -97,9 +106,21 @@ export async function GET() {
 
   let alertLevel: 'green' | 'yellow' | 'red' = 'green';
   const alertReasons: string[] = [];
+  const lastErrors = (lastRunRow as Partial<CronRunRow> | null)?.errors;
+  const hasStaleEspnError = lastErrors !== null
+    && lastErrors !== undefined
+    && JSON.stringify(lastErrors).includes('stale_espn_data');
+  const latestRuns = (recentRows ?? []) as Pick<CronRunRow, 'games_fetched'>[];
+  const utcHour = now.getUTCHours();
+  const isGameHoursUtc = utcHour >= 16 || utcHour < 4;
+  const hasZeroGamesStreak = latestRuns.length === 12
+    && latestRuns.every((run) => run.games_fetched === 0);
 
-  if (minSinceLastSuccess > RED_THRESHOLD_MIN || lastAnthropicStatus === 'error') {
+  if (hasStaleEspnError || minSinceLastSuccess > RED_THRESHOLD_MIN || lastAnthropicStatus === 'error') {
     alertLevel = 'red';
+    if (hasStaleEspnError) {
+      alertReasons.push('stale_espn_data');
+    }
     if (minSinceLastSuccess > RED_THRESHOLD_MIN) {
       alertReasons.push(
         `sin cron exitoso en los últimos ${Math.round(minSinceLastSuccess)} min (umbral ${RED_THRESHOLD_MIN} min)`,
@@ -108,8 +129,15 @@ export async function GET() {
     if (lastAnthropicStatus === 'error') {
       alertReasons.push('último llamado a Anthropic API terminó en error (no-529)');
     }
-  } else if (minSinceLastSuccess > YELLOW_THRESHOLD_MIN || lastAnthropicStatus === '529') {
+  } else if (
+    (hasZeroGamesStreak && isGameHoursUtc)
+    || minSinceLastSuccess > YELLOW_THRESHOLD_MIN
+    || lastAnthropicStatus === '529'
+  ) {
     alertLevel = 'yellow';
+    if (hasZeroGamesStreak && isGameHoursUtc) {
+      alertReasons.push('espn_zero_games_streak');
+    }
     if (minSinceLastSuccess > YELLOW_THRESHOLD_MIN) {
       alertReasons.push(
         `sin cron exitoso en los últimos ${Math.round(minSinceLastSuccess)} min (umbral ${YELLOW_THRESHOLD_MIN} min)`,

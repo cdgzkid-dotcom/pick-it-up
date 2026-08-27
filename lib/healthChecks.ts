@@ -10,6 +10,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase';
 import { pingPinnacle } from '@/lib/pinnacle';
+import { fetchGames } from '@/lib/espn';
 
 export interface HealthCheckResult {
   name: string;
@@ -163,6 +164,70 @@ async function checkEspnScoreboard(): Promise<HealthCheckResult> {
   } catch (e) {
     return {
       name: 'espn_scoreboard',
+      status: 'error',
+      detail: (e as Error).message,
+      duration_ms: Date.now() - t0,
+    };
+  }
+}
+
+async function checkEspnPipelineFreshness(): Promise<HealthCheckResult> {
+  const t0 = Date.now();
+  try {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('fetchGames timed out after 6000ms')),
+        6000,
+      );
+    });
+    const games = await Promise.race([fetchGames(['MLB', 'NFL']), timeout])
+      .finally(() => clearTimeout(timeoutId));
+
+    const staleCutoff = Date.now() - 3 * 60 * 60_000;
+    const allStale = games.length > 0 && games.every((game) => {
+      const startTime = game.start_time ? new Date(game.start_time).getTime() : NaN;
+      return game.notable_stats?.status === 'pre'
+        && Number.isFinite(startTime)
+        && startTime < staleCutoff;
+    });
+    if (allStale) {
+      return {
+        name: 'espn_pipeline_freshness',
+        status: 'error',
+        detail: `stale_espn_data: all ${games.length} pipeline games are pre and started >3h ago`,
+        duration_ms: Date.now() - t0,
+      };
+    }
+
+    if (games.length === 0) {
+      const rawRes = await fetch(
+        'https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard',
+        { signal: AbortSignal.timeout(3000) }, // 6s + 3s stays under the cron's 12s health bound
+      );
+      if (rawRes.ok) {
+        const rawData = (await rawRes.json()) as { events?: unknown[] };
+        const rawEventCount = rawData.events?.length ?? 0;
+        if (rawEventCount > 0) {
+          return {
+            name: 'espn_pipeline_freshness',
+            status: 'warning',
+            detail: `pipeline returned 0 games but raw MLB scoreboard returned ${rawEventCount} events`,
+            duration_ms: Date.now() - t0,
+          };
+        }
+      }
+    }
+
+    return {
+      name: 'espn_pipeline_freshness',
+      status: 'ok',
+      detail: `${games.length} pipeline games`,
+      duration_ms: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      name: 'espn_pipeline_freshness',
       status: 'error',
       detail: (e as Error).message,
       duration_ms: Date.now() - t0,
@@ -561,7 +626,7 @@ async function checkPinnacleApi(): Promise<HealthCheckResult> {
 }
 
 /**
- * Run all 15 health checks in parallel and return the raw results.
+ * Run all 16 health checks in parallel and return the raw results.
  * Consumers: /api/health (HTTP wrapper) and cron/analyze (Telegram indicator).
  */
 export async function runHealthChecks(): Promise<HealthCheckResult[]> {
@@ -570,6 +635,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkSupabase(),
     checkDbColumns(),
     checkEspnScoreboard(),
+    checkEspnPipelineFreshness(),
     checkEspnPredictor('mlb'),
     checkEspnPredictor('nba'),
     checkEspnPredictor('nfl'),

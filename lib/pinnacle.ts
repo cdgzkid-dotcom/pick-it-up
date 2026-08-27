@@ -87,7 +87,6 @@ async function pinnacleFetch<T>(path: string): Promise<T | null> {
     const res = await fetch(`${PINNACLE_BASE}${path}`, {
       headers: {
         'x-api-key': PINNACLE_TOKEN,
-        'User-Agent': 'pick-it-up/1.0',
         Accept: 'application/json',
       },
       signal: AbortSignal.timeout(PINNACLE_TIMEOUT_MS),

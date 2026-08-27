@@ -16,6 +16,35 @@ const TELEGRAM_MAX_ATTEMPTS = 3;
 const TELEGRAM_BASE_RETRY_MS = 250;
 const TELEGRAM_MAX_RETRY_MS = 1_000;
 
+/**
+ * Helper to escape characters with special meaning in Telegram's legacy
+ * Markdown parse mode (_ * [ `) with a backslash.
+ */
+export function escapeTgMarkdown(s: string): string {
+  if (!s) return s;
+  return s.replace(/[_*\[`]/g, '\\$&');
+}
+
+function splitTelegramMessage(text: string, maxLen = 4000): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxLen) {
+    const splitIdx = remaining.lastIndexOf('\n', maxLen);
+    if (splitIdx > 0) {
+      chunks.push(remaining.slice(0, splitIdx));
+      remaining = remaining.slice(splitIdx + 1);
+    } else {
+      chunks.push(remaining.slice(0, maxLen));
+      remaining = remaining.slice(maxLen);
+    }
+  }
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
 export async function sendTelegramMessage(
   text: string,
   opts: SendOptions = {},
@@ -27,68 +56,107 @@ export async function sendTelegramMessage(
     return { ok: false, error: 'env_missing' };
   }
 
-  const body: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: opts.disableLinkPreview ?? true,
-  };
-  if (opts.parseMode !== null) body.parse_mode = opts.parseMode ?? 'Markdown';
+  const chunks = splitTelegramMessage(text);
+  for (const chunk of chunks) {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text: chunk,
+      disable_web_page_preview: opts.disableLinkPreview ?? true,
+    };
+    if (opts.parseMode !== null) body.parse_mode = opts.parseMode ?? 'Markdown';
 
-  let lastError = 'unknown';
-  for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
-    let retryDelayMs = TELEGRAM_BASE_RETRY_MS * 2 ** (attempt - 1);
+    let chunkSent = false;
+    let lastError = 'unknown';
 
-    try {
-      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (r.ok) return { ok: true };
-
-      const detail = await r.text().catch(() => '');
-      lastError = `http_${r.status}`;
-      console.error(
-        `[telegram] send failed (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS}, ${r.status}): ${detail}`,
+    for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
+      let retryDelayMs = Math.min(
+        TELEGRAM_BASE_RETRY_MS * 2 ** (attempt - 1),
+        TELEGRAM_MAX_RETRY_MS,
       );
 
-      // Client errors are permanent, except Telegram rate limiting.
-      if (r.status >= 400 && r.status < 500 && r.status !== 429) {
-        return { ok: false, error: lastError };
-      }
-      if (r.status !== 429 && r.status < 500) {
-        return { ok: false, error: lastError };
-      }
-
-      if (r.status === 429 && detail) {
-        try {
-          const retryAfter = JSON.parse(detail) as { parameters?: { retry_after?: unknown } };
-          if (typeof retryAfter.parameters?.retry_after === 'number') {
-            retryDelayMs = retryAfter.parameters.retry_after * 1_000;
-          }
-        } catch {
-          // A malformed Telegram error body falls back to exponential backoff.
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (r.ok) {
+          chunkSent = true;
+          break;
         }
+
+        const detail = await r.text().catch(() => '');
+        lastError = `http_${r.status}`;
+        console.error(
+          `[telegram] send failed (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS}, ${r.status}): ${detail}`,
+        );
+
+        // If status is 400 and body includes "can't parse entities", retry once without parse_mode
+        if (r.status === 400 && detail.includes("can't parse entities")) {
+          console.warn('[telegram] markdown parse failed, sent as plain text');
+          const plainBody: Record<string, unknown> = {
+            chat_id: chatId,
+            text: chunk,
+            disable_web_page_preview: opts.disableLinkPreview ?? true,
+          };
+          try {
+            const plainRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(plainBody),
+            });
+            if (plainRes.ok) {
+              chunkSent = true;
+              break;
+            }
+            const plainDetail = await plainRes.text().catch(() => '');
+            lastError = `http_${plainRes.status}`;
+            console.error(
+              `[telegram] plain text fallback failed (${plainRes.status}): ${plainDetail}`,
+            );
+            return { ok: false, error: lastError };
+          } catch (plainErr) {
+            lastError = plainErr instanceof Error ? plainErr.message : String(plainErr);
+            console.error('[telegram] plain text fallback threw', plainErr);
+            return { ok: false, error: lastError };
+          }
+        }
+
+        // Client errors are permanent, except Telegram rate limiting (429).
+        if (r.status >= 400 && r.status < 500 && r.status !== 429) {
+          return { ok: false, error: lastError };
+        }
+
+        if (r.status === 429 && detail) {
+          try {
+            const retryAfter = JSON.parse(detail) as { parameters?: { retry_after?: unknown } };
+            if (typeof retryAfter.parameters?.retry_after === 'number') {
+              retryDelayMs = Math.min(retryAfter.parameters.retry_after * 1_000, 5_000);
+            }
+          } catch {
+            // A malformed Telegram error body falls back to exponential backoff.
+          }
+        }
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        console.error(
+          `[telegram] send threw (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS})`,
+          e,
+        );
       }
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
-      console.error(
-        `[telegram] send threw (attempt ${attempt}/${TELEGRAM_MAX_ATTEMPTS})`,
-        e,
-      );
+
+      if (attempt < TELEGRAM_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
     }
 
-    if (attempt < TELEGRAM_MAX_ATTEMPTS) {
-      // Keep retries bounded for short-lived Vercel handlers. A larger
-      // Telegram retry_after is honored up to this one-second ceiling.
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(retryDelayMs, TELEGRAM_MAX_RETRY_MS)),
-      );
+    if (!chunkSent) {
+      console.error(`[telegram] send exhausted ${TELEGRAM_MAX_ATTEMPTS} attempts: ${lastError}`);
+      return { ok: false, error: lastError };
     }
   }
 
-  console.error(`[telegram] send exhausted ${TELEGRAM_MAX_ATTEMPTS} attempts: ${lastError}`);
-  return { ok: false, error: lastError };
+  return { ok: true };
 }
 
 interface PickForMessage {
@@ -296,11 +364,11 @@ interface PicksContext {
  */
 function renderHealthIndicator(h: SystemHealthSummary): string {
   if (h.errors > 0) {
-    const details = h.errorNames.slice(0, 2).join(', ');
+    const details = h.errorNames.slice(0, 2).map(escapeTgMarkdown).join(', ');
     return `\n\n🔴 Sistema crítico: ${details}\n⚠️ NO apostar sin verificar.`;
   }
   if (h.warnings > 0) {
-    const details = h.warningNames.slice(0, 2).join(', ');
+    const details = h.warningNames.slice(0, 2).map(escapeTgMarkdown).join(', ');
     return `\n\n🟡 Sistema degradado: ${details}`;
   }
   return `\n\n🟢 Sistema OK (${h.ok}/${h.total} checks)`;
@@ -638,7 +706,7 @@ export function formatPickDigestMessage(
     lines.push(`⚠️ *Filtrado por calidad* (${data.auditFiltered.length}):`);
     for (const g of data.auditFiltered.slice(0, PER_CATEGORY_LIMIT)) {
       const tier = (g.tier || 'value').toUpperCase();
-      const failures = g.failures.slice(0, 2).join(', ');
+      const failures = g.failures.slice(0, 2).map(escapeTgMarkdown).join(', ');
       lines.push(`• ${sportEmoji(g.sport)} ${g.pick} (${tier})`);
       lines.push(`   ${failures}${g.failures.length > 2 ? '...' : ''}`);
     }

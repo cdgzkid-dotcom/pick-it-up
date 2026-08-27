@@ -625,8 +625,51 @@ async function checkPinnacleApi(): Promise<HealthCheckResult> {
   };
 }
 
+async function checkOpenWeather(): Promise<HealthCheckResult> {
+  const apiKey = process.env.WEATHER_API_KEY;
+  if (!apiKey) {
+    return {
+      name: 'openweather',
+      status: 'warning',
+      detail: 'WEATHER_API_KEY not set — weather disabled',
+    };
+  }
+
+  const t0 = Date.now();
+  try {
+    const res = await fetch(
+      `https://api.openweathermap.org/data/2.5/weather?q=Boston&appid=${encodeURIComponent(apiKey)}`,
+      { signal: AbortSignal.timeout(4000) },
+    );
+    if (res.status === 200) {
+      return { name: 'openweather', status: 'ok', duration_ms: Date.now() - t0 };
+    }
+    if (res.status === 401) {
+      return {
+        name: 'openweather',
+        status: 'error',
+        detail: 'invalid key',
+        duration_ms: Date.now() - t0,
+      };
+    }
+    return {
+      name: 'openweather',
+      status: 'warning',
+      detail: `HTTP ${res.status}`,
+      duration_ms: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      name: 'openweather',
+      status: 'warning',
+      detail: (e as Error).message,
+      duration_ms: Date.now() - t0,
+    };
+  }
+}
+
 /**
- * Run all 16 health checks in parallel and return the raw results.
+ * Run all 17 health checks in parallel and return the raw results.
  * Consumers: /api/health (HTTP wrapper) and cron/analyze (Telegram indicator).
  */
 export async function runHealthChecks(): Promise<HealthCheckResult[]> {
@@ -647,6 +690,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkStuckPendingBets(),
     checkRecentPickStructure(),
     checkPinnacleApi(),
+    checkOpenWeather(),
   ]);
 }
 

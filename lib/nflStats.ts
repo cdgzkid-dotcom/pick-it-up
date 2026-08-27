@@ -45,7 +45,7 @@ export async function fetchNflStandings(): Promise<Map<string, NflStandingRow>> 
   return cached(`nfl:standings:${NFL_SEASON}`, 120, async () => {
     const res = await fetch(
       `${ESPN_BASE}/v2/sports/football/nfl/standings?season=${NFL_SEASON}`,
-      { next: { revalidate: 7200 } },
+      { cache: 'no-store' },
     );
     if (!res.ok) return new Map();
     const data = await res.json();
@@ -150,10 +150,13 @@ export interface NflTeamStats {
 
 async function fetchEspnTeamStats(espnTeamId: string): Promise<NflTeamStats | null> {
   return cached(`nfl:espn:stats:${espnTeamId}:${NFL_SEASON}`, 240, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/site/v2/sports/football/nfl/teams/${espnTeamId}/statistics?season=${NFL_SEASON}`,
-      { next: { revalidate: 14400 } },
-    );
+    const baseUrl = `${ESPN_BASE}/site/v2/sports/football/nfl/teams/${espnTeamId}/statistics`;
+    const seasonUrl = `${baseUrl}?season=${NFL_SEASON}`;
+    let res = await fetch(seasonUrl, { cache: 'no-store' });
+    if (res.status === 404) {
+      console.warn('[nflStats] ESPN team statistics HTTP', res.status, seasonUrl, '— retrying without season');
+      res = await fetch(baseUrl, { cache: 'no-store' });
+    }
     if (!res.ok) return null;
     const data = await res.json();
 
@@ -226,7 +229,7 @@ async function fetchRecentGames(
   return cached(`nfl:espn:schedule:${espnTeamId}:${NFL_SEASON}`, 120, async () => {
     const res = await fetch(
       `${ESPN_BASE}/site/v2/sports/football/nfl/teams/${espnTeamId}/schedule?season=${NFL_SEASON}`,
-      { next: { revalidate: 7200 } },
+      { cache: 'no-store' },
     );
     if (!res.ok) return [];
     const data = await res.json();

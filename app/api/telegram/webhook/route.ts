@@ -415,6 +415,17 @@ async function handleCallback(cq: TelegramCallbackQuery): Promise<void> {
 // ── Main handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (
+    webhookSecret &&
+    req.headers.get('x-telegram-bot-api-secret-token') !== webhookSecret
+  ) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
+  if (!webhookSecret) {
+    console.warn('[webhook] TELEGRAM_WEBHOOK_SECRET not set — accepting unauthenticated updates');
+  }
+
   let update: TelegramUpdate;
   try {
     update = (await req.json()) as TelegramUpdate;
@@ -423,9 +434,14 @@ export async function POST(req: Request) {
   }
 
   const ok = () => NextResponse.json({ ok: true });
+  const ignoredChat = () =>
+    NextResponse.json({ ok: true, ignored: 'chat_not_allowed' });
+  const allowedChatId = Number(process.env.TELEGRAM_CHAT_ID);
 
   // ── Callback query (button press) ────────────────────────────────────────
   if (update.callback_query) {
+    const chatId = update.callback_query.message?.chat.id;
+    if (chatId !== allowedChatId) return ignoredChat();
     waitUntil(handleCallback(update.callback_query));
     return ok();
   }
@@ -435,6 +451,7 @@ export async function POST(req: Request) {
   if (!message) return ok();
 
   const chatId = message.chat.id;
+  if (chatId !== allowedChatId) return ignoredChat();
 
   if (!message.photo || message.photo.length === 0) {
     waitUntil(

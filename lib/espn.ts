@@ -114,7 +114,7 @@ async function fetchJson<T>(url: string): Promise<T | null> {
   try {
     // 2026-08-27 incident: ESPN's edge (Akamai) started answering 403 to the
     // custom 'pick-it-up/1.0' User-Agent (~2026-08-04). The Vercel Data Cache
-    // (`next.revalidate`) then kept serving the last good scoreboard for 3
+    // (time-based fetch caching) then kept serving the last good scoreboard for 3
     // weeks → 0 games in window → 0 picks, health green. Two rules now:
     //   - NO custom User-Agent (Node's default passes; healthChecks proves it).
     //   - NO caching: the cron runs every 10 min, a 5-min cache buys nothing
@@ -123,9 +123,13 @@ async function fetchJson<T>(url: string): Promise<T | null> {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn('[espn] HTTP', res.status, url);
+      return null;
+    }
     return (await res.json()) as T;
-  } catch {
+  } catch (e) {
+    console.warn('[espn] fetch failed', url, (e as Error).message);
     return null;
   }
 }

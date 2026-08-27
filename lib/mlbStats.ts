@@ -55,7 +55,7 @@ export interface MlbScheduleEntry {
 export async function fetchMlbScheduleForDate(date: string): Promise<MlbScheduleEntry[]> {
   return cached(`mlb:schedule:${date}`, 30, async () => {
     const url = `${BASE}/schedule?sportId=1&date=${date}&hydrate=probablePitcher,linescore,team`;
-    const r = await fetch(url, { next: { revalidate: 1800 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) throw new Error(`MLB schedule ${r.status}`);
     const data: ScheduleResp = await r.json();
     const out: MlbScheduleEntry[] = [];
@@ -120,7 +120,7 @@ export interface PitcherStats {
 export async function fetchPitcherStats(playerId: number, season = String(new Date().getUTCFullYear())): Promise<PitcherStats | null> {
   return cached(`mlb:pitcher:${playerId}:${season}`, 120, async () => {
     const url = `${BASE}/people/${playerId}?hydrate=stats(group=[pitching],type=[season,gameLog],season=${season})`;
-    const r = await fetch(url, { next: { revalidate: 7200 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return null;
     const data: PersonStatsResp = await r.json();
     const person = data.people?.[0];
@@ -184,7 +184,7 @@ export interface TeamPitchingStats {
 export async function fetchTeamHittingStats(teamId: number, season = String(new Date().getUTCFullYear())): Promise<TeamBattingStats | null> {
   return cached(`mlb:team:hit:${teamId}:${season}`, 240, async () => {
     const url = `${BASE}/teams/${teamId}/stats?stats=season&group=hitting&season=${season}`;
-    const r = await fetch(url, { next: { revalidate: 14400 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return null;
     const data: TeamStatsResp = await r.json();
     const stat = data.stats?.[0]?.splits?.[0]?.stat;
@@ -204,7 +204,7 @@ export async function fetchTeamHittingStats(teamId: number, season = String(new 
 export async function fetchTeamPitchingStats(teamId: number, season = String(new Date().getUTCFullYear())): Promise<TeamPitchingStats | null> {
   return cached(`mlb:team:pit:${teamId}:${season}`, 240, async () => {
     const url = `${BASE}/teams/${teamId}/stats?stats=season&group=pitching&season=${season}`;
-    const r = await fetch(url, { next: { revalidate: 14400 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return null;
     const data: TeamStatsResp = await r.json();
     const stat = data.stats?.[0]?.splits?.[0]?.stat;
@@ -245,7 +245,7 @@ export interface MlbStandingRow {
 export async function fetchMlbStandings(season = String(new Date().getUTCFullYear())): Promise<Map<number, MlbStandingRow>> {
   return cached(`mlb:standings:${season}`, 120, async () => {
     const url = `${BASE}/standings?leagueId=103,104&season=${season}`;
-    const r = await fetch(url, { next: { revalidate: 7200 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return new Map();
     const data: StandingsResp = await r.json();
     const map = new Map<number, MlbStandingRow>();

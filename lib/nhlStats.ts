@@ -58,7 +58,7 @@ export interface NhlStandingRow {
 
 export async function fetchNhlStandings(): Promise<Map<string, NhlStandingRow>> {
   return cached('nhl:standings', 120, async () => {
-    const r = await fetch('https://api-web.nhle.com/v1/standings/now', { next: { revalidate: 7200 } });
+    const r = await fetch('https://api-web.nhle.com/v1/standings/now', { cache: 'no-store' });
     if (!r.ok) return new Map();
     const data: StandingsResp = await r.json();
     const map = new Map<string, NhlStandingRow>();
@@ -117,7 +117,7 @@ export interface NhlTeamSummary {
 export async function fetchNhlTeamSummary(): Promise<Map<string, NhlTeamSummary>> {
   return cached(`nhl:teamSummary:${SEASON}`, 240, async () => {
     const url = `https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=seasonId=${SEASON}`;
-    const r = await fetch(url, { next: { revalidate: 14400 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return new Map();
     const data: TeamSummaryResp = await r.json();
     const map = new Map<string, NhlTeamSummary>();
@@ -169,7 +169,7 @@ export interface NhlGoalieRow {
 export async function fetchNhlGoalies(): Promise<NhlGoalieRow[]> {
   return cached(`nhl:goalies:${SEASON}`, 240, async () => {
     const url = `https://api.nhle.com/stats/rest/en/goalie/summary?cayenneExp=seasonId=${SEASON}&limit=120`;
-    const r = await fetch(url, { next: { revalidate: 14400 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return [];
     const data: GoalieResp = await r.json();
     return (data.data ?? [])
@@ -213,7 +213,7 @@ async function fetchRecentGames(
 ): Promise<NhlRecentGame[]> {
   return cached(`nhl:recentGames:${teamAbbr}:${SEASON}`, 120, async () => {
     const url = `https://api-web.nhle.com/v1/club-schedule-season/${teamAbbr}/${SEASON}`;
-    const r = await fetch(url, { next: { revalidate: 7200 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return [];
     const data = await r.json();
     const games: NhlRecentGame[] = [];
@@ -269,7 +269,7 @@ export interface NhlEspnStats {
 async function fetchEspnNhlTeamId(teamAbbr: string): Promise<string | null> {
   return cached('nhl:espn:teamMap', 1440, async () => {
     const res = await fetch(`${ESPN_BASE}/site/v2/sports/hockey/nhl/teams`, {
-      next: { revalidate: 86400 },
+      cache: 'no-store',
     });
     if (!res.ok) return new Map<string, string>();
     const data = await res.json();
@@ -291,7 +291,7 @@ async function fetchEspnTeamStats(teamAbbr: string): Promise<NhlEspnStats | null
   return cached(`nhl:espn:stats:${espnId}`, 240, async () => {
     const res = await fetch(
       `${ESPN_BASE}/site/v2/sports/hockey/nhl/teams/${espnId}/statistics?seasontype=2`,
-      { next: { revalidate: 14400 } },
+      { cache: 'no-store' },
     );
     if (!res.ok) return null;
     const data = await res.json();

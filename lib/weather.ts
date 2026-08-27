@@ -122,7 +122,7 @@ export async function fetchGameWeather(
   try {
     // OpenWeather 5-day / 3-hour forecast. Returns "list" of forecast points.
     const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${v.lat}&lon=${v.lon}&appid=${apiKey}&units=imperial`;
-    const r = await fetch(url, { next: { revalidate: 1800 } });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) {
       if (r.status === 401) {
         console.warn('[weather] OpenWeather 401 — key not activated yet (can take up to 2hrs)');

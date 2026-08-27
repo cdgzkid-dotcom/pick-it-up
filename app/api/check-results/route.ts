@@ -41,7 +41,43 @@ interface Resolution {
   was_already_notified: boolean;
 }
 
-export async function POST() {
+function authOk(req: Request): boolean {
+  const expected = process.env.CRON_SECRET;
+  if (expected && req.headers.get('authorization') === `Bearer ${expected}`) {
+    return true;
+  }
+
+  // The dashboard invokes this endpoint directly from the browser. Same-origin
+  // validation preserves that flow, but is weaker than CRON_SECRET authentication:
+  // it relies on browser-controlled Origin/Referer headers and should not protect
+  // privileged callers outside this UI use case.
+  const requestUrl = new URL(req.url);
+  const origin = req.headers.get('origin');
+  if (origin) {
+    try {
+      return new URL(origin).origin === requestUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  const referer = req.headers.get('referer');
+  if (referer) {
+    try {
+      return new URL(referer).origin === requestUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+export async function POST(req: Request) {
+  if (!authOk(req)) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   const disabled = await systemDisabledResponse('check-results');
   if (disabled) return disabled;
 

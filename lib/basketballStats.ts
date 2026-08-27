@@ -28,7 +28,7 @@ export interface NbaStandingRow {
 async function fetchEspnStandings(league: string = 'nba'): Promise<Map<string, NbaStandingRow>> {
   return cached(`${league}:espn:standings`, 120, async () => {
     const res = await fetch(`${ESPN_BASE}/v2/sports/basketball/${league}/standings`, {
-      next: { revalidate: 7200 },
+      cache: 'no-store',
     });
     if (!res.ok) return new Map();
     const data = await res.json();
@@ -99,7 +99,7 @@ async function fetchEspnTeamStats(espnTeamId: string, league: string = 'nba'): P
   return cached(`${league}:espn:teamStats:${espnTeamId}`, 240, async () => {
     const res = await fetch(
       `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/statistics`,
-      { next: { revalidate: 14400 } },
+      { cache: 'no-store' },
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -149,7 +149,7 @@ async function fetchEspnRecentGames(
   return cached(`${league}:espn:schedule:${espnTeamId}`, 120, async () => {
     const res = await fetch(
       `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/schedule`,
-      { next: { revalidate: 7200 } },
+      { cache: 'no-store' },
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -220,7 +220,7 @@ async function fetchAdvancedFromNbaStats(): Promise<Map<string, NbaAdvancedRow> 
       const res = await fetch(url, {
         headers: NBA_STATS_HEADERS,
         signal: AbortSignal.timeout(5_000),
-        next: { revalidate: 14400 },
+        cache: 'no-store',
       });
       if (!res.ok) return null;
       const data = await res.json();

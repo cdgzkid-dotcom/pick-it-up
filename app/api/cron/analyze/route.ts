@@ -10,6 +10,7 @@
 //    result_notified_at so we don't duplicate
 
 import { NextResponse } from 'next/server';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase';
 import { systemDisabledResponse } from '@/lib/systemState';
 import { fetchGames, fetchInjuriesForSports, fetchEventStatus, fetchEspnClosingLine } from '@/lib/espn';
@@ -126,14 +127,251 @@ function withinWindow(sport: string, startIso: string | undefined): boolean {
 }
 
 
-async function runAnalyzeWindow(): Promise<{
+type CronSettings = {
+  bankroll_current: number | string | null;
+  unit_percentage: number | string | null;
+  auto_sports: string[] | null;
+  auto_enabled: boolean | null;
+};
+
+/**
+ * Structural view of a pick row as consumed by the Telegram formatter. Both
+ * pickGen's in-memory PickRow (not exported) and raw `picks` rows from
+ * Supabase satisfy it, so the normal send path and the unsent-retry path
+ * share ONE field mapping (no drift between "first send" and "re-send").
+ */
+type PickRowLike = {
+  id?: string | null;
+  sport?: string | null;
+  tier: string;
+  confidence: number;
+  real_probability: number | string;
+  pick: string;
+  bet_type: string;
+  odds_decimal: number | string;
+  edge: number | string;
+  recommended_amount: number | string;
+  analysis: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  best_odds_source?: string | null;
+  odds_comparison?: unknown;
+  parlay_legs?: unknown;
+  game_start_time?: string | null;
+  edge_vs_market?: number | null;
+  market_sources_count?: number | null;
+  trap_warning?: string | null;
+  pinnacle_implied?: number | null;
+  theoretical_amount?: number | null;
+  sizing_reason?: string | null;
+  units_actual?: number | null;
+  units_theoretical?: number | null;
+  observation_only?: boolean | null;
+};
+
+function toPickForMessage(p: PickRowLike, kellyByKey: Record<string, number>) {
+  return {
+    tier: p.tier,
+    confidence: p.confidence,
+    real_probability: Number(p.real_probability),
+    pick: p.pick,
+    bet_type: p.bet_type,
+    odds_decimal: Number(p.odds_decimal),
+    edge: Number(p.edge),
+    edge_vs_market: p.edge_vs_market ?? null,
+    market_sources_count: p.market_sources_count ?? null,
+    recommended_amount: Number(p.recommended_amount),
+    kelly_fraction: kellyByKey[`${p.pick}|${p.bet_type}`] ?? null,
+    trap_warning: p.trap_warning ?? null,
+    best_odds_source: p.best_odds_source ?? null,
+    odds_comparison: (p.odds_comparison as Array<{ source: string; ml: number }> | null) ?? undefined,
+    analysis: p.analysis,
+    home_team: p.home_team ?? null,
+    away_team: p.away_team ?? null,
+    // Pinnacle (2026-05-12): only render the inline market line when
+    // Pinnacle actually contributed; bpi_implied is not yet persisted in
+    // PickRow so the line renders as "DK X% · Pin Y%" for now.
+    pinnacle_implied: p.pinnacle_implied ?? null,
+    // Sizing transparency (2026-05-13).
+    theoretical_amount: p.theoretical_amount ?? null,
+    sizing_reason: p.sizing_reason ?? null,
+    units_actual: p.units_actual ?? null,
+    units_theoretical: p.units_theoretical ?? null,
+    sport: p.sport ?? null,
+    // Preseason: routes the pick into the "🔬 OBSERVACIÓN — NO APOSTAR" block.
+    observation_only: p.observation_only ?? false,
+  };
+}
+
+function toParlayForMessage(p: PickRowLike, kellyByKey: Record<string, number>) {
+  return {
+    tier: p.tier,
+    confidence: p.confidence,
+    real_probability: Number(p.real_probability),
+    pick: p.pick,
+    bet_type: p.bet_type,
+    odds_decimal: Number(p.odds_decimal),
+    edge: Number(p.edge),
+    recommended_amount: Number(p.recommended_amount),
+    kelly_fraction: kellyByKey[`${p.pick}|Parlay`] ?? null,
+    analysis: p.analysis,
+    is_parlay: true,
+    home_team: p.home_team ?? null,
+    away_team: p.away_team ?? null,
+    parlay_legs: (p.parlay_legs as Array<{ game: string; pick: string; tier: string; confidence: number }>) ?? null,
+  };
+}
+
+/**
+ * Format + send a picks slate to Telegram and, on success, stamp
+ * telegram_notified_at on every row. Shared by the normal generation path
+ * and by the unsent-retry path so both produce the identical message.
+ */
+async function sendPicksBatch(
+  supabase: SupabaseClient,
+  settings: CronSettings,
+  picks: PickRowLike[],
+  parlays: PickRowLike[],
+  kellyByKey: Record<string, number>,
+  earliestStart: string | undefined,
+  supersededPicks: SupersededPickForTg[],
+): Promise<{ ok: boolean; error?: string }> {
+  // Build context (bankroll + record + ROI) for header/footer of the message
+  const { data: allBets } = await supabase.from('bets').select('*');
+  const stats = computeStats((allBets as Bet[]) ?? []);
+  // Auditoría 5: visible system-health indicator. Bounded by 5s so a stuck
+  // health check never blocks the user from receiving picks.
+  const systemHealth = await computeSystemHealthBounded();
+  const ctx = {
+    bankrollCurrent: Number(settings.bankroll_current),
+    record: { wins: stats.wins, losses: stats.losses },
+    roi: stats.roi,
+    supersededPicks,
+    systemHealth,
+  };
+
+  // Run Monte Carlo on the slate (singles only — parlays already have their
+  // probability baked into the legs).
+  //
+  // Metric exclusion: observation-only (preseason) picks are dropped. The
+  // simulation answers "how much money is this slate expected to make", and
+  // exhibition picks stake nothing — including them would inflate both the
+  // expected value and the risk range with money that will never be wagered.
+  const mcInput = picks
+    .filter((p) => !p.observation_only)
+    .map((p) => ({
+      real_probability: Number(p.real_probability),
+      odds_decimal: Number(p.odds_decimal),
+      recommended_amount: Number(p.recommended_amount),
+    }));
+  const mc = simulateDay(mcInput);
+
+  const picksMsg = formatPicksMessage(
+    picks.map((p) => toPickForMessage(p, kellyByKey)),
+    parlays.map((p) => toParlayForMessage(p, kellyByKey)),
+    earliestStart,
+    ctx,
+  );
+
+  const text = mcInput.length > 0 ? `${picksMsg}\n\n${formatMonteCarloLines(mc).join('\n')}` : picksMsg;
+  const send = await sendTelegramMessage(text);
+  if (send.ok) {
+    const ids = [...picks, ...parlays]
+      .map((p) => p.id)
+      .filter((x): x is string => Boolean(x));
+    if (ids.length > 0) {
+      const { error: markErr } = await supabase
+        .from('picks')
+        .update({ telegram_notified_at: new Date().toISOString() })
+        .in('id', ids);
+      if (markErr) console.error('[cron] telegram_notified_at update failed', markErr.message);
+    }
+  }
+  return send;
+}
+
+/**
+ * UNSENT_RETRY (2026-08-27 audit): a pick inserted as 'pending' whose Telegram
+ * send failed keeps telegram_notified_at=null. The dedup guard then blocks its
+ * event forever and nothing re-sends it — the user never sees a pick the
+ * system DID generate. This re-sends such picks once per run, bounded to the
+ * last 2h so a stale slate never resurfaces. Singles only (parlays excluded
+ * by brief); observation-only rows excluded (never actionable).
+ *
+ * Returns an error string if the retry send failed (surfaced in cron_runs),
+ * null when there was nothing to retry or the retry succeeded.
+ */
+async function retryUnsentPicks(supabase: SupabaseClient, settings: CronSettings): Promise<string | null> {
+  const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const { data: unsent, error } = await supabase
+    .from('picks')
+    .select('*')
+    .eq('status', 'pending')
+    .is('telegram_notified_at', null)
+    .eq('is_parlay', false)
+    .or('observation_only.is.null,observation_only.eq.false')
+    .gt('created_at', since)
+    .order('created_at', { ascending: true });
+  if (error) {
+    console.error('[UNSENT_RETRY] query failed', error.message);
+    return null;
+  }
+  const rows = (unsent ?? []) as PickRowLike[];
+  if (rows.length === 0) return null;
+
+  const earliestStart = rows
+    .map((p) => p.game_start_time)
+    .filter((s): s is string => Boolean(s))
+    .sort()[0];
+  console.log(`[UNSENT_RETRY] re-sending ${rows.length} unsent pick(s):`, rows.map((p) => `${p.sport ?? '?'}/${p.pick}`).join(', '));
+
+  // Claim-then-send (Amp audit): stamp telegram_notified_at BEFORE sending so
+  // a concurrent cron run (or a stamp failure after a successful send) can
+  // never re-send the same picks. Only rows we actually claimed are sent; on
+  // send failure the claim is released so the next run retries.
+  const ids = rows.map((p) => p.id).filter((x): x is string => Boolean(x));
+  const { data: claimed, error: claimErr } = await supabase
+    .from('picks')
+    .update({ telegram_notified_at: new Date().toISOString() })
+    .in('id', ids)
+    .is('telegram_notified_at', null)
+    .select('id');
+  if (claimErr) {
+    console.error('[UNSENT_RETRY] claim failed', claimErr.message);
+    return null;
+  }
+  const claimedIds = new Set((claimed ?? []).map((r) => (r as { id: string }).id));
+  const toSend = rows.filter((p) => p.id && claimedIds.has(p.id));
+  if (toSend.length === 0) return null;
+
+  // kelly_fraction is not persisted on picks → renders without it on retry.
+  const send = await sendPicksBatch(supabase, settings, toSend, [], {}, earliestStart, []);
+  if (send.ok) {
+    console.log(`[UNSENT_RETRY] sent ${toSend.length} pick(s)`);
+    return null;
+  }
+  const { error: releaseErr } = await supabase
+    .from('picks')
+    .update({ telegram_notified_at: null })
+    .in('id', Array.from(claimedIds));
+  if (releaseErr) console.error('[UNSENT_RETRY] release failed', releaseErr.message);
+  const msg = `unsent_retry_failed (${toSend.length} picks): ${send.error ?? 'unknown'}`;
+  console.error('[UNSENT_RETRY]', msg);
+  return msg;
+}
+
+type AnalyzeWindowResult = {
   generated: number;
   eventIds: string[];
   message: string | null;
   games_fetched: number;
   games_in_window: number;
   games_analyzed: number;
-}> {
+  /** Set when a Telegram send failed this run; handle() copies it into cron_runs.errors. */
+  telegram_error?: string;
+};
+
+async function runAnalyzeWindow(): Promise<AnalyzeWindowResult> {
   const supabase = supabaseAdmin();
 
   const { data: settings, error: settingsErr } = await supabase
@@ -147,6 +385,20 @@ async function runAnalyzeWindow(): Promise<{
   if (settings.auto_enabled === false) {
     return { generated: 0, eventIds: [], message: 'auto_disabled', games_fetched: 0, games_in_window: 0, games_analyzed: 0 };
   }
+
+  // Retry picks that were generated but never reached Telegram (one batch
+  // per run). Runs BEFORE analysis so a failure here can't be masked by the
+  // main path, and its error still lands in cron_runs.errors.
+  const retryErr = await retryUnsentPicks(supabase, settings as CronSettings);
+
+  const out = await analyzeWindowCore(supabase, settings as CronSettings);
+  if (retryErr) {
+    out.telegram_error = out.telegram_error ? `${retryErr}; ${out.telegram_error}` : retryErr;
+  }
+  return out;
+}
+
+async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSettings): Promise<AnalyzeWindowResult> {
   const sports: string[] = settings.auto_sports ?? [];
   if (sports.length === 0) return { generated: 0, eventIds: [], message: 'no_sports', games_fetched: 0, games_in_window: 0, games_analyzed: 0 };
 
@@ -610,122 +862,57 @@ async function runAnalyzeWindow(): Promise<{
     .filter((s): s is string => Boolean(s))
     .sort()[0];
 
-  // Build context (bankroll + record + ROI) for header/footer of the message
-  const { data: allBets } = await supabase.from('bets').select('*');
-  const stats = computeStats((allBets as Bet[]) ?? []);
-  // Auditoría 5: visible system-health indicator. Bounded by 5s so a stuck
-  // health check never blocks the user from receiving picks.
-  const systemHealth = await computeSystemHealthBounded();
-  const ctx = {
-    bankrollCurrent: Number(settings.bankroll_current),
-    record: { wins: stats.wins, losses: stats.losses },
-    roi: stats.roi,
-    // Only render supersede block inside the normal picks message when at
-    // least one of the superseded picks was previously notified — otherwise
-    // the user doesn't know what we're warning about. Discriminated by
-    // reason so the message subgroups (line_moved_against carries odds).
-    supersededPicks: result.supersededList
-      .filter((s) => s.was_notified)
-      .map((s): SupersededPickForTg =>
-        s.reason === 'line_moved_against'
-          ? {
-              pick: s.pick,
-              tier: s.tier,
-              reason: 'line_moved_against',
-              original_odds: s.original_odds,
-              current_odds: s.current_odds,
-            }
-          : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
-      ),
-    systemHealth,
-  };
+  // Only render supersede block inside the normal picks message when at
+  // least one of the superseded picks was previously notified — otherwise
+  // the user doesn't know what we're warning about. Discriminated by
+  // reason so the message subgroups (line_moved_against carries odds).
+  const supersededPicks = result.supersededList
+    .filter((s) => s.was_notified)
+    .map((s): SupersededPickForTg =>
+      s.reason === 'line_moved_against'
+        ? {
+            pick: s.pick,
+            tier: s.tier,
+            reason: 'line_moved_against',
+            original_odds: s.original_odds,
+            current_odds: s.current_odds,
+          }
+        : { pick: s.pick, tier: s.tier, reason: 'edge_evaporated' },
+    );
 
-  // Run Monte Carlo on the slate (singles only — parlays already have their
-  // probability baked into the legs).
-  //
-  // Metric exclusion: observation-only (preseason) picks are dropped. The
-  // simulation answers "how much money is this slate expected to make", and
-  // exhibition picks stake nothing — including them would inflate both the
-  // expected value and the risk range with money that will never be wagered.
-  const mcInput = result.insertedPicks
-    .filter((p) => !(p as { observation_only?: boolean | null }).observation_only)
-    .map((p) => ({
-      real_probability: Number(p.real_probability),
-      odds_decimal: Number(p.odds_decimal),
-      recommended_amount: Number(p.recommended_amount),
-    }));
-  const mc = simulateDay(mcInput);
-
-  const picksMsg = formatPicksMessage(
-    result.insertedPicks.map((p) => ({
-      tier: p.tier,
-      confidence: p.confidence,
-      real_probability: Number(p.real_probability),
-      pick: p.pick,
-      bet_type: p.bet_type,
-      odds_decimal: Number(p.odds_decimal),
-      edge: Number(p.edge),
-      edge_vs_market: (p as { edge_vs_market?: number | null }).edge_vs_market ?? null,
-      market_sources_count: (p as { market_sources_count?: number | null }).market_sources_count ?? null,
-      recommended_amount: Number(p.recommended_amount),
-      kelly_fraction: result.kellyByKey[`${p.pick}|${p.bet_type}`] ?? null,
-      trap_warning: (p as { trap_warning?: string | null }).trap_warning ?? null,
-      best_odds_source: p.best_odds_source ?? null,
-      odds_comparison: (p.odds_comparison as Array<{ source: string; ml: number }> | null) ?? undefined,
-      analysis: p.analysis,
-      home_team: p.home_team ?? null,
-      away_team: p.away_team ?? null,
-      // Pinnacle (2026-05-12): only render the inline market line when
-      // Pinnacle actually contributed; bpi_implied is not yet persisted in
-      // PickRow so the line renders as "DK X% · Pin Y%" for now.
-      pinnacle_implied:
-        (p as { pinnacle_implied?: number | null }).pinnacle_implied ?? null,
-      // Sizing transparency (2026-05-13).
-      theoretical_amount: (p as { theoretical_amount?: number | null }).theoretical_amount ?? null,
-      sizing_reason: (p as { sizing_reason?: string | null }).sizing_reason ?? null,
-      units_actual: (p as { units_actual?: number | null }).units_actual ?? null,
-      units_theoretical: (p as { units_theoretical?: number | null }).units_theoretical ?? null,
-      sport: p.sport ?? null,
-      // Preseason: routes the pick into the "🔬 OBSERVACIÓN — NO APOSTAR" block.
-      observation_only:
-        (p as { observation_only?: boolean | null }).observation_only ?? false,
-    })),
-    result.insertedParlays.map((p) => ({
-      tier: p.tier,
-      confidence: p.confidence,
-      real_probability: Number(p.real_probability),
-      pick: p.pick,
-      bet_type: p.bet_type,
-      odds_decimal: Number(p.odds_decimal),
-      edge: Number(p.edge),
-      recommended_amount: Number(p.recommended_amount),
-      kelly_fraction: result.kellyByKey[`${p.pick}|Parlay`] ?? null,
-      analysis: p.analysis,
-      is_parlay: true,
-      home_team: p.home_team ?? null,
-      away_team: p.away_team ?? null,
-      parlay_legs: (p.parlay_legs as Array<{ game: string; pick: string; tier: string; confidence: number }>) ?? null,
-    })),
+  // Format + send + stamp telegram_notified_at (shared with the unsent
+  // retry path, see sendPicksBatch).
+  const send = await sendPicksBatch(
+    supabase,
+    settings,
+    result.insertedPicks,
+    result.insertedParlays,
+    result.kellyByKey,
     earliestStart,
-    ctx,
+    supersededPicks,
   );
 
-  const text = mcInput.length > 0 ? `${picksMsg}\n\n${formatMonteCarloLines(mc).join('\n')}` : picksMsg;
-  const send = await sendTelegramMessage(text);
-  if (send.ok) {
-    const ids = [...result.insertedPicks, ...result.insertedParlays]
-      .map((p) => p.id)
-      .filter((x): x is string => Boolean(x));
-    if (ids.length > 0) {
-      await supabase
-        .from('picks')
-        .update({ telegram_notified_at: new Date().toISOString() })
-        .in('id', ids);
-    }
+  const generated = result.insertedPicks.length + result.insertedParlays.length;
+  if (!send.ok) {
+    // Picks are in DB as 'pending' with telegram_notified_at=null. The next
+    // run's retryUnsentPicks re-sends them; here we make the failure visible
+    // (message + telegram_error → cron_runs.errors) instead of reporting
+    // 'picks_sent' for a message nobody received.
+    const err = `telegram send failed for ${generated} pick(s): ${send.error ?? 'unknown'}`;
+    console.error('[cron] picks generated but Telegram send failed', err);
+    return {
+      generated,
+      eventIds,
+      message: 'picks_generated_telegram_failed',
+      games_fetched: games.length,
+      games_in_window: inWindow.length,
+      games_analyzed: toAnalyze.length,
+      telegram_error: err,
+    };
   }
 
   return {
-    generated: result.insertedPicks.length + result.insertedParlays.length,
+    generated,
     eventIds,
     message: 'picks_sent',
     games_fetched: games.length,
@@ -1026,6 +1213,45 @@ async function cleanupOrphanedPicks(): Promise<number> {
   return orphanIds.length;
 }
 
+/**
+ * Expire stale pending picks (2026-08-27 audit): a pick that stays 'pending'
+ * past its game (or, with no game_start_time, >1 day after creation) was
+ * never bet and never will be. Nothing else transitions it, so these rows
+ * accumulate invisibly (21 found from May–Aug). Mark them 'expired_no_bet'.
+ *
+ * Two steps because PostgREST can't filter on coalesce(): select the ids,
+ * then update .in('id', ids). picks.status has no CHECK constraint
+ * (db/schema.sql), so the new value is safe.
+ */
+async function expireStalePendingPicks(): Promise<number> {
+  const supabase = supabaseAdmin();
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  // coalesce(game_start_time, created_at) < cutoff, as two plain selects.
+  const [byStart, byCreated] = await Promise.all([
+    supabase.from('picks').select('id').eq('status', 'pending').lt('game_start_time', cutoff),
+    supabase.from('picks').select('id').eq('status', 'pending').is('game_start_time', null).lt('created_at', cutoff),
+  ]);
+  const selErr = byStart.error ?? byCreated.error;
+  if (selErr) {
+    console.error('[cron] stale pending select failed', selErr.message);
+    return 0;
+  }
+  const ids = Array.from(new Set([...(byStart.data ?? []), ...(byCreated.data ?? [])].map((c) => c.id as string)));
+  if (ids.length === 0) return 0;
+  const { error: updErr } = await supabase
+    .from('picks')
+    .update({ status: 'expired_no_bet', updated_at: new Date().toISOString() })
+    .in('id', ids);
+  if (updErr) {
+    console.error('[cron] stale pending expire failed', updErr.message);
+    return 0;
+  }
+
+  console.log(`[cron] expired ${ids.length} stale pending pick(s) → expired_no_bet`);
+  return ids.length;
+}
+
 function authOk(req: Request): boolean {
   const expected = process.env.CRON_SECRET;
   if (!expected) return false;
@@ -1050,9 +1276,14 @@ async function handle(req: Request) {
   let analyze: Awaited<ReturnType<typeof runAnalyzeWindow>> | null = null;
   let results: Awaited<ReturnType<typeof runResultsCheck>> | null = null;
   let orphansCleaned = 0;
+  let pendingExpired = 0;
 
   try {
     analyze = await runAnalyzeWindow();
+    // A Telegram send failure is not an exception (picks are safely in DB)
+    // but it IS an error for the run: surface it in cron_runs.errors so the
+    // health endpoint sees it.
+    if (analyze.telegram_error) errors.telegram = analyze.telegram_error;
   } catch (e) {
     errors.analyze = (e as Error).message;
     console.error('[cron/analyze] analyze failed', e);
@@ -1071,6 +1302,12 @@ async function handle(req: Request) {
     console.error('[cron/analyze] orphan cleanup failed', e);
   }
 
+  try {
+    pendingExpired = await expireStalePendingPicks();
+  } catch (e) {
+    console.error('[cron/analyze] stale pending expiry failed', e);
+  }
+
   // Heartbeat log: write one row to cron_runs per invocation so the health
   // endpoint can verify the cron is actually firing every 10 min. Failure
   // here MUST NOT block the response — it's audit telemetry, not behavior.
@@ -1087,7 +1324,10 @@ async function handle(req: Request) {
       anthropicStatus = 'ok';
     }
 
-    await supabaseAdmin().from('cron_runs').insert({
+    // supabase-js does not throw on a failed insert — it returns { error }.
+    // Without checking it, a broken heartbeat (RLS, schema drift, network)
+    // was silently swallowed and the health endpoint saw a "dead" cron.
+    const { error: cronRunErr } = await supabaseAdmin().from('cron_runs').insert({
       workflow: 'analyze',
       duration_ms: Date.now() - t0,
       generated_picks: analyze?.generated ?? 0,
@@ -1097,6 +1337,7 @@ async function handle(req: Request) {
       games_analyzed: analyze?.games_analyzed ?? 0,
       anthropic_status: anthropicStatus,
     });
+    if (cronRunErr) console.error('[cron_runs insert failed]', cronRunErr.message, cronRunErr);
   } catch (e) {
     console.error('[cron_runs insert failed]', e);
   }
@@ -1107,6 +1348,7 @@ async function handle(req: Request) {
     analyze,
     results,
     orphans_cleaned: orphansCleaned,
+    pending_expired: pendingExpired,
     errors: Object.keys(errors).length > 0 ? errors : undefined,
   });
 }

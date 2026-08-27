@@ -65,8 +65,15 @@ export default function BetResolver({ bet }: Props) {
           }),
         });
         if (!r.ok) return;
-        const data = (await r.json().catch(() => null)) as { statuses?: Record<string, LiveStatus> } | null;
-        const status = data?.statuses?.[bet.espn_event_id as string] ?? null;
+        // /api/live-status now answers per event with a discriminated shape
+        // ({ status } | { not_found } | { source_error }) so the UI can tell
+        // "game not found" from "ESPN down"; we only render a real status.
+        const data = (await r.json().catch(() => null)) as {
+          statuses?: Record<string, { status?: LiveStatus; not_found?: true; source_error?: string }>;
+        } | null;
+        const entry = data?.statuses?.[bet.espn_event_id as string];
+        if (entry?.source_error) console.warn('[live-status]', bet.espn_event_id, entry.source_error);
+        const status = entry?.status ?? null;
         if (cancelled) return;
         setLive(status);
         // Stop polling once game is done — the results checker will resolve it.

@@ -1627,17 +1627,20 @@ export async function analyzeGames(
         const { error: insErr } = await supabase
           .from('picks')
           .insert({ ...r, picks_generated_at: now });
-        if (insErr) console.error('[pickGen] no-odds marker insert (no event_id) failed', insErr);
+        if (insErr) console.error('[pickGen] no-odds marker insert failed (non-fatal)', insErr.message);
         else insertedNoOddsCount++;
         continue;
       }
 
-      const { data: existing } = await supabase
+      const { data: existing, error: existingError } = await supabase
         .from('picks')
         .select('id, retry_count')
         .eq('espn_event_id', r.espn_event_id)
         .eq('status', 'analyzed_no_odds_data')
         .maybeSingle();
+      if (existingError) {
+        console.error('[pickGen] no-odds marker lookup failed; treating as absent', existingError);
+      }
 
       if (existing) {
         const newRetryCount = (existing.retry_count ?? 0) + 1;
@@ -1649,7 +1652,7 @@ export async function analyzeGames(
             picks_generated_at: now,
           })
           .eq('id', existing.id);
-        if (updErr) console.error('[pickGen] no-odds marker update failed', updErr);
+        if (updErr) console.error('[pickGen] no-odds marker update failed (non-fatal)', updErr.message);
         else {
           insertedNoOddsCount++;
           console.log('[NO_ODDS_MARKER_UPDATED]', {
@@ -1662,7 +1665,7 @@ export async function analyzeGames(
         const { error: insErr } = await supabase
           .from('picks')
           .insert({ ...r, picks_generated_at: now });
-        if (insErr) console.error('[pickGen] no-odds marker insert failed', insErr);
+        if (insErr) console.error('[pickGen] no-odds marker insert failed (non-fatal)', insErr.message);
         else {
           insertedNoOddsCount++;
           console.log('[NO_ODDS_MARKER_CREATED]', { espn_event_id: r.espn_event_id });
@@ -1684,11 +1687,14 @@ export async function analyzeGames(
   // parlays don't have a stable espn_event_id and lock-in semantics don't
   // apply (server regenerates parlay combinations every run).
   if (parlayRows.length > 0) {
-    const { data: existingParlays } = await supabase
+    const { data: existingParlays, error: existingParlaysError } = await supabase
       .from('picks')
       .select('id, sport, home_team, away_team, pick, bet_type')
       .eq('status', 'pending')
       .eq('is_parlay', true);
+    if (existingParlaysError) {
+      console.error('[pickGen] existing parlays lookup failed; continuing without dedup', existingParlaysError);
+    }
     const parlayKeyOf = (r: { sport: string; home_team: string; away_team: string; pick: string; bet_type: string }) =>
       `${r.sport}|${r.home_team}|${r.away_team}|${r.pick}|${r.bet_type}`;
     const existingParlayMap = new Map<string, string>();
@@ -1699,7 +1705,7 @@ export async function analyzeGames(
         const updateFields: Record<string, unknown> = { ...row };
         delete updateFields.status;
         const { error } = await supabase.from('picks').update(updateFields).eq('id', id);
-        if (error) console.error('[pickGen] parlay update failed', error);
+        if (error) throw new Error(`parlay_write: ${error.message}`);
         else updatedCount++;
       } else {
         const { data: ins, error } = await supabase
@@ -1707,7 +1713,7 @@ export async function analyzeGames(
           .insert([{ ...row, picks_generated_at: now }])
           .select()
           .single();
-        if (error) console.error('[pickGen] parlay insert failed', error);
+        if (error) throw new Error(`parlay_write: ${error.message}`);
         else if (ins) {
           insertedCount++;
           insertedParlaysOut.push(ins as PickRow);
@@ -1745,13 +1751,14 @@ export async function analyzeGames(
 
   async function applyLockIn(row: PickRow): Promise<LockAction> {
     if (!row.espn_event_id) return { action: 'insert', row };
-    const { data: existingPicks } = await supabase
+    const { data: existingPicks, error } = await supabase
       .from('picks')
       .select('id, pick, tier, real_probability, original_real_probability, original_odds, status, locked_at, reanalysis_count, telegram_notified_at')
       .eq('espn_event_id', row.espn_event_id)
       .eq('bet_type', row.bet_type)
       .eq('is_parlay', false)
       .in('status', ['pending', 'bet']);
+    if (error) throw new Error(`lock_in_select: ${error.message}`);
     const existing = (existingPicks ?? [])[0];
     if (!existing) return { action: 'insert', row };
     // Protect bet picks — never modified by lock-in.
@@ -1819,8 +1826,7 @@ export async function analyzeGames(
         .select()
         .single();
       if (error) {
-        console.error('[pickGen] lock-in insert failed', error);
-        continue;
+        throw new Error(`lock_in_write: ${error.message}`);
       }
       if (ins) {
         insertedCount++;
@@ -1891,20 +1897,22 @@ export async function analyzeGames(
         .update(refreshFields)
         .eq('id', decision.existingId);
       if (updErr) {
-        console.error('[pickGen] lock-in update failed', updErr);
+        throw new Error(`lock_in_write: ${updErr.message}`);
       } else {
         // Two-step read+write to bump reanalysis_count — supabase-js doesn't
         // expose atomic increment and this field is audit-only, not
         // concurrency-critical (the cron runs once at a time per project).
-        const { data: cur } = await supabase
+        const { data: cur, error: curError } = await supabase
           .from('picks')
           .select('reanalysis_count')
           .eq('id', decision.existingId)
           .single();
-        await supabase
+        if (curError) console.error('[pickGen] lock-in reanalysis_count read failed; using zero', curError);
+        const { error: countError } = await supabase
           .from('picks')
           .update({ reanalysis_count: (cur?.reanalysis_count ?? 0) + 1 })
           .eq('id', decision.existingId);
+        if (countError) throw new Error(`lock_in_write: ${countError.message}`);
         updatedCount++;
         if (row.espn_event_id) touchedEventIds.add(row.espn_event_id);
         console.log('[LOCK_UPDATED]', {
@@ -1940,19 +1948,21 @@ export async function analyzeGames(
         })
         .eq('id', decision.existingId);
       if (error) {
-        console.error('[pickGen] supersede_line_moved update failed', error);
+        throw new Error(`lock_in_write: ${error.message}`);
       } else {
         // Bump reanalysis_count via two-step read+write (supabase-js has
         // no atomic increment; this field is audit-only).
-        const { data: cur } = await supabase
+        const { data: cur, error: curError } = await supabase
           .from('picks')
           .select('reanalysis_count')
           .eq('id', decision.existingId)
           .single();
-        await supabase
+        if (curError) console.error('[pickGen] supersede reanalysis_count read failed; using zero', curError);
+        const { error: countError } = await supabase
           .from('picks')
           .update({ reanalysis_count: (cur?.reanalysis_count ?? 0) + 1 })
           .eq('id', decision.existingId);
+        if (countError) throw new Error(`lock_in_write: ${countError.message}`);
         supersededLineMovedCount++;
         supersededList.push({
           pick: decision.lockedSide,
@@ -1997,12 +2007,15 @@ export async function analyzeGames(
   if (orphanedEventIds.length > 0) {
     // Capture pick + tier + telegram_notified_at BEFORE the update so the
     // cron knows whether each supersede needs a standalone Telegram alert.
-    const { data: orphanedPicks } = await supabase
+    const { data: orphanedPicks, error: orphanedPicksError } = await supabase
       .from('picks')
       .select('id, pick, tier, espn_event_id, original_real_probability, telegram_notified_at')
       .in('espn_event_id', orphanedEventIds)
       .eq('status', 'pending')
       .eq('is_parlay', false);
+    if (orphanedPicksError) {
+      console.error('[pickGen] orphaned picks audit lookup failed; skipping supersede pass', orphanedPicksError);
+    }
     for (const o of orphanedPicks ?? []) {
       const { error } = await supabase
         .from('picks')
@@ -2013,8 +2026,7 @@ export async function analyzeGames(
         })
         .eq('id', o.id);
       if (error) {
-        console.error('[pickGen] supersede update failed', error);
-        continue;
+        throw new Error(`lock_in_write: ${error.message}`);
       }
       supersededEdgeEvaporatedCount++;
       supersededList.push({
@@ -2044,11 +2056,14 @@ export async function analyzeGames(
     const eventIdsToCheck = filteredAuditRows
       .map((r) => r.espn_event_id)
       .filter((x): x is string => Boolean(x));
-    const { data: existingForEvents } = await supabase
+    const { data: existingForEvents, error: existingForEventsError } = await supabase
       .from('picks')
       .select('espn_event_id, bet_type')
       .in('espn_event_id', eventIdsToCheck.length > 0 ? eventIdsToCheck : ['__none__'])
       .eq('is_parlay', false);
+    if (existingForEventsError) {
+      console.error('[pickGen] quality audit dedup lookup failed; continuing without persisted dedup', existingForEventsError);
+    }
     const seenEventBetType = new Set<string>(
       (existingForEvents ?? []).map((e) => `${e.espn_event_id}|${e.bet_type}`),
     );
@@ -2070,7 +2085,7 @@ export async function analyzeGames(
       const payload = toInsertFiltered.map((r) => ({ ...r, picks_generated_at: now }));
       const { error } = await supabase.from('picks').insert(payload);
       if (error) {
-        console.error('[pickGen] filtered_quality_audit insert failed', error);
+        throw new Error(`audit_write: ${error.message}`);
       } else {
         filteredByAuditCount = toInsertFiltered.length;
         // Pick Digest: capture audit-filtered events post-dedup so the

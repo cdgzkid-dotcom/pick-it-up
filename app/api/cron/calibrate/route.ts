@@ -81,8 +81,14 @@ async function handle(req: Request) {
     const { error } = await supabase
       .from('system_weights')
       .upsert(w, { onConflict: 'sport,factor_name' });
-    if (error) console.error('[calibrate] upsert failed', error, w);
-    else upserted++;
+    if (error) {
+      console.error('[calibrate] upsert failed', error, w);
+      return NextResponse.json(
+        { error: `system_weights upsert failed: ${error.message}` },
+        { status: 500 },
+      );
+    }
+    upserted++;
   }
 
   // ─── Telegram report ──────────────────────────────────────────────────
@@ -97,10 +103,17 @@ async function handle(req: Request) {
 
   // Weekly summary on settled bets from the past 7 days
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { data: weeklyBetsData } = await supabase
+  const { data: weeklyBetsData, error: weeklyBetsErr } = await supabase
     .from('bets')
     .select('*')
     .gte('created_at', weekAgo);
+  if (weeklyBetsErr) {
+    console.error('[calibrate] weekly bets query failed', weeklyBetsErr);
+    return NextResponse.json(
+      { error: `bets query failed: ${weeklyBetsErr.message}` },
+      { status: 500 },
+    );
+  }
   // Single filter point for the whole weekly report: record/ROI, per-sport,
   // per-tier and CLV all derive from `weeklyBets`. Backfilled bets are real
   // money but not model output, so they would corrupt the calibration signal.
@@ -108,11 +121,18 @@ async function handle(req: Request) {
   const weeklyStats = computeStats(weeklyBets);
   const weeklyPl = weeklyStats.pl;
 
-  const { data: settings } = await supabase
+  const { data: settings, error: settingsErr } = await supabase
     .from('settings')
     .select('bankroll_current')
     .eq('id', 1)
     .single();
+  if (settingsErr) {
+    console.error('[calibrate] settings query failed', settingsErr);
+    return NextResponse.json(
+      { error: `settings query failed: ${settingsErr.message}` },
+      { status: 500 },
+    );
+  }
   const bankrollNow = Number(settings?.bankroll_current ?? 0);
 
   // Per-sport from the same 7-day window
@@ -180,7 +200,7 @@ async function handle(req: Request) {
     lines.push('');
     lines.push('🧠 *Factores que más ganan:*');
     for (const { w, f } of strong.slice(0, 5)) {
-      lines.push(`✅ ${w.factor_name}: ${Math.round(Number(f.win_rate) * 100)}% (${w.sample_size} picks) — peso ${w.weight}`);
+      lines.push(`✅ \`${w.factor_name}\`: ${Math.round(Number(f.win_rate) * 100)}% (${w.sample_size} picks) — peso ${w.weight}`);
     }
   }
 
@@ -188,14 +208,19 @@ async function handle(req: Request) {
     lines.push('');
     lines.push('⚠️ *Factores débiles:*');
     for (const { w, f } of weak.slice(0, 5)) {
-      lines.push(`⚠️ ${w.factor_name}: ${Math.round(Number(f.win_rate) * 100)}% (${w.sample_size} picks) — bajando peso a ${w.weight}`);
+      lines.push(`⚠️ \`${w.factor_name}\`: ${Math.round(Number(f.win_rate) * 100)}% (${w.sample_size} picks) — bajando peso a ${w.weight}`);
     }
   }
 
-  await sendTelegramMessage(lines.join('\n'));
+  const sent = await sendTelegramMessage(lines.join('\n'));
+  if (!sent.ok) {
+    console.error('[calibrate] telegram send failed', sent.error);
+  }
 
   return NextResponse.json({
-    ok: true,
+    ok: sent.ok,
+    telegram_sent: sent.ok,
+    ...(sent.error ? { telegram_error: sent.error } : {}),
     calibrated: upserted,
     strong_count: strong.length,
     weak_count: weak.length,

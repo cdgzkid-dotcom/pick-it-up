@@ -53,16 +53,28 @@ export async function POST(req: Request) {
   let espn_event_id = fields.espn_event_id ?? null;
   let game_start_time: string | null = null;
   if (pick_id) {
-    const { data: pickRow } = await supabase
+    const { data: pickRow, error: pickErr } = await supabase
       .from('picks')
       .select('espn_event_id, game_start_time, observation_only')
       .eq('id', pick_id)
       .maybeSingle();
 
+    // A read ERROR (not "no row") must stop here, BEFORE the bankroll is
+    // debited: otherwise the bet lands without espn_event_id/game_start_time
+    // and the observation_only guard is silently skipped. A missing row
+    // (pick_id not found) keeps the previous behaviour: proceed with nulls
+    // and let place_bet_atomic decide.
+    if (pickErr) {
+      console.error('[POST /api/bets] pick lookup failed', pick_id, pickErr);
+      return NextResponse.json(
+        { error: 'No se pudo leer el pick asociado', detail: pickErr.message },
+        { status: 500 },
+      );
+    }
+
     // Preseason observation picks are NOT bettable. Reject loudly here (and
     // again inside place_bet_atomic) rather than letting an exhibition game
-    // reach the bankroll. Fails closed: if the row can't be read at all we
-    // still proceed as before, but a row that says observation_only stops.
+    // reach the bankroll.
     if (pickRow?.observation_only === true) {
       console.error('[POST /api/bets] REJECTED observation_only pick', {
         pick_id,
@@ -146,11 +158,20 @@ export async function POST(req: Request) {
 
   // Re-fetch the bet to return the same shape as before (UI consumers
   // expect the full row, not just id + bankroll).
-  const { data: bet } = await supabase
+  // The bet is already placed at this point, so a failed re-fetch is NOT a
+  // 500 — return the ids so the client can still reconcile.
+  const { data: bet, error: betErr } = await supabase
     .from('bets')
     .select('*')
     .eq('id', result.bet_id)
     .maybeSingle();
+  if (betErr) {
+    console.error('[POST /api/bets] bet re-fetch failed (bet WAS placed)', result.bet_id, betErr);
+  }
 
-  return NextResponse.json({ ...bet, bankroll_current: result.bankroll_current });
+  return NextResponse.json({
+    id: result.bet_id,
+    ...(bet ?? {}),
+    bankroll_current: result.bankroll_current,
+  });
 }

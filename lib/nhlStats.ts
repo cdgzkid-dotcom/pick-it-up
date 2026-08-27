@@ -56,10 +56,17 @@ export interface NhlStandingRow {
   goalDiff?: number;
 }
 
+/** Log a swallowed fetch failure before the caller falls back to empty.
+ *  A silent empty hid a 3-week ESPN 403 (see lib/healthChecks.ts) — never again. */
+function warnFetchFailed(what: string, e: unknown): void {
+  console.warn(`[nhlStats] fetch failed ${what} ${e instanceof Error ? e.message : String(e)}`);
+}
+
 export async function fetchNhlStandings(): Promise<Map<string, NhlStandingRow>> {
   return cached('nhl:standings', 120, async () => {
-    const r = await fetch('https://api-web.nhle.com/v1/standings/now', { cache: 'no-store' });
-    if (!r.ok) return new Map();
+    const url = 'https://api-web.nhle.com/v1/standings/now';
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) { console.warn(`[nhlStats] HTTP ${r.status} ${url}`); return new Map(); }
     const data: StandingsResp = await r.json();
     const map = new Map<string, NhlStandingRow>();
     for (const t of data.standings ?? []) {
@@ -118,7 +125,7 @@ export async function fetchNhlTeamSummary(): Promise<Map<string, NhlTeamSummary>
   return cached(`nhl:teamSummary:${SEASON}`, 240, async () => {
     const url = `https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=seasonId=${SEASON}`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return new Map();
+    if (!r.ok) { console.warn(`[nhlStats] HTTP ${r.status} ${url}`); return new Map(); }
     const data: TeamSummaryResp = await r.json();
     const map = new Map<string, NhlTeamSummary>();
     for (const t of data.data ?? []) {
@@ -170,7 +177,7 @@ export async function fetchNhlGoalies(): Promise<NhlGoalieRow[]> {
   return cached(`nhl:goalies:${SEASON}`, 240, async () => {
     const url = `https://api.nhle.com/stats/rest/en/goalie/summary?cayenneExp=seasonId=${SEASON}&limit=120`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return [];
+    if (!r.ok) { console.warn(`[nhlStats] HTTP ${r.status} ${url}`); return []; }
     const data: GoalieResp = await r.json();
     return (data.data ?? [])
       .filter((g) => g.goalieFullName && g.teamAbbrevs)
@@ -214,7 +221,7 @@ async function fetchRecentGames(
   return cached(`nhl:recentGames:${teamAbbr}:${SEASON}`, 120, async () => {
     const url = `https://api-web.nhle.com/v1/club-schedule-season/${teamAbbr}/${SEASON}`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return [];
+    if (!r.ok) { console.warn(`[nhlStats] HTTP ${r.status} ${url}`); return []; }
     const data = await r.json();
     const games: NhlRecentGame[] = [];
 
@@ -268,10 +275,9 @@ export interface NhlEspnStats {
 
 async function fetchEspnNhlTeamId(teamAbbr: string): Promise<string | null> {
   return cached('nhl:espn:teamMap', 1440, async () => {
-    const res = await fetch(`${ESPN_BASE}/site/v2/sports/hockey/nhl/teams`, {
-      cache: 'no-store',
-    });
-    if (!res.ok) return new Map<string, string>();
+    const url = `${ESPN_BASE}/site/v2/sports/hockey/nhl/teams`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[nhlStats] HTTP ${res.status} ${url}`); return new Map<string, string>(); }
     const data = await res.json();
     const map = new Map<string, string>();
     for (const entry of data.sports?.[0]?.leagues?.[0]?.teams ?? []) {
@@ -285,15 +291,13 @@ async function fetchEspnNhlTeamId(teamAbbr: string): Promise<string | null> {
 }
 
 async function fetchEspnTeamStats(teamAbbr: string): Promise<NhlEspnStats | null> {
-  const espnId = await fetchEspnNhlTeamId(teamAbbr).catch(() => null);
+  const espnId = await fetchEspnNhlTeamId(teamAbbr).catch((e) => { warnFetchFailed(`espn team id ${teamAbbr}`, e); return null; });
   if (!espnId) return null;
 
   return cached(`nhl:espn:stats:${espnId}`, 240, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/site/v2/sports/hockey/nhl/teams/${espnId}/statistics?seasontype=2`,
-      { cache: 'no-store' },
-    );
-    if (!res.ok) return null;
+    const url = `${ESPN_BASE}/site/v2/sports/hockey/nhl/teams/${espnId}/statistics?seasontype=2`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[nhlStats] HTTP ${res.status} ${url}`); return null; }
     const data = await res.json();
 
     const allStats = new Map<string, number>();
@@ -345,13 +349,13 @@ export async function buildNhlGameContext(
 
   const [standings, teams, goalies, homeRecent, awayRecent, homeEspn, awayEspn] =
     await Promise.all([
-      fetchNhlStandings().catch(() => new Map<string, NhlStandingRow>()),
-      fetchNhlTeamSummary().catch(() => new Map<string, NhlTeamSummary>()),
-      fetchNhlGoalies().catch(() => [] as NhlGoalieRow[]),
-      fetchRecentGames(homeUp, 10).catch(() => [] as NhlRecentGame[]),
-      fetchRecentGames(awayUp, 10).catch(() => [] as NhlRecentGame[]),
-      fetchEspnTeamStats(homeUp).catch(() => null),
-      fetchEspnTeamStats(awayUp).catch(() => null),
+      fetchNhlStandings().catch((e) => { warnFetchFailed('standings', e); return new Map<string, NhlStandingRow>(); }),
+      fetchNhlTeamSummary().catch((e) => { warnFetchFailed('team summary', e); return new Map<string, NhlTeamSummary>(); }),
+      fetchNhlGoalies().catch((e) => { warnFetchFailed('goalies', e); return [] as NhlGoalieRow[]; }),
+      fetchRecentGames(homeUp, 10).catch((e) => { warnFetchFailed(`recent games ${homeUp}`, e); return [] as NhlRecentGame[]; }),
+      fetchRecentGames(awayUp, 10).catch((e) => { warnFetchFailed(`recent games ${awayUp}`, e); return [] as NhlRecentGame[]; }),
+      fetchEspnTeamStats(homeUp).catch((e) => { warnFetchFailed(`espn stats ${homeUp}`, e); return null; }),
+      fetchEspnTeamStats(awayUp).catch((e) => { warnFetchFailed(`espn stats ${awayUp}`, e); return null; }),
     ]);
 
   const ctx: NhlGameContext = {

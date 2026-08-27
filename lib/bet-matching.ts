@@ -59,7 +59,7 @@ export async function matchExtractedBetToPicks(
   extracted: DrafteaExtractedBet,
 ): Promise<MatchResult> {
   const supabase = supabaseAdmin();
-  const { data: pendingPicks } = await supabase
+  const { data: pendingPicks, error } = await supabase
     .from('picks')
     // observation_only is selected (not filtered out) on purpose: matching an
     // exhibition pick lets /confirm reject the ticket with the pick's name
@@ -68,6 +68,8 @@ export async function matchExtractedBetToPicks(
     .eq('status', 'pending')
     .gt('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
     .order('created_at', { ascending: false });
+
+  if (error) throw new Error(`pending_picks_query: ${error.message}`);
 
   const picks = (pendingPicks ?? []) as PickCandidate[];
 

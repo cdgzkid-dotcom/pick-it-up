@@ -15,6 +15,7 @@ type ToNotify = {
   pick: string;
   result: 'win' | 'loss';
   pl: number;
+  payout: number;
   is_parlay: boolean;
   final_score?: string | null;
   home_team?: string | null;
@@ -39,6 +40,29 @@ interface Resolution {
   away_team?: string | null;
   is_parlay: boolean;
   was_already_notified: boolean;
+}
+
+// Line extraction from the pick text. The old regex grabbed the FIRST number
+// in the string, so "76ers -5.5" parsed as line=76. Rules now:
+//   spread → a signed number token bounded by whitespace ("76ers -5.5" → -5.5,
+//            "Lakers +3" → 3). Sign is mandatory, so "76ers" alone never matches.
+//   total  → number right after Over/Under ("Over 8.5" → 8.5, "Under 44.5" → 44.5),
+//            falling back to a trailing number ("Padres o7.5"-style text won't
+//            match either and falls through to the DB column).
+// Returns null when the text carries no line ("St. Louis Cardinals ML").
+const SPREAD_LINE_RE = /(?:^|\s)([+-]\d+(?:\.\d+)?)(?=\s|$|\))/;
+const TOTAL_OU_LINE_RE = /\b(?:over|under)\s*([+-]?\d+(?:\.\d+)?)/i;
+const TRAILING_LINE_RE = /(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$/;
+
+function parsePickLine(pick: string, kind: 'spread' | 'total'): number | null {
+  const text = String(pick ?? '').trim();
+  if (!text) return null;
+  const m = kind === 'spread'
+    ? text.match(SPREAD_LINE_RE)
+    : (text.match(TOTAL_OU_LINE_RE) ?? text.match(TRAILING_LINE_RE));
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
 function authOk(req: Request): boolean {
@@ -98,6 +122,7 @@ export async function POST(req: Request) {
   const bets = (pendingBets as Bet[]) ?? [];
 
   const resolutions: Resolution[] = [];
+  let pushed = 0;
 
   for (const bet of bets) {
     if (!bet.espn_event_id) continue;
@@ -120,12 +145,19 @@ export async function POST(req: Request) {
     if (isML) {
       const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
       if (!side) continue;
-      if (homeScore === awayScore) continue; // tie / OT etc — manual
-      won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+      if (homeScore === awayScore) {
+        // Final tie (NFL regular season can end tied). A moneyline on a tied
+        // game is a push — stake refunded, no profit — same as a spread push.
+        // Previously this was `continue`, which left the bet pending forever.
+        isPush = true;
+      } else {
+        won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+      }
     } else if (isSpread) {
-      // Parse "Cubs -1.5" or "Cubs +2.5" — pull the signed number
-      const lineMatch = bet.pick.match(/([+-]?\d+(\.\d+)?)/);
-      const line = lineMatch ? parseFloat(lineMatch[1]) : (bet.spread_line != null ? Number(bet.spread_line) : NaN);
+      // Parse "Cubs -1.5" / "76ers -5.5" — signed number token, not the first
+      // digits in the string. Falls back to bets.spread_line.
+      const parsed = parsePickLine(bet.pick, 'spread');
+      const line = parsed ?? (bet.spread_line != null ? Number(bet.spread_line) : NaN);
       if (!Number.isFinite(line)) continue;
       const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
       if (!side) continue;
@@ -137,8 +169,8 @@ export async function POST(req: Request) {
         won = adjusted > 0;
       }
     } else if (isTotal) {
-      const lineMatch = bet.pick.match(/(\d+(\.\d+)?)/);
-      const line = lineMatch ? parseFloat(lineMatch[0]) : (bet.total_line != null ? Number(bet.total_line) : NaN);
+      const parsed = parsePickLine(bet.pick, 'total');
+      const line = parsed ?? (bet.total_line != null ? Number(bet.total_line) : NaN);
       if (!Number.isFinite(line)) continue;
       const isOver = /\bover\b/i.test(bet.pick) || (bet.bet_direction === 'over');
       const isUnder = /\bunder\b/i.test(bet.pick) || (bet.bet_direction === 'under');
@@ -166,7 +198,11 @@ export async function POST(req: Request) {
         p_clv: null,
         p_note: `[Auto] PUSH ${bet.pick} (${finalScorePush})`,
       });
-      if (rpcErr) console.error('[check-results] push rpc failed', rpcErr.message);
+      if (rpcErr) {
+        console.error('[check-results] push rpc failed', { bet_id: bet.id, err: rpcErr.message });
+      } else {
+        pushed += 1;
+      }
       continue;
     }
 
@@ -188,9 +224,17 @@ export async function POST(req: Request) {
     // The pre-2026-05-12 version read picks.odds_decimal which goes stale
     // when status='bet' (applyLockIn skips updates), producing clv=0 for
     // every bet. Now we use ESPN's close.moneyLine.decimal which persists
-    // post-game. ML only for now (spread/total fallback to clv=0).
+    // post-game. ML only for now.
+    //
+    // No real closing line (spread/total, ESPN fetch failed, or no odds in
+    // the payload) → bets.odds_at_close and bets.clv stay NULL. The previous
+    // version persisted odds_at_bet as the close and clv=0, which is
+    // indistinguishable from a real "market didn't move" reading and
+    // poisoned CLV aggregates. There is no clv_source column in the schema,
+    // so provenance is only logged.
     const oddsAtBet = bet.odds_at_bet != null ? Number(bet.odds_at_bet) : Number(bet.odds_decimal);
     let oddsAtClose: number | null = null;
+    let clv: number | null = null;
     let clvSource = 'fallback_not_ml';
     if (isML && bet.espn_event_id) {
       const side = pickedSide(
@@ -213,19 +257,25 @@ export async function POST(req: Request) {
         console.warn('[CLV_COMPUTED] fetch error', { bet_id: bet.id, err: (e as Error).message });
       }
     }
-    if (oddsAtClose === null) {
-      oddsAtClose = oddsAtBet;
+    if (oddsAtClose !== null && Number.isFinite(oddsAtBet) && oddsAtBet > 1) {
+      clv = (1 / oddsAtClose) - (1 / oddsAtBet);
+      console.log('[CLV_COMPUTED]', {
+        bet_id: bet.id,
+        pick_id: bet.pick_id,
+        odds_at_bet: oddsAtBet,
+        odds_at_close: oddsAtClose,
+        clv: Number(clv.toFixed(4)),
+        source: clvSource,
+      });
+    } else {
       if (clvSource === 'fallback_not_ml' && isML) clvSource = 'fallback_no_data';
+      console.warn('[CLV_COMPUTED] no closing line — leaving odds_at_close/clv NULL', {
+        bet_id: bet.id,
+        pick_id: bet.pick_id,
+        odds_at_bet: oddsAtBet,
+        source: clvSource,
+      });
     }
-    const clv = (1 / oddsAtClose) - (1 / oddsAtBet);
-    console.log('[CLV_COMPUTED]', {
-      bet_id: bet.id,
-      pick_id: bet.pick_id,
-      odds_at_bet: oddsAtBet,
-      odds_at_close: oddsAtClose,
-      clv: Number(clv.toFixed(4)),
-      source: clvSource,
-    });
 
     // Save final score for display in tracker history + Telegram message.
     // Format: "away-home" (e.g., "Royals 5 - Tigers 2" rendered from this).
@@ -235,21 +285,23 @@ export async function POST(req: Request) {
     // idempotency guard inside the RPC. If cron already resolved this bet
     // (this route + cron/analyze runResultsCheck both run), skipped:true
     // returns and the bankroll isn't double-credited.
-    const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
       p_bet_id: bet.id,
       p_result: won ? 'win' : 'loss',
       p_payout: payout,
       p_credit: payout, // 0 for loss, full payout for win
       p_cashout_amount: null,
       p_final_score: finalScore,
-      p_odds_at_close: oddsAtClose,
-      p_clv: clv,
+      p_odds_at_close: oddsAtClose, // null → RPC coalesce keeps the column NULL
+      p_clv: clv,                   // null → same
       p_note: `[Auto] ${won ? 'WIN' : 'LOSS'} ${bet.pick} (${status.away_score}-${status.home_score})`,
     });
     if (rpcErr) {
-      console.error('[check-results] resolve rpc failed', rpcErr.message);
+      console.error('[check-results] resolve rpc failed', { bet_id: bet.id, err: rpcErr.message });
       continue;
     }
+    // Already resolved by the cron → ELO/learning applied there; don't double count.
+    if ((rpcData as { skipped?: boolean } | null)?.skipped) continue;
 
     // Update ELO ratings for both teams based on actual game result.
     if (bet.home_team && bet.away_team) {
@@ -301,6 +353,7 @@ export async function POST(req: Request) {
     pick: r.pick,
     result: r.result,
     pl: r.pl,
+    payout: r.payout,
     is_parlay: r.is_parlay,
     final_score: `${r.away_score}-${r.home_score}`,
     home_team: r.home_team,
@@ -309,11 +362,15 @@ export async function POST(req: Request) {
 
   // Also catch up any previously resolved bets that never made it to Telegram
   // (e.g., resolved manually before the notification path existed).
-  const { data: unnotified } = await supabase
+  const { data: unnotified, error: unnotifiedErr } = await supabase
     .from('bets')
     .select('*')
     .in('result', ['win', 'loss'])
     .is('result_notified_at', null);
+  if (unnotifiedErr) {
+    // Non-fatal: we still notify what we resolved in this run.
+    console.error('[check-results] unnotified fetch failed', unnotifiedErr.message);
+  }
   for (const b of (unnotified as Bet[]) ?? []) {
     if (toNotify.some((r) => r.bet_id === b.id)) continue;
     const amount = Number(b.amount);
@@ -323,6 +380,7 @@ export async function POST(req: Request) {
       pick: b.pick,
       result: b.result === 'win' ? 'win' : 'loss',
       pl: payout - amount,
+      payout,
       is_parlay: (b.bet_type as string) === 'Parlay',
       final_score: b.final_score ?? null,
       home_team: b.home_team,
@@ -332,19 +390,29 @@ export async function POST(req: Request) {
 
   let notified = 0;
   if (toNotify.length > 0) {
-    const { data: settings } = await supabase
+    const { data: settings, error: settingsErr } = await supabase
       .from('settings')
       .select('bankroll_current')
       .eq('id', 1)
       .single();
-    const { data: allBets } = await supabase
+    if (settingsErr) {
+      console.error('[check-results] settings fetch failed', settingsErr.message);
+    }
+    const { data: allBets, error: allBetsErr } = await supabase
       .from('bets')
       .select('*')
       .order('created_at', { ascending: false });
+    if (allBetsErr) {
+      console.error('[check-results] bets fetch for stats failed', allBetsErr.message);
+    }
     const stats = computeStats((allBets as Bet[]) ?? []);
     const todayPl = toNotify.reduce((s, r) => s + r.pl, 0);
     const bankrollNow = Number(settings?.bankroll_current ?? 0);
-    const bankrollBefore = bankrollNow - todayPl;
+    // The stake was already debited from the bankroll when the bet was placed,
+    // so the only movement at resolution time is the credited payout. Mirrors
+    // cron/analyze runResultsCheck (bankrollNow − Σpayout), not now − P/L.
+    const creditsApplied = toNotify.reduce((s, r) => s + r.payout, 0);
+    const bankrollBefore = bankrollNow - creditsApplied;
     const text = formatResultsMessage(toNotify, {
       bankrollCurrent: bankrollNow,
       bankrollBefore,
@@ -355,12 +423,19 @@ export async function POST(req: Request) {
     const send = await sendTelegramMessage(text);
     if (send.ok) {
       const ids = toNotify.map((r) => r.bet_id);
-      await supabase
+      const { error: markErr } = await supabase
         .from('bets')
         .update({ result_notified_at: new Date().toISOString() })
         .in('id', ids);
-      notified = toNotify.length;
+      if (markErr) {
+        // Message went out but the flag didn't stick — next run will re-send.
+        // Surface it rather than silently reporting notified=N.
+        console.error('[check-results] result_notified_at update failed', markErr.message);
+      } else {
+        notified = toNotify.length;
+      }
     } else {
+      // Send failed → leave result_notified_at NULL so the next run retries.
       console.error('[check-results] telegram send failed', send.error);
     }
   }
@@ -368,6 +443,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     checked: bets.length,
     resolved: resolutions.length,
+    pushed,
     notified,
     resolutions,
   });

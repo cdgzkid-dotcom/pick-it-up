@@ -9,9 +9,14 @@
  * Supported flows:
  *   • message.photo  → sends "Analizando…", then edits that message
  *                      with the ticket preview + [✅ Confirmar] [❌ Cancelar].
- *   • callback_query → confirm stores the bet via /api/bets/from-image/confirm;
- *                      cancel deletes the pending session.
+ *   • callback_query → confirm atomically consumes the session (DELETE …
+ *                      RETURNING) and stores the bet via
+ *                      /api/bets/from-image/confirm; cancel deletes it.
+ *   • /start, /help  → usage text.  /status → bankroll + pending bets.
  *   • any other msg  → friendly prompt asking for a screenshot.
+ *
+ * Every update_id is recorded in data_cache (insert-only, 24 h TTL) so a
+ * Telegram retry of an already-accepted update is acked and ignored.
  */
 
 import { NextResponse } from 'next/server';
@@ -104,9 +109,19 @@ async function tgEdit(
     parse_mode: 'Markdown',
   };
   if (replyMarkup) body.reply_markup = replyMarkup;
-  await tgPost('editMessageText', body).catch((e) =>
-    console.error('[tg-webhook] editMessageText failed', e),
-  );
+  try {
+    const r = await tgPost('editMessageText', body);
+    if (r.ok) return;
+    // Most common failure: Markdown parse error from an unescaped `_`/`*` in
+    // dynamic text (error messages, team names). Retry as plain text so the
+    // user never gets stuck on "Analizando…".
+    const detail = await r.text().catch(() => '');
+    console.error('[tg-webhook] editMessageText failed', r.status, detail);
+    delete body.parse_mode;
+    await tgPost('editMessageText', body);
+  } catch (e) {
+    console.error('[tg-webhook] editMessageText failed', e);
+  }
 }
 
 async function tgAnswer(callbackQueryId: string, text?: string): Promise<void> {
@@ -268,7 +283,7 @@ async function handlePhoto(chatId: number, fileId: string): Promise<void> {
     // Log usage (fire-and-forget)
     void (async () => {
       try {
-        await supabaseAdmin().from('ai_usage_log').insert({
+        const { error: usageErr } = await supabaseAdmin().from('ai_usage_log').insert({
           task_type: 'vision_extract_bet_tg',
           model: 'claude-sonnet-4-6',
           tokens_in: result.usage.tokens_in,
@@ -283,7 +298,10 @@ async function handlePhoto(chatId: number, fileId: string): Promise<void> {
             source: 'telegram',
           },
         });
-      } catch { /* non-critical */ }
+        if (usageErr) console.warn('[tg-webhook] ai_usage_log insert failed', usageErr);
+      } catch (e) {
+        console.warn('[tg-webhook] ai_usage_log insert threw', e);
+      }
     })();
   } catch (e) {
     console.error('[tg-webhook] extractDrafteaBet failed', e);
@@ -307,8 +325,18 @@ async function handlePhoto(chatId: number, fileId: string): Promise<void> {
     return;
   }
 
-  // 4. Match legs to pending picks
-  const { matches, math_warning } = await matchExtractedBetToPicks(extracted);
+  // 4. Match legs to pending picks (queries picks — may throw on DB error)
+  let matches: LegMatch[];
+  let mathWarning: string | null;
+  try {
+    const m = await matchExtractedBetToPicks(extracted);
+    matches = m.matches;
+    mathWarning = m.math_warning;
+  } catch (e) {
+    console.error('[tg-webhook] matchExtractedBetToPicks failed', e);
+    await finish('⚠️ Error interno al buscar picks pendientes. Intenta de nuevo en unos segundos.');
+    return;
+  }
 
   // 5. Store confirm payload in Supabase
   const confirmPayload = buildConfirmPayload(extracted, matches);
@@ -325,7 +353,7 @@ async function handlePhoto(chatId: number, fileId: string): Promise<void> {
   }
 
   // 6. Edit "Analizando…" → preview + buttons
-  const previewText = formatPreview(extracted, matches, math_warning);
+  const previewText = formatPreview(extracted, matches, mathWarning);
   await finish(previewText, confirmKeyboard(session.id as string));
 }
 
@@ -346,48 +374,92 @@ async function handleCallback(cq: TelegramCallbackQuery): Promise<void> {
   const supabase = supabaseAdmin();
 
   if (action === 'cancel') {
-    await supabase.from('telegram_sessions').delete().eq('id', sessionId);
+    const { error: cancelErr } = await supabase
+      .from('telegram_sessions')
+      .delete()
+      .eq('id', sessionId);
+    if (cancelErr) {
+      console.error('[tg-webhook] session cancel delete failed', cancelErr);
+      await tgAnswer(cq.id, '⚠️ Error interno al cancelar');
+      await tgEdit(chatId, messageId, '⚠️ Error interno al cancelar. Intenta de nuevo.');
+      return;
+    }
     await tgAnswer(cq.id, 'Cancelado');
     await tgEdit(chatId, messageId, '❌ *Registro cancelado.*');
     return;
   }
 
   if (action === 'confirm') {
-    const { data: session } = await supabase
+    // Atomically CONSUME the session: DELETE … RETURNING. Exactly one caller
+    // gets the row back; a double-click (or a concurrent retry) sees zero rows
+    // and bails out, so the bet can never be placed twice from one preview.
+    const { data: consumed, error: consumeErr } = await supabase
       .from('telegram_sessions')
-      .select('payload')
+      .delete()
       .eq('id', sessionId)
-      .single();
+      .select('payload');
 
-    if (!session) {
-      await tgAnswer(cq.id, 'Sesión expirada o ya usada');
+    if (consumeErr) {
+      console.error('[tg-webhook] session consume failed', consumeErr);
+      await tgAnswer(cq.id, '⚠️ Error interno');
       await tgEdit(
         chatId,
         messageId,
-        '⚠️ Esta confirmación ya expiró o fue usada. Manda el screenshot de nuevo.',
+        '⚠️ Error interno al leer la sesión. Intenta confirmar de nuevo en unos segundos.',
       );
       return;
     }
 
-    // Delete immediately to prevent double-submit
-    await supabase.from('telegram_sessions').delete().eq('id', sessionId);
+    const session = consumed?.[0] as { payload: unknown } | undefined;
+    if (!session) {
+      // Already consumed by a previous click (its own result will land on
+      // this message), or expired/cleaned up. Only a toast — no edit, so we
+      // never clobber the in-flight result of the first click.
+      await tgAnswer(cq.id, 'Ya procesado o sesión expirada');
+      return;
+    }
 
-    const confirmRes = await fetch(`${APP_URL}/api/bets/from-image/confirm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(session.payload),
-    });
+    // Internal call to the confirm endpoint. It has no auth of its own (only
+    // the kill-switch gate), so no token is needed; if Vercel Deployment
+    // Protection is enabled, forward the automation bypass secret.
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    if (bypass) headers['x-vercel-protection-bypass'] = bypass;
 
-    const confirmBody = (await confirmRes.json().catch(() => ({}))) as {
+    let confirmRes: Response;
+    try {
+      confirmRes = await fetch(`${APP_URL}/api/bets/from-image/confirm`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(session.payload),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[tg-webhook] confirm fetch failed', e);
+      await tgAnswer(cq.id, '❌ Error al registrar');
+      await tgEdit(
+        chatId,
+        messageId,
+        `❌ *No se pudo registrar:* error de red al llamar al servidor (${msg}).\n\nNo pude confirmar si quedó registrada. Revisa con /status antes de reenviar el screenshot.`,
+      );
+      return;
+    }
+
+    let confirmBody: {
       ok?: boolean;
       error?: string;
       bet_id?: string;
       bankroll_current?: number | null;
       historical?: boolean;
-    };
+    } = {};
+    try {
+      confirmBody = (await confirmRes.json()) as typeof confirmBody;
+    } catch (e) {
+      console.error('[tg-webhook] confirm response not JSON', confirmRes.status, e);
+    }
 
     if (!confirmRes.ok) {
-      const errMsg = confirmBody.error ?? 'Error desconocido';
+      const errMsg = confirmBody.error ?? `Error desconocido (HTTP ${confirmRes.status})`;
       await tgAnswer(cq.id, '❌ Error al registrar');
       await tgEdit(chatId, messageId, `❌ *No se pudo registrar:*\n${errMsg}`);
       return;
@@ -410,6 +482,89 @@ async function handleCallback(cq: TelegramCallbackQuery): Promise<void> {
   }
 
   await tgAnswer(cq.id);
+}
+
+// ── Text commands ───────────────────────────────────────────────────────────
+
+const HELP_TEXT =
+  '👋 *Pick It Up bot*\n\n' +
+  'Mándame un *screenshot de tu ticket de Draftea* y lo leo con Claude Vision: ' +
+  'te muestro un resumen y con un botón lo registro como apuesta (y descuento el bankroll si está pendiente).\n\n' +
+  'Comandos:\n' +
+  '• /status — bankroll actual y apuestas pendientes\n' +
+  '• /help — este mensaje\n\n' +
+  `Web: ${APP_URL}/tracker`;
+
+async function handleStatus(chatId: number): Promise<void> {
+  const supabase = supabaseAdmin();
+
+  const [settingsRes, pendingRes] = await Promise.all([
+    supabase.from('settings').select('bankroll_current').eq('id', 1).maybeSingle(),
+    supabase.from('bets').select('id', { count: 'exact', head: true }).eq('result', 'pending'),
+  ]);
+
+  if (settingsRes.error || pendingRes.error) {
+    console.error('[tg-webhook] /status query failed', settingsRes.error ?? pendingRes.error);
+    await tgSendWithId(chatId, '⚠️ No pude leer el estado ahora mismo. Intenta en unos segundos.');
+    return;
+  }
+
+  const bankroll = settingsRes.data?.bankroll_current;
+  const bankrollLine =
+    bankroll != null ? `💰 Bankroll: $${Math.round(Number(bankroll))} MXN` : '💰 Bankroll: _sin configurar_';
+  const pendingCount = pendingRes.count ?? 0;
+
+  await tgSendWithId(
+    chatId,
+    `📊 *Estado*\n${bankrollLine}\n⏳ Apuestas pendientes: ${pendingCount}`,
+  );
+}
+
+async function handleText(chatId: number, text: string): Promise<void> {
+  // "/status@PickItUpBot arg" → "/status"
+  const command = text.trim().split(/\s+/)[0]?.split('@')[0]?.toLowerCase() ?? '';
+
+  switch (command) {
+    case '/start':
+    case '/help':
+      await tgSendWithId(chatId, HELP_TEXT);
+      return;
+    case '/status':
+      await handleStatus(chatId);
+      return;
+    default:
+      await tgSendWithId(
+        chatId,
+        'Mándame un screenshot de tu ticket de Draftea para registrarlo automáticamente. 📸\n\n/help para más info.',
+      );
+  }
+}
+
+// ── update_id dedup ─────────────────────────────────────────────────────────
+
+/**
+ * Telegram retries an update until it gets a 200. Since we ack in < 200 ms
+ * but the heavy work (Claude Vision, bankroll debit) runs in waitUntil, a
+ * retry would re-run everything. Insert-only (no upsert) on data_cache:
+ * a 23505 unique violation means this update was already accepted.
+ * Any other failure is logged and the update is processed anyway — the
+ * dedup guard must never take the bot down.
+ */
+async function isDuplicateUpdate(updateId: number): Promise<boolean> {
+  try {
+    const { error } = await supabaseAdmin().from('data_cache').insert({
+      cache_key: `tg:update:${updateId}`,
+      data: { seen: true },
+      expires_at: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    });
+    if (!error) return false;
+    if (error.code === '23505') return true;
+    console.warn('[tg-webhook] update dedup insert failed — processing anyway', error);
+    return false;
+  } catch (e) {
+    console.warn('[tg-webhook] update dedup threw — processing anyway', e);
+    return false;
+  }
 }
 
 // ── Main handler ────────────────────────────────────────────────────────────
@@ -438,11 +593,27 @@ export async function POST(req: Request) {
     NextResponse.json({ ok: true, ignored: 'chat_not_allowed' });
   const allowedChatId = Number(process.env.TELEGRAM_CHAT_ID);
 
+  // ── Chat gate (both update kinds) ─────────────────────────────────────────
+  const chatId = update.callback_query
+    ? update.callback_query.message?.chat.id
+    : update.message?.chat.id;
+  if (chatId === undefined) return ok(); // nothing we handle (edited msg, etc.)
+  if (chatId !== allowedChatId) return ignoredChat();
+
+  // ── update_id dedup (after secret + chat validation) ──────────────────────
+  if (typeof update.update_id === 'number' && (await isDuplicateUpdate(update.update_id))) {
+    return NextResponse.json({ ok: true, ignored: 'duplicate' });
+  }
+
+  // Background work must never reject silently: a rejected promise inside
+  // waitUntil is invisible to the user. The handlers report to Telegram
+  // themselves; this is the last-resort log.
+  const background = (label: string, p: Promise<void>) =>
+    waitUntil(p.catch((e) => console.error(`[tg-webhook] ${label} crashed`, e)));
+
   // ── Callback query (button press) ────────────────────────────────────────
   if (update.callback_query) {
-    const chatId = update.callback_query.message?.chat.id;
-    if (chatId !== allowedChatId) return ignoredChat();
-    waitUntil(handleCallback(update.callback_query));
+    background('handleCallback', handleCallback(update.callback_query));
     return ok();
   }
 
@@ -450,21 +621,13 @@ export async function POST(req: Request) {
   const message = update.message;
   if (!message) return ok();
 
-  const chatId = message.chat.id;
-  if (chatId !== allowedChatId) return ignoredChat();
-
   if (!message.photo || message.photo.length === 0) {
-    waitUntil(
-      tgSendWithId(
-        chatId,
-        'Mándame un screenshot de tu ticket de Draftea para registrarlo automáticamente. 📸',
-      ),
-    );
+    background('handleText', handleText(chatId, message.text ?? ''));
     return ok();
   }
 
   // Highest resolution = last element in the array
   const bestPhoto = message.photo[message.photo.length - 1];
-  waitUntil(handlePhoto(chatId, bestPhoto.file_id));
+  background('handlePhoto', handlePhoto(chatId, bestPhoto.file_id));
   return ok();
 }

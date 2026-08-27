@@ -8,10 +8,20 @@ export const dynamic = 'force-dynamic';
 
 const INITIAL_SEED = 300;
 
+// bankroll_log rows written by place_bet_atomic / resolve_bet_atomic. They
+// mirror the bets table and must NOT be summed here (double count). Anything
+// else in the log is real cash movement or a manual correction and MUST be.
+const BET_IMPACT_TYPES: ReadonlySet<string> = new Set([
+  'stake', 'win', 'loss', 'push', 'cashout', 'early_payout',
+]);
+const KNOWN_CASH_TYPES: ReadonlySet<string> = new Set(['deposit', 'withdraw', 'reconciliation']);
+
 /**
  * Rebuilds bankroll_current from source of truth:
  *   bankroll = INITIAL_SEED
- *            + sum(bankroll_log.amount) where type IN ('deposit','withdraw')
+ *            + sum(bankroll_log.amount) where type NOT IN (bet-impact types)
+ *              — i.e. deposit, withdraw, reconciliation and any manual
+ *              adjustment type someone inserts by hand (signed amounts)
  *            + sum(payout - amount) for ALL bets
  *
  * Where bet payout:
@@ -56,8 +66,21 @@ async function compute() {
     .filter((l) => l.type === 'deposit')
     .reduce((s, l) => s + Number(l.amount), 0);
   const withdrawals = logs
-    .filter((l) => l.type === 'withdraw' || l.type === 'reconciliation')
-    .reduce((s, l) => s + Number(l.amount), 0); // already negative; reconciliation entries are audit adjustments
+    .filter((l) => l.type === 'withdraw')
+    .reduce((s, l) => s + Number(l.amount), 0); // stored negative
+  // Reconciliation / manual adjustments (e.g. the -17.32 reconciliation row
+  // from 2026-05-16) plus any ad-hoc type inserted by hand. Signed amounts,
+  // summed as-is. Unknown types are reported so a typo doesn't hide money.
+  const adjustmentRows = logs.filter(
+    (l) => !BET_IMPACT_TYPES.has(String(l.type)) && l.type !== 'deposit' && l.type !== 'withdraw',
+  );
+  const adjustments = adjustmentRows.reduce((s, l) => s + Number(l.amount), 0);
+  const unknownTypes = Array.from(
+    new Set(adjustmentRows.map((l) => String(l.type)).filter((t) => !KNOWN_CASH_TYPES.has(t))),
+  );
+  if (unknownTypes.length > 0) {
+    console.warn('[bankroll/recalculate] unknown bankroll_log types counted as adjustments', unknownTypes);
+  }
 
   const pending = bets.filter((b) => b.result === 'pending');
   const wins = bets.filter((b) => b.result === 'win' || b.result === 'early_payout');
@@ -77,6 +100,7 @@ async function compute() {
     INITIAL_SEED +
     deposits +
     withdrawals + // negative
+    adjustments + // signed (reconciliation / manual)
     (winPayouts - winStakes) +
     (-lossStakes) +
     pushNet +
@@ -91,6 +115,12 @@ async function compute() {
       initial_seed: INITIAL_SEED,
       deposits,
       withdrawals,
+      adjustments: {
+        count: adjustmentRows.length,
+        total: adjustments,
+        types: Array.from(new Set(adjustmentRows.map((l) => String(l.type)))),
+        unknown_types: unknownTypes,
+      },
       pending: { count: pending.length, total_stakes: pendingStakes },
       wins: {
         count: wins.length,

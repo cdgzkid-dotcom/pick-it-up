@@ -22,12 +22,15 @@ export async function getOrInit(
   team: string,
   abbreviation?: string | null,
 ): Promise<EloRow> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('elo_ratings')
     .select('*')
     .eq('sport', sport)
     .eq('team', team)
     .maybeSingle();
+  if (error && error.code !== 'PGRST116') {
+    throw new Error(`elo_select: ${error.message}`);
+  }
   if (data) return data as EloRow;
   const fresh: EloRow = {
     sport,
@@ -36,7 +39,8 @@ export async function getOrInit(
     elo: DEFAULT_ELO,
     games_played: 0,
   };
-  await supabase.from('elo_ratings').insert([fresh]);
+  const { error: insertError } = await supabase.from('elo_ratings').insert([fresh]);
+  if (insertError) throw new Error(`elo_insert: ${insertError.message}`);
   return fresh;
 }
 
@@ -86,7 +90,7 @@ export async function applyResult(
   const newHome = Number(home.elo) + K * marginMult * (homeResult - expectedHome);
   const newAway = Number(away.elo) + K * marginMult * (awayResult - expectedAway);
 
-  await Promise.all([
+  const [homeWrite, awayWrite] = await Promise.all([
     supabase
       .from('elo_ratings')
       .update({
@@ -106,4 +110,6 @@ export async function applyResult(
       .eq('sport', sport)
       .eq('team', awayTeam),
   ]);
+  if (homeWrite.error) throw new Error(`elo_update_home: ${homeWrite.error.message}`);
+  if (awayWrite.error) throw new Error(`elo_update_away: ${awayWrite.error.message}`);
 }

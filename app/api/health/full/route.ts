@@ -21,7 +21,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { sendTelegramMessage } from '@/lib/telegram';
+import { sendTelegramMessage, escapeTgMarkdown } from '@/lib/telegram';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -50,7 +50,7 @@ export async function GET() {
   const todayStartCdmx = new Date(`${cdmxDate}T00:00:00-06:00`).toISOString();
 
   // ── 1. Last successful cron run (no errors field) ─────────────────────
-  const { data: lastSuccessfulRow } = await supabase
+  const { data: lastSuccessfulRow, error: lastSuccessfulErr } = await supabase
     .from('cron_runs')
     .select('started_at, games_analyzed, anthropic_status')
     .eq('workflow', 'analyze')
@@ -60,7 +60,7 @@ export async function GET() {
     .maybeSingle();
 
   // ── 2. Most recent cron run (any — for in-window count + anthropic status)
-  const { data: lastRunRow } = await supabase
+  const { data: lastRunRow, error: lastRunErr } = await supabase
     .from('cron_runs')
     .select('started_at, games_in_window, anthropic_status, errors')
     .eq('workflow', 'analyze')
@@ -69,20 +69,27 @@ export async function GET() {
     .maybeSingle();
 
   // ── 3. Today's cron runs (for totals) ────────────────────────────────
-  const { data: todayRows } = await supabase
+  const { data: todayRows, error: todayRowsErr } = await supabase
     .from('cron_runs')
     .select('games_fetched, games_analyzed')
     .eq('workflow', 'analyze')
     .gte('started_at', todayStartCdmx);
 
   // Last 12 runs cover roughly two hours at the normal 10-minute cadence.
-  const { data: recentRows } = await supabase
+  const { data: recentRows, error: recentRowsErr } = await supabase
     .from('cron_runs')
     .select('games_fetched')
     .eq('workflow', 'analyze')
     .gte('started_at', new Date(now.getTime() - 150 * 60_000).toISOString()) // bound to ~2.5h so a stalled cron can't fake a streak
     .order('started_at', { ascending: false })
     .limit(12);
+
+  const dbErrors = [
+    lastSuccessfulErr,
+    lastRunErr,
+    todayRowsErr,
+    recentRowsErr,
+  ].filter(Boolean);
 
   const runs = (todayRows ?? []) as Pick<CronRunRow, 'games_fetched' | 'games_analyzed'>[];
 
@@ -94,6 +101,16 @@ export async function GET() {
   const gamesTodayPendingInWindow = (lastRunRow as Partial<CronRunRow> | null)?.games_in_window ?? 0;
 
   // ── 4. Alert level ────────────────────────────────────────────────────
+  let alertLevel: 'green' | 'yellow' | 'red' = 'green';
+  const alertReasons: string[] = [];
+
+  if (dbErrors.length > 0) {
+    alertLevel = 'red';
+    for (const err of dbErrors) {
+      alertReasons.push(`db_query_failed: ${err!.message}`);
+    }
+  }
+
   const lastSuccessfulAt = lastSuccessfulRow?.started_at
     ? new Date(lastSuccessfulRow.started_at)
     : null;
@@ -104,8 +121,6 @@ export async function GET() {
   const lastAnthropicStatus =
     (lastRunRow as Partial<CronRunRow> | null)?.anthropic_status ?? 'unknown';
 
-  let alertLevel: 'green' | 'yellow' | 'red' = 'green';
-  const alertReasons: string[] = [];
   const lastErrors = (lastRunRow as Partial<CronRunRow> | null)?.errors;
   const hasStaleEspnError = lastErrors !== null
     && lastErrors !== undefined
@@ -116,12 +131,12 @@ export async function GET() {
   const hasZeroGamesStreak = latestRuns.length === 12
     && latestRuns.every((run) => run.games_fetched === 0);
 
-  if (hasStaleEspnError || minSinceLastSuccess > RED_THRESHOLD_MIN || lastAnthropicStatus === 'error') {
+  if (hasStaleEspnError || (!lastSuccessfulErr && minSinceLastSuccess > RED_THRESHOLD_MIN) || lastAnthropicStatus === 'error') {
     alertLevel = 'red';
     if (hasStaleEspnError) {
       alertReasons.push('stale_espn_data');
     }
-    if (minSinceLastSuccess > RED_THRESHOLD_MIN) {
+    if (!lastSuccessfulErr && minSinceLastSuccess > RED_THRESHOLD_MIN) {
       alertReasons.push(
         `sin cron exitoso en los últimos ${Math.round(minSinceLastSuccess)} min (umbral ${RED_THRESHOLD_MIN} min)`,
       );
@@ -131,14 +146,16 @@ export async function GET() {
     }
   } else if (
     (hasZeroGamesStreak && isGameHoursUtc)
-    || minSinceLastSuccess > YELLOW_THRESHOLD_MIN
+    || (!lastSuccessfulErr && minSinceLastSuccess > YELLOW_THRESHOLD_MIN)
     || lastAnthropicStatus === '529'
   ) {
-    alertLevel = 'yellow';
+    if (alertLevel !== 'red') {
+      alertLevel = 'yellow';
+    }
     if (hasZeroGamesStreak && isGameHoursUtc) {
       alertReasons.push('espn_zero_games_streak');
     }
-    if (minSinceLastSuccess > YELLOW_THRESHOLD_MIN) {
+    if (!lastSuccessfulErr && minSinceLastSuccess > YELLOW_THRESHOLD_MIN) {
       alertReasons.push(
         `sin cron exitoso en los últimos ${Math.round(minSinceLastSuccess)} min (umbral ${YELLOW_THRESHOLD_MIN} min)`,
       );
@@ -163,11 +180,14 @@ export async function GET() {
   // ── 6. Telegram alert if red; log if yellow ───────────────────────────
   if (alertLevel === 'red') {
     const reasons = alertReasons.join(' · ');
-    void sendTelegramMessage(
-      `🔴 *Health alert* — ${reasons}\n\n` +
+    const sent = await sendTelegramMessage(
+      `🔴 *Health alert* — ${escapeTgMarkdown(reasons)}\n\n` +
         `Último cron exitoso: ${lastSuccessfulAt ? lastSuccessfulAt.toLocaleString('es-MX', { timeZone: 'America/Mexico_City' }) : 'nunca'}\n` +
         `Anthropic: ${lastAnthropicStatus} · Analizados hoy: ${gamesTodayAnalyzed}`,
     );
+    if (!sent.ok) {
+      console.error('[health/full] telegram alert failed', sent.error);
+    }
   } else if (alertLevel === 'yellow') {
     console.warn('[health/full] yellow alert:', alertReasons);
   } else {

@@ -115,12 +115,18 @@ export async function sportKellyMultiplier(
   sport: string,
 ): Promise<number> {
   try {
-    const { data } = await supabase
+    // This lookup is deliberately best-effort: pick generation must retain
+    // the half-Kelly default when learned weights are unavailable.
+    const { data, error } = await supabase
       .from('factor_performance')
       .select('wins, losses')
       .eq('factor_name', 'sport')
       .eq('factor_value', sport)
       .maybeSingle();
+    if (error) {
+      console.error('[units] sportKellyMultiplier read failed; using default 0.5', error);
+      return 0.5;
+    }
     if (!data) return 0.5;
     const wins = Number(data.wins ?? 0);
     const losses = Number(data.losses ?? 0);

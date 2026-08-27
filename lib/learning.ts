@@ -2,8 +2,8 @@
 // per-factor win rates as bets resolve, and exposes a weights-injection
 // helper so Claude's future picks weight the most-rewarding signals heavier.
 //
-// All functions are best-effort: a learning-pipeline failure must never
-// break pick generation or result settlement. Errors are caught + logged.
+// Reads are best-effort and fall back after logging. Writes are fail-fast so
+// callers cannot report success after losing learning state.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Bet, KeyStat, Pick } from './types';
@@ -112,9 +112,10 @@ export async function recordPickFactors(
       sport: pick.sport,
       factors,
     });
-    if (error) console.error('[learning] recordPickFactors insert failed', error);
+    if (error) throw new Error(`recordPickFactors insert: ${error.message}`);
   } catch (e) {
-    console.error('[learning] recordPickFactors threw', e);
+    // Auxiliary learning data: log loudly but never abort pick generation.
+    console.error('[learning] recordPickFactors threw (non-fatal)', e);
   }
 }
 
@@ -135,11 +136,15 @@ export async function updateFactorPerformance(
       bet.result !== 'cashout'
     ) return;
 
-    const { data: pf } = await supabase
+    const { data: pf, error: pfError } = await supabase
       .from('pick_factors')
       .select('*')
       .eq('pick_id', bet.pick_id)
       .maybeSingle();
+    if (pfError) {
+      console.error('[learning] pick_factors read failed', pfError);
+      return;
+    }
     if (!pf) return;
 
     const amount = Number(bet.amount);
@@ -162,10 +167,13 @@ export async function updateFactorPerformance(
       profit = isWin ? payout - amount : -amount;
     }
 
-    await supabase
+    const { error: pickFactorUpdateError } = await supabase
       .from('pick_factors')
       .update({ bet_id: bet.id, result: bet.result, profit })
       .eq('id', pf.id);
+    if (pickFactorUpdateError) {
+      throw new Error(`pick_factors update: ${pickFactorUpdateError.message}`);
+    }
 
     const factors = (pf.factors ?? {}) as FactorMap;
     const sport = pf.sport ?? bet.sport;
@@ -174,20 +182,29 @@ export async function updateFactorPerformance(
       if (factorValue === false || factorValue === null || factorValue === undefined) continue;
       const valueStr = String(factorValue);
 
-      const { data: existing } = await supabase
+      const { data: existing, error: existingError } = await supabase
         .from('factor_performance')
         .select('*')
         .eq('factor_name', factorName)
         .eq('factor_value', valueStr)
         .eq('sport', sport)
         .maybeSingle();
+      if (existingError) {
+        console.error('[learning] factor_performance read failed', {
+          factorName,
+          valueStr,
+          sport,
+          error: existingError,
+        });
+        continue;
+      }
 
       if (existing) {
         const newWins = Number(existing.wins) + (isWin ? 1 : 0);
         const newLosses = Number(existing.losses) + (isWin ? 0 : 1);
         const newTotal = Number(existing.total_picks) + 1;
         const newProfit = Number(existing.total_profit) + profit;
-        await supabase
+        const { error: updateError } = await supabase
           .from('factor_performance')
           .update({
             wins: newWins,
@@ -198,8 +215,11 @@ export async function updateFactorPerformance(
             last_updated: new Date().toISOString(),
           })
           .eq('id', existing.id);
+        if (updateError) {
+          throw new Error(`factor_performance update: ${updateError.message}`);
+        }
       } else {
-        await supabase.from('factor_performance').insert({
+        const { error: insertError } = await supabase.from('factor_performance').insert({
           factor_name: factorName,
           factor_value: valueStr,
           sport,
@@ -209,20 +229,28 @@ export async function updateFactorPerformance(
           total_profit: profit,
           win_rate: isWin ? 1 : 0,
         });
+        if (insertError) {
+          throw new Error(`factor_performance insert: ${insertError.message}`);
+        }
       }
     }
   } catch (e) {
-    console.error('[learning] updateFactorPerformance threw', e);
+    // Auxiliary learning data: log loudly but never abort bet resolution.
+    console.error('[learning] updateFactorPerformance threw (non-fatal)', e);
   }
 }
 
 export async function getWeightsForPrompt(supabase: SupabaseClient): Promise<string> {
   try {
-    const { data: weights } = await supabase
+    const { data: weights, error } = await supabase
       .from('system_weights')
       .select('*')
       .gt('sample_size', 19)
       .order('weight', { ascending: false });
+    if (error) {
+      console.error('[learning] system_weights read failed', error);
+      return '';
+    }
     if (!weights || weights.length === 0) return '';
 
     let prompt = '\nPESOS APRENDIDOS DEL SISTEMA (basados en historial real):\n';

@@ -41,13 +41,17 @@ export interface NflStandingRow {
   playoffSeed?: number;
 }
 
+/** Log a swallowed fetch failure before the caller falls back to empty.
+ *  A silent empty hid a 3-week ESPN 403 (see lib/healthChecks.ts) — never again. */
+function warnFetchFailed(what: string, e: unknown): void {
+  console.warn(`[nflStats] fetch failed ${what} ${e instanceof Error ? e.message : String(e)}`);
+}
+
 export async function fetchNflStandings(): Promise<Map<string, NflStandingRow>> {
   return cached(`nfl:standings:${NFL_SEASON}`, 120, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/v2/sports/football/nfl/standings?season=${NFL_SEASON}`,
-      { cache: 'no-store' },
-    );
-    if (!res.ok) return new Map();
+    const url = `${ESPN_BASE}/v2/sports/football/nfl/standings?season=${NFL_SEASON}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[nflStats] HTTP ${res.status} ${url}`); return new Map(); }
     const data = await res.json();
     const map = new Map<string, NflStandingRow>();
 
@@ -157,7 +161,7 @@ async function fetchEspnTeamStats(espnTeamId: string): Promise<NflTeamStats | nu
       console.warn('[nflStats] ESPN team statistics HTTP', res.status, seasonUrl, '— retrying without season');
       res = await fetch(baseUrl, { cache: 'no-store' });
     }
-    if (!res.ok) return null;
+    if (!res.ok) { console.warn(`[nflStats] HTTP ${res.status} ${res.status === 404 ? baseUrl : seasonUrl}`); return null; }
     const data = await res.json();
 
     const all = new Map<string, number>();
@@ -227,11 +231,9 @@ async function fetchRecentGames(
   limit = 10,
 ): Promise<NflRecentGame[]> {
   return cached(`nfl:espn:schedule:${espnTeamId}:${NFL_SEASON}`, 120, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/site/v2/sports/football/nfl/teams/${espnTeamId}/schedule?season=${NFL_SEASON}`,
-      { cache: 'no-store' },
-    );
-    if (!res.ok) return [];
+    const url = `${ESPN_BASE}/site/v2/sports/football/nfl/teams/${espnTeamId}/schedule?season=${NFL_SEASON}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[nflStats] HTTP ${res.status} ${url}`); return []; }
     const data = await res.json();
 
     const games: NflRecentGame[] = [];
@@ -324,7 +326,7 @@ export async function buildNflGameContext(
   homeName: string,
   awayName: string,
 ): Promise<NflGameContext> {
-  const standings = await fetchNflStandings().catch(() => new Map<string, NflStandingRow>());
+  const standings = await fetchNflStandings().catch((e) => { warnFetchFailed('standings', e); return new Map<string, NflStandingRow>(); });
   const standingsAvailable = standings.size > 0;
 
   const build = async (teamName: string): Promise<NflTeamRow | undefined> => {
@@ -333,8 +335,8 @@ export async function buildNflGameContext(
     if (!st) return undefined;
 
     const [stats, recent] = await Promise.all([
-      fetchEspnTeamStats(st.espnId).catch(() => null),
-      fetchRecentGames(st.espnId, 10).catch(() => [] as NflRecentGame[]),
+      fetchEspnTeamStats(st.espnId).catch((e) => { warnFetchFailed(`espn stats ${st.espnId}`, e); return null; }),
+      fetchRecentGames(st.espnId, 10).catch((e) => { warnFetchFailed(`recent games ${st.espnId}`, e); return [] as NflRecentGame[]; }),
     ]);
 
     return {

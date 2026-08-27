@@ -73,7 +73,9 @@ export async function POST(req: Request) {
   const supabase = supabaseAdmin();
   void (async () => {
     try {
-      await supabase.from('ai_usage_log').insert({
+      // supabase-js never throws on a failed query — the error comes back in
+      // the result, so it has to be destructured to be seen at all.
+      const { error: usageErr } = await supabase.from('ai_usage_log').insert({
         task_type: 'vision_extract_bet',
         model: 'claude-sonnet-4-6',
         tokens_in: usage.tokens_in,
@@ -87,8 +89,9 @@ export async function POST(req: Request) {
           status: extracted.status,
         },
       });
+      if (usageErr) console.warn('[from-image] ai_usage_log insert failed', usageErr);
     } catch (e) {
-      console.warn('[from-image] ai_usage_log insert failed', e);
+      console.warn('[from-image] ai_usage_log insert threw', e);
     }
   })();
 
@@ -105,8 +108,24 @@ export async function POST(req: Request) {
     );
   }
 
-  // 7. Match legs to pending picks + math validation
-  const { matches, math_warning } = await matchExtractedBetToPicks(extracted);
+  // 7. Match legs to pending picks + math validation.
+  // matchExtractedBetToPicks THROWS on a Supabase error (it no longer returns
+  // zero matches). Fail the request: a preview with no matches would be
+  // confirmed as a manual bet without pick_id, silently detached from its pick.
+  let matches: LegMatch[];
+  let math_warning: string | null;
+  try {
+    const m = await matchExtractedBetToPicks(extracted);
+    matches = m.matches;
+    math_warning = m.math_warning;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[from-image] matchExtractedBetToPicks failed', e);
+    return NextResponse.json(
+      { error: 'No se pudieron consultar los picks pendientes para hacer match', detail: msg },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json({ extracted, matches, math_warning, usage });
 }

@@ -204,11 +204,21 @@ export async function POST(req: Request) {
   const oddsUpdated: Array<{ pick_id: string; new_odds: number }> = [];
 
   for (const leg of changedLegs) {
-    const { data: pickRow } = await supabase
+    // maybeSingle: a missing pick yields data=null (keep going, no edge
+    // recompute); a real read error must abort before any bankroll move.
+    const { data: pickRow, error: pickReadErr } = await supabase
       .from('picks')
       .select('real_probability')
       .eq('id', leg.matched_pick_id!)
-      .single();
+      .maybeSingle();
+
+    if (pickReadErr) {
+      console.error('[confirm] pick real_probability read failed', leg.matched_pick_id, pickReadErr);
+      return NextResponse.json(
+        { error: 'No se pudo leer el pick para actualizar momios', detail: pickReadErr.message },
+        { status: 500 },
+      );
+    }
 
     const newImplied = 1 / leg.odds_decimal;
     const newEdge = pickRow?.real_probability != null
@@ -240,7 +250,7 @@ export async function POST(req: Request) {
   // are tracked in audit_failures (non-blocking, Option B).
 
   for (const updated of oddsUpdated) {
-    const { data: rawRow } = await supabase
+    const { data: rawRow, error: auditReadErr } = await supabase
       .from('picks')
       .select(
         'tier, edge, edge_vs_market, market_sources_count, floor_applied, ' +
@@ -248,7 +258,17 @@ export async function POST(req: Request) {
         'pinnacle_status, edge_vs_pinnacle, audit_failures',
       )
       .eq('id', updated.pick_id)
-      .single();
+      .maybeSingle();
+
+    if (auditReadErr) {
+      // Still before any bankroll move — a DB read error here means the
+      // debit that follows can't be trusted either. Abort.
+      console.error('[confirm] re-audit pick read failed', updated.pick_id, auditReadErr);
+      return NextResponse.json(
+        { error: 'No se pudo leer el pick para re-auditar', detail: auditReadErr.message },
+        { status: 500 },
+      );
+    }
 
     const pickRow = rawRow as {
       tier: string; edge: number; edge_vs_market: number | null;
@@ -283,10 +303,14 @@ export async function POST(req: Request) {
       const existing: string[] = pickRow.audit_failures ?? [];
       const merged = [...existing, ...newIssues];
 
-      await supabase
+      const { error: auditWriteErr } = await supabase
         .from('picks')
         .update({ audit_failures: merged, updated_at: new Date().toISOString() })
         .eq('id', updated.pick_id);
+      if (auditWriteErr) {
+        // Non-blocking (Option B): tracking only, never gates the bet.
+        console.error('[confirm] audit_failures update failed', updated.pick_id, auditWriteErr);
+      }
 
       console.warn(
         '[confirm] post-confirm re-audit issues for pick',
@@ -313,11 +337,22 @@ export async function POST(req: Request) {
   // book_spread_pp del bet una vez colocado. null si el pick no lo tiene.
   let pickOriginalOdds: number | null = null;
   if (pick_id) {
-    const { data: pickRow } = await supabase
+    // maybeSingle so "pick not found" (data=null → inherit nothing, as
+    // before) is distinguishable from a read error, which must fail the
+    // request BEFORE place_bet_atomic debits the bankroll — otherwise the
+    // bet is stored with no event/teams/tier and auto-resolve can't find it.
+    const { data: pickRow, error: pickMetaErr } = await supabase
       .from('picks')
       .select('tier, espn_event_id, game_start_time, home_team, away_team, home_team_abbr, away_team_abbr, original_odds')
       .eq('id', pick_id)
-      .single();
+      .maybeSingle();
+    if (pickMetaErr) {
+      console.error('[confirm] pick metadata read failed', pick_id, pickMetaErr);
+      return NextResponse.json(
+        { error: 'No se pudo leer el pick asociado a la apuesta', detail: pickMetaErr.message },
+        { status: 500 },
+      );
+    }
     pickTier = pickRow?.tier ?? null;
     pickEspnEventId = pickRow?.espn_event_id ?? null;
     if (!pickGameStartTime) pickGameStartTime = pickRow?.game_start_time ?? null;
@@ -372,12 +407,19 @@ export async function POST(req: Request) {
 
     const rpc = rpcData as { ok: boolean; bet_id: string; bankroll_current: number };
 
+    // Bankroll is already debited and the bet exists from here on: the
+    // follow-up updates below are logged on failure, never turned into a 500
+    // (that would make the caller believe the bet was NOT placed).
+
     // Store Draftea ticket ID for future dedup
     if (data.bet_id_draftea) {
-      await supabase
+      const { error: ticketErr } = await supabase
         .from('bets')
         .update({ draftea_ticket_id: data.bet_id_draftea })
         .eq('id', rpc.bet_id);
+      if (ticketErr) {
+        console.error('[confirm] draftea_ticket_id update failed (bet WAS placed)', rpc.bet_id, ticketErr);
+      }
     }
 
     // Etapa 3 (spread constante): muestra del spread Draftea/DK observado en
@@ -385,10 +427,13 @@ export async function POST(req: Request) {
     // NULL (nunca 0).
     if (pickOriginalOdds != null) {
       const bookSpreadPp = (1 / data.total_odds_decimal - 1 / pickOriginalOdds) * 100;
-      await supabase
+      const { error: spreadErr } = await supabase
         .from('bets')
         .update({ book_spread_pp: bookSpreadPp })
         .eq('id', rpc.bet_id);
+      if (spreadErr) {
+        console.error('[confirm] book_spread_pp update failed (bet WAS placed)', rpc.bet_id, spreadErr);
+      }
     }
 
     return NextResponse.json({

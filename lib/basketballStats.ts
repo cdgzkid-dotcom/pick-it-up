@@ -25,12 +25,17 @@ export interface NbaStandingRow {
   playoffSeed?: number;
 }
 
+/** Log a swallowed fetch failure before the caller falls back to empty.
+ *  A silent empty hid a 3-week ESPN 403 (see lib/healthChecks.ts) — never again. */
+function warnFetchFailed(what: string, e: unknown): void {
+  console.warn(`[basketballStats] fetch failed ${what} ${e instanceof Error ? e.message : String(e)}`);
+}
+
 async function fetchEspnStandings(league: string = 'nba'): Promise<Map<string, NbaStandingRow>> {
   return cached(`${league}:espn:standings`, 120, async () => {
-    const res = await fetch(`${ESPN_BASE}/v2/sports/basketball/${league}/standings`, {
-      cache: 'no-store',
-    });
-    if (!res.ok) return new Map();
+    const url = `${ESPN_BASE}/v2/sports/basketball/${league}/standings`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[basketballStats] HTTP ${res.status} ${url}`); return new Map(); }
     const data = await res.json();
     const map = new Map<string, NbaStandingRow>();
 
@@ -97,11 +102,9 @@ export interface NbaTeamStats {
 
 async function fetchEspnTeamStats(espnTeamId: string, league: string = 'nba'): Promise<NbaTeamStats | null> {
   return cached(`${league}:espn:teamStats:${espnTeamId}`, 240, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/statistics`,
-      { cache: 'no-store' },
-    );
-    if (!res.ok) return null;
+    const url = `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/statistics`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[basketballStats] HTTP ${res.status} ${url}`); return null; }
     const data = await res.json();
 
     const allStats = new Map<string, number>();
@@ -147,11 +150,9 @@ async function fetchEspnRecentGames(
   league: string = 'nba',
 ): Promise<NbaRecentGame[]> {
   return cached(`${league}:espn:schedule:${espnTeamId}`, 120, async () => {
-    const res = await fetch(
-      `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/schedule`,
-      { cache: 'no-store' },
-    );
-    if (!res.ok) return [];
+    const url = `${ESPN_BASE}/site/v2/sports/basketball/${league}/teams/${espnTeamId}/schedule`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) { console.warn(`[basketballStats] HTTP ${res.status} ${url}`); return []; }
     const data = await res.json();
 
     const games: NbaRecentGame[] = [];
@@ -222,7 +223,7 @@ async function fetchAdvancedFromNbaStats(): Promise<Map<string, NbaAdvancedRow> 
         signal: AbortSignal.timeout(5_000),
         cache: 'no-store',
       });
-      if (!res.ok) return null;
+      if (!res.ok) { console.warn(`[basketballStats] HTTP ${res.status} ${url}`); return null; }
       const data = await res.json();
       const rs = data.resultSets?.[0];
       if (!rs?.headers || !rs?.rowSet) return null;
@@ -245,7 +246,8 @@ async function fetchAdvancedFromNbaStats(): Promise<Map<string, NbaAdvancedRow> 
         });
       }
       return map;
-    } catch {
+    } catch (e) {
+      warnFetchFailed('stats.nba.com advanced', e);
       return null;
     }
   });
@@ -297,9 +299,9 @@ async function buildBasketballGameContext(
   league: string,
 ): Promise<BasketballGameContext> {
   const [standings, advanced] = await Promise.all([
-    fetchEspnStandings(league).catch(() => new Map<string, NbaStandingRow>()),
+    fetchEspnStandings(league).catch((e) => { warnFetchFailed(`standings ${league}`, e); return new Map<string, NbaStandingRow>(); }),
     league === 'nba'
-      ? fetchAdvancedFromNbaStats().catch(() => null)
+      ? fetchAdvancedFromNbaStats().catch((e) => { warnFetchFailed('nba advanced', e); return null; })
       : Promise.resolve(null),
   ]);
 
@@ -309,8 +311,8 @@ async function buildBasketballGameContext(
     if (!st) return undefined;
 
     const [stats, recent] = await Promise.all([
-      fetchEspnTeamStats(st.espnId, league).catch(() => null),
-      fetchEspnRecentGames(st.espnId, 10, league).catch(() => [] as NbaRecentGame[]),
+      fetchEspnTeamStats(st.espnId, league).catch((e) => { warnFetchFailed(`espn stats ${st.espnId}`, e); return null; }),
+      fetchEspnRecentGames(st.espnId, 10, league).catch((e) => { warnFetchFailed(`recent games ${st.espnId}`, e); return [] as NbaRecentGame[]; }),
     ]);
     const adv = advanced?.get(key);
 

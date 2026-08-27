@@ -52,6 +52,12 @@ export interface MlbScheduleEntry {
   };
 }
 
+/** Log a swallowed fetch failure before the caller falls back to empty.
+ *  A silent empty hid a 3-week ESPN 403 (see lib/healthChecks.ts) — never again. */
+function warnFetchFailed(what: string, e: unknown): void {
+  console.warn(`[mlbStats] fetch failed ${what} ${e instanceof Error ? e.message : String(e)}`);
+}
+
 export async function fetchMlbScheduleForDate(date: string): Promise<MlbScheduleEntry[]> {
   return cached(`mlb:schedule:${date}`, 30, async () => {
     const url = `${BASE}/schedule?sportId=1&date=${date}&hydrate=probablePitcher,linescore,team`;
@@ -121,7 +127,7 @@ export async function fetchPitcherStats(playerId: number, season = String(new Da
   return cached(`mlb:pitcher:${playerId}:${season}`, 120, async () => {
     const url = `${BASE}/people/${playerId}?hydrate=stats(group=[pitching],type=[season,gameLog],season=${season})`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return null;
+    if (!r.ok) { console.warn(`[mlbStats] HTTP ${r.status} ${url}`); return null; }
     const data: PersonStatsResp = await r.json();
     const person = data.people?.[0];
     if (!person) return null;
@@ -185,7 +191,7 @@ export async function fetchTeamHittingStats(teamId: number, season = String(new 
   return cached(`mlb:team:hit:${teamId}:${season}`, 240, async () => {
     const url = `${BASE}/teams/${teamId}/stats?stats=season&group=hitting&season=${season}`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return null;
+    if (!r.ok) { console.warn(`[mlbStats] HTTP ${r.status} ${url}`); return null; }
     const data: TeamStatsResp = await r.json();
     const stat = data.stats?.[0]?.splits?.[0]?.stat;
     if (!stat) return null;
@@ -205,7 +211,7 @@ export async function fetchTeamPitchingStats(teamId: number, season = String(new
   return cached(`mlb:team:pit:${teamId}:${season}`, 240, async () => {
     const url = `${BASE}/teams/${teamId}/stats?stats=season&group=pitching&season=${season}`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return null;
+    if (!r.ok) { console.warn(`[mlbStats] HTTP ${r.status} ${url}`); return null; }
     const data: TeamStatsResp = await r.json();
     const stat = data.stats?.[0]?.splits?.[0]?.stat;
     if (!stat) return null;
@@ -246,7 +252,7 @@ export async function fetchMlbStandings(season = String(new Date().getUTCFullYea
   return cached(`mlb:standings:${season}`, 120, async () => {
     const url = `${BASE}/standings?leagueId=103,104&season=${season}`;
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return new Map();
+    if (!r.ok) { console.warn(`[mlbStats] HTTP ${r.status} ${url}`); return new Map(); }
     const data: StandingsResp = await r.json();
     const map = new Map<number, MlbStandingRow>();
     for (const div of data.records ?? []) {
@@ -297,7 +303,7 @@ export async function buildMlbGameContext(
   date?: string,
 ): Promise<MlbGameContext> {
   const today = date ?? new Date().toISOString().slice(0, 10);
-  const schedule = await fetchMlbScheduleForDate(today).catch(() => [] as MlbScheduleEntry[]);
+  const schedule = await fetchMlbScheduleForDate(today).catch((e) => { warnFetchFailed(`schedule ${today}`, e); return [] as MlbScheduleEntry[]; });
 
   const matches = (entryName: string, abbr?: string, name?: string) =>
     (abbr && entryName.toLowerCase().includes(abbr.toLowerCase())) ||
@@ -312,17 +318,17 @@ export async function buildMlbGameContext(
   const ctx: MlbGameContext = { schedule: entry };
   if (!entry) return ctx;
 
-  const standings = await fetchMlbStandings().catch(() => new Map());
+  const standings = await fetchMlbStandings().catch((e) => { warnFetchFailed('standings', e); return new Map(); });
   ctx.homeStanding = standings.get(entry.home.teamId);
   ctx.awayStanding = standings.get(entry.away.teamId);
 
   const tasks: Promise<unknown>[] = [];
-  if (entry.home.probable) tasks.push(fetchPitcherStats(entry.home.probable.id).then((v) => (ctx.homePitcher = v)).catch(() => null));
-  if (entry.away.probable) tasks.push(fetchPitcherStats(entry.away.probable.id).then((v) => (ctx.awayPitcher = v)).catch(() => null));
-  tasks.push(fetchTeamHittingStats(entry.home.teamId).then((v) => (ctx.homeBatting = v)).catch(() => null));
-  tasks.push(fetchTeamHittingStats(entry.away.teamId).then((v) => (ctx.awayBatting = v)).catch(() => null));
-  tasks.push(fetchTeamPitchingStats(entry.home.teamId).then((v) => (ctx.homePitching = v)).catch(() => null));
-  tasks.push(fetchTeamPitchingStats(entry.away.teamId).then((v) => (ctx.awayPitching = v)).catch(() => null));
+  if (entry.home.probable) tasks.push(fetchPitcherStats(entry.home.probable.id).then((v) => (ctx.homePitcher = v)).catch((e) => { warnFetchFailed(`pitcher ${entry.home.probable?.id}`, e); return null; }));
+  if (entry.away.probable) tasks.push(fetchPitcherStats(entry.away.probable.id).then((v) => (ctx.awayPitcher = v)).catch((e) => { warnFetchFailed(`pitcher ${entry.away.probable?.id}`, e); return null; }));
+  tasks.push(fetchTeamHittingStats(entry.home.teamId).then((v) => (ctx.homeBatting = v)).catch((e) => { warnFetchFailed(`hitting ${entry.home.teamId}`, e); return null; }));
+  tasks.push(fetchTeamHittingStats(entry.away.teamId).then((v) => (ctx.awayBatting = v)).catch((e) => { warnFetchFailed(`hitting ${entry.away.teamId}`, e); return null; }));
+  tasks.push(fetchTeamPitchingStats(entry.home.teamId).then((v) => (ctx.homePitching = v)).catch((e) => { warnFetchFailed(`pitching ${entry.home.teamId}`, e); return null; }));
+  tasks.push(fetchTeamPitchingStats(entry.away.teamId).then((v) => (ctx.awayPitching = v)).catch((e) => { warnFetchFailed(`pitching ${entry.away.teamId}`, e); return null; }));
   await Promise.all(tasks);
 
   return ctx;

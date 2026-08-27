@@ -139,6 +139,15 @@ async function checkDbColumns(): Promise<HealthCheckResult> {
   }
 }
 
+/** MLB regular season + postseason by UTC month: April through October.
+ *  Narrower than isLeagueOffSeason('mlb') (which also treats March as
+ *  active) because spring training games are not on the MLB scoreboard
+ *  feed we consume, so an empty March slate is normal. */
+function isMlbScoreboardSeason(date: Date = new Date()): boolean {
+  const m = date.getUTCMonth() + 1;
+  return m >= 4 && m <= 10;
+}
+
 async function checkEspnScoreboard(): Promise<HealthCheckResult> {
   const t0 = Date.now();
   try {
@@ -155,10 +164,22 @@ async function checkEspnScoreboard(): Promise<HealthCheckResult> {
       };
     }
     const data = (await res.json()) as { events?: unknown[] };
+    const eventCount = data.events?.length ?? 0;
+    // HTTP 200 with an empty slate is exactly how the 3-week ESPN 403 looked
+    // downstream ("0 games, no error"). During the MLB season (Apr–Oct UTC)
+    // an empty scoreboard is a symptom, not a fact — surface it.
+    if (eventCount === 0 && isMlbScoreboardSeason()) {
+      return {
+        name: 'espn_scoreboard',
+        status: 'warning',
+        detail: 'scoreboard returned 0 events',
+        duration_ms: Date.now() - t0,
+      };
+    }
     return {
       name: 'espn_scoreboard',
       status: 'ok',
-      detail: `${data.events?.length ?? 0} events`,
+      detail: `${eventCount} events`,
       duration_ms: Date.now() - t0,
     };
   } catch (e) {
@@ -520,6 +541,15 @@ async function checkStuckPendingBets(): Promise<HealthCheckResult> {
   }
 }
 
+/** True during the daily window when US pro games are actually being played
+ *  or are about to start: roughly 16:00 UTC (noon ET first pitch) through
+ *  05:00 UTC (West-coast late games ending). Outside this window a
+ *  "fetched but not analyzed" state is normal — the slate is tomorrow's. */
+function isGameHoursUtc(date: Date = new Date()): boolean {
+  const h = date.getUTCHours();
+  return h >= 16 || h <= 5;
+}
+
 async function checkRecentPickStructure(): Promise<HealthCheckResult> {
   // Detects lock-in regressions: if pickGen generates real picks but fails
   // to populate locked_at, that's a CAPA-2 bug. Markers (analyzed_no_edge,
@@ -544,10 +574,46 @@ async function checkRecentPickStructure(): Promise<HealthCheckResult> {
       };
     }
     if (!data || data.length === 0) {
+      // 0 actionable picks is ambiguous on its own: a well-priced market and
+      // a dead pipeline look identical here. Cross-check with cron_runs so
+      // "lots of games analyzed, nothing ever passes the gate" and "games
+      // fetched but never analyzed" stop reading as green.
+      const { data: runs, error: runsErr } = await sb
+        .from('cron_runs')
+        .select('games_fetched, games_analyzed')
+        .eq('workflow', 'analyze')
+        .gte('started_at', since);
+      if (runsErr) {
+        return {
+          name: 'recent_pick_structure',
+          status: 'warning',
+          detail: `0 actionable picks in 24h; cron_runs lookup failed: ${runsErr.message}`,
+          duration_ms: Date.now() - t0,
+        };
+      }
+      const rows = (runs ?? []) as Array<{ games_fetched: number | null; games_analyzed: number | null }>;
+      const analyzed = rows.reduce((sum, r) => sum + (r.games_analyzed ?? 0), 0);
+      const maxFetched = rows.reduce((max, r) => Math.max(max, r.games_fetched ?? 0), 0);
+      if (analyzed >= 10) {
+        return {
+          name: 'recent_pick_structure',
+          status: 'warning',
+          detail: `${analyzed} games analyzed, 0 actionable picks in 24h — check edge gate`,
+          duration_ms: Date.now() - t0,
+        };
+      }
+      if (analyzed === 0 && maxFetched > 0 && isGameHoursUtc()) {
+        return {
+          name: 'recent_pick_structure',
+          status: 'warning',
+          detail: `games fetched but none analyzed (max ${maxFetched} fetched, 0 analyzed in 24h)`,
+          duration_ms: Date.now() - t0,
+        };
+      }
       return {
         name: 'recent_pick_structure',
         status: 'ok',
-        detail: 'no actionable picks in 24h (market well-priced or no games in window)',
+        detail: `0 actionable picks in 24h (${rows.length} runs, max ${maxFetched} fetched, ${analyzed} analyzed)`,
         duration_ms: Date.now() - t0,
       };
     }
@@ -669,7 +735,118 @@ async function checkOpenWeather(): Promise<HealthCheckResult> {
 }
 
 /**
- * Run all 17 health checks in parallel and return the raw results.
+ * Probe statsapi.mlb.com — the source behind lib/mlbStats.ts (probable
+ * pitchers, standings, team stats). Requires actual games on today's
+ * schedule, not just HTTP 200: a 200 with `totalGames: 0` mid-season is the
+ * same silent-empty failure mode ESPN had. Field verified live 2026-08-27:
+ * body has `totalGames` (7) and `dates[0].games` (7 entries).
+ */
+async function checkStatsApiMlb(): Promise<HealthCheckResult> {
+  const t0 = Date.now();
+  if (isLeagueOffSeason('mlb')) {
+    return {
+      name: 'statsapi_mlb',
+      status: 'off_season',
+      detail: 'MLB off-season — no schedule to probe',
+      duration_ms: Date.now() - t0,
+    };
+  }
+  try {
+    const res = await fetch('https://statsapi.mlb.com/api/v1/schedule?sportId=1', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return {
+        name: 'statsapi_mlb',
+        status: 'error',
+        detail: `HTTP ${res.status}`,
+        duration_ms: Date.now() - t0,
+      };
+    }
+    const data = (await res.json()) as {
+      totalGames?: number;
+      dates?: Array<{ games?: unknown[] }>;
+    };
+    const games = data.totalGames ?? data.dates?.reduce((n, d) => n + (d.games?.length ?? 0), 0) ?? 0;
+    if (games === 0) {
+      return {
+        name: 'statsapi_mlb',
+        status: 'warning',
+        detail: 'schedule returned 0 games',
+        duration_ms: Date.now() - t0,
+      };
+    }
+    return {
+      name: 'statsapi_mlb',
+      status: 'ok',
+      detail: `${games} games`,
+      duration_ms: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      name: 'statsapi_mlb',
+      status: 'error',
+      detail: (e as Error).message,
+      duration_ms: Date.now() - t0,
+    };
+  }
+}
+
+/**
+ * Probe api-web.nhle.com — the source behind lib/nhlStats.ts (standings,
+ * club schedules). Requires `standings.length > 0`, not just HTTP 200.
+ * Field verified live 2026-08-27: `standings` array of 32 rows.
+ */
+async function checkNhleApi(): Promise<HealthCheckResult> {
+  const t0 = Date.now();
+  if (isLeagueOffSeason('nhl')) {
+    return {
+      name: 'nhle_api',
+      status: 'off_season',
+      detail: 'NHL off-season — standings not probed',
+      duration_ms: Date.now() - t0,
+    };
+  }
+  try {
+    const res = await fetch('https://api-web.nhle.com/v1/standings/now', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return {
+        name: 'nhle_api',
+        status: 'error',
+        detail: `HTTP ${res.status}`,
+        duration_ms: Date.now() - t0,
+      };
+    }
+    const data = (await res.json()) as { standings?: unknown[] };
+    const rows = data.standings?.length ?? 0;
+    if (rows === 0) {
+      return {
+        name: 'nhle_api',
+        status: 'warning',
+        detail: 'standings returned 0 rows',
+        duration_ms: Date.now() - t0,
+      };
+    }
+    return {
+      name: 'nhle_api',
+      status: 'ok',
+      detail: `${rows} standings rows`,
+      duration_ms: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      name: 'nhle_api',
+      status: 'error',
+      detail: (e as Error).message,
+      duration_ms: Date.now() - t0,
+    };
+  }
+}
+
+/**
+ * Run all 19 health checks in parallel and return the raw results.
  * Consumers: /api/health (HTTP wrapper) and cron/analyze (Telegram indicator).
  */
 export async function runHealthChecks(): Promise<HealthCheckResult[]> {
@@ -691,6 +868,8 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkRecentPickStructure(),
     checkPinnacleApi(),
     checkOpenWeather(),
+    checkStatsApiMlb(),
+    checkNhleApi(),
   ]);
 }
 

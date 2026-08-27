@@ -28,6 +28,7 @@ import type { SupersededPickForTg, PickDigestData } from '@/lib/telegram';
 import { simulateDay } from '@/lib/montecarlo';
 import { computeStats } from '@/lib/stats';
 import { updateFactorPerformance } from '@/lib/learning';
+import { applyResult as applyEloResult } from '@/lib/elo';
 import { runHealthChecks, buildHealthSummary } from '@/lib/healthChecks';
 import type { SystemHealthSummary } from '@/lib/healthChecks';
 import { pickedSide } from '@/lib/betEval';
@@ -41,7 +42,7 @@ import type { Bet, Game } from '@/lib/types';
  * saying so, which is more honest than dropping the indicator silently.
  *
  * Side note: runHealthChecks itself uses 5-10s per-check timeouts, but
- * waiting for all 13 worst-cases would push past the cron's maxDuration.
+ * waiting for all 19 worst-cases would push past the cron's maxDuration.
  */
 async function computeSystemHealthBounded(timeoutMs = 12000): Promise<SystemHealthSummary> {
   const timeoutFallback: SystemHealthSummary = {
@@ -50,8 +51,8 @@ async function computeSystemHealthBounded(timeoutMs = 12000): Promise<SystemHeal
     warnings: 1,
     errorNames: [],
     warningNames: ['health_check_timeout'],
-    total: 14,
-    ok: 13,
+    total: 19,
+    ok: 18,
     offSeason: 0,
     offSeasonNames: [],
   };
@@ -237,7 +238,8 @@ async function sendPicksBatch(
   supersededPicks: SupersededPickForTg[],
 ): Promise<{ ok: boolean; error?: string }> {
   // Build context (bankroll + record + ROI) for header/footer of the message
-  const { data: allBets } = await supabase.from('bets').select('*');
+  const { data: allBets, error: allBetsErr } = await supabase.from('bets').select('*');
+  if (allBetsErr) throw new Error(`picks_stats_bets: ${allBetsErr.message}`);
   const stats = computeStats((allBets as Bet[]) ?? []);
   // Auditoría 5: visible system-health indicator. Bounded by 5s so a stuck
   // health check never blocks the user from receiving picks.
@@ -345,7 +347,13 @@ async function retryUnsentPicks(supabase: SupabaseClient, settings: CronSettings
   if (toSend.length === 0) return null;
 
   // kelly_fraction is not persisted on picks → renders without it on retry.
-  const send = await sendPicksBatch(supabase, settings, toSend, [], {}, earliestStart, []);
+  // Any throw inside sendPicksBatch must release the claim too.
+  let send: { ok: boolean; error?: string };
+  try {
+    send = await sendPicksBatch(supabase, settings, toSend, [], {}, earliestStart, []);
+  } catch (e) {
+    send = { ok: false, error: (e as Error).message };
+  }
   if (send.ok) {
     console.log(`[UNSENT_RETRY] sent ${toSend.length} pick(s)`);
     return null;
@@ -455,11 +463,12 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
   // permanent block. If the marker is older than 20 min (measured from
   // updated_at, fallback created_at) AND retry_count<3, we DO re-analyze.
   // This covers DK publishing odds 30-60 min after our first attempt.
-  const { data: blockedPicks } = await supabase
+  const { data: blockedPicks, error: blockedPicksErr } = await supabase
     .from('picks')
     .select('espn_event_id, status, telegram_notified_at, created_at, updated_at, retry_count')
     .or('status.in.(pending,bet,analyzed_no_edge,analyzed_no_odds_data),telegram_notified_at.not.is.null')
     .in('espn_event_id', eventIds);
+  if (blockedPicksErr) throw new Error(`blocked_picks_query: ${blockedPicksErr.message}`);
 
   const alreadyDone = new Set(
     (blockedPicks ?? [])
@@ -540,6 +549,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
     bankroll: Number(settings.bankroll_current),
     unitPercentage: Number(settings.unit_percentage),
   });
+  let telegramError: string | undefined;
 
   // Identify playoff games that were analyzed but produced no pick. We mark
   // them with a 'analyzed_no_edge' row so the dedup guard skips them next
@@ -580,7 +590,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
       observation_only: g.observation_only === true,
     }));
     const { error: markerErr } = await supabase.from('picks').insert(markers);
-    if (markerErr) console.error('[cron] no_edge markers insert failed', markerErr);
+    if (markerErr) console.error('[cron] no_edge markers insert failed (non-fatal)', markerErr.message);
 
     // Send playoff "analyzed without edge" notification
     const lines: string[] = ['*Playoffs analizados sin edge*', ''];
@@ -588,7 +598,11 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
       lines.push(`• ${g.sport}: ${g.away_team} @ ${g.home_team}`);
       lines.push(`  Sistema analizó, no encontró edge para apostar.`);
     }
-    await sendTelegramMessage(lines.join('\n'));
+    const sent = await sendTelegramMessage(lines.join('\n'));
+    if (!sent.ok) {
+      telegramError = `playoff_no_edge: ${sent.error ?? 'unknown'}`;
+      console.error('[cron] playoff no-edge Telegram failed', telegramError);
+    }
   }
 
   // FIX 1: Save analyzed_no_edge markers for regular-season games where
@@ -635,7 +649,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
     }));
     const { error: regularMarkerErr } = await supabase.from('picks').insert(regularMarkers);
     if (regularMarkerErr) {
-      console.error('[cron] regular-season no_edge markers insert failed', regularMarkerErr);
+      console.error('[cron] regular no_edge markers insert failed (non-fatal)', regularMarkerErr.message);
     } else {
       console.log(
         `[cron][FIX1] saved ${regularSeasonNoEdge.length} regular-season no_edge marker(s):`,
@@ -671,7 +685,12 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
         supersededNotifiable,
         { bankrollCurrent: Number(settings.bankroll_current), systemHealth },
       );
-      await sendTelegramMessage(text);
+      const sent = await sendTelegramMessage(text);
+      if (!sent.ok) {
+        const err = `superseded_only: ${sent.error ?? 'unknown'}`;
+        telegramError = telegramError ? `${telegramError}; ${err}` : err;
+        console.error('[cron] superseded-only Telegram failed', telegramError);
+      }
       return {
         generated: 0,
         eventIds,
@@ -679,6 +698,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
         games_fetched: games.length,
         games_in_window: inWindow.length,
         games_analyzed: toAnalyze.length,
+        ...(telegramError ? { telegram_error: telegramError } : {}),
       };
     }
 
@@ -714,7 +734,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
         edgeBelowFiltered.push(e);
         continue;
       }
-      const { data: prev } = await supabase
+      const { data: prev, error: prevErr } = await supabase
         .from('system_notifications')
         .select('id, payload')
         .eq('kind', 'edge_below_notified')
@@ -723,6 +743,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
+      if (prevErr) throw new Error(`edge_below_state_query: ${prevErr.message}`);
 
       if (!prev) {
         // First time seeing this game — include and schedule insert.
@@ -797,7 +818,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
       const text = formatPickDigestMessage(digestData, { systemHealth });
       const sent = await sendTelegramMessage(text);
       if (sent.ok) {
-        await supabase.from('system_notifications').insert({
+        const { error: digestInsertErr } = await supabase.from('system_notifications').insert({
           kind: 'pick_digest',
           payload: {
             kind_version: 1,
@@ -812,6 +833,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
             sent_for_run_at: new Date().toISOString(),
           },
         });
+        if (digestInsertErr) throw new Error(`pick_digest_insert: ${digestInsertErr.message}`);
         // FIX 1: persist/update edge_below_notified state after successful send.
         // One row per espn_event_id (insert first time, update in-place on change).
         if (edgeBelowUpserts.length > 0) {
@@ -854,6 +876,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
       games_fetched: games.length,
       games_in_window: inWindow.length,
       games_analyzed: toAnalyze.length,
+      ...(telegramError ? { telegram_error: telegramError } : {}),
     };
   }
 
@@ -898,7 +921,8 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
     // run's retryUnsentPicks re-sends them; here we make the failure visible
     // (message + telegram_error → cron_runs.errors) instead of reporting
     // 'picks_sent' for a message nobody received.
-    const err = `telegram send failed for ${generated} pick(s): ${send.error ?? 'unknown'}`;
+    const sendErr = `telegram send failed for ${generated} pick(s): ${send.error ?? 'unknown'}`;
+    const err = telegramError ? `${telegramError}; ${sendErr}` : sendErr;
     console.error('[cron] picks generated but Telegram send failed', err);
     return {
       generated,
@@ -918,6 +942,7 @@ async function analyzeWindowCore(supabase: SupabaseClient, settings: CronSetting
     games_fetched: games.length,
     games_in_window: inWindow.length,
     games_analyzed: toAnalyze.length,
+    ...(telegramError ? { telegram_error: telegramError } : {}),
   };
 }
 
@@ -933,7 +958,7 @@ interface ResolutionForTg {
   away_team?: string | null;
 }
 
-async function runResultsCheck(): Promise<{ resolved: number; notified: number }> {
+async function runResultsCheck(): Promise<{ resolved: number; notified: number; telegram_error?: string }> {
   const supabase = supabaseAdmin();
 
   const { data: pendingBets, error } = await supabase
@@ -964,12 +989,16 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     let isPush = false;
 
     if (isML) {
-      if (homeScore === awayScore) continue;
-      const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
-      if (!side) continue;
-      won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+      if (homeScore === awayScore) {
+        isPush = true;
+      } else {
+        const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
+        if (!side) continue;
+        won = (side === 'home' && homeScore > awayScore) || (side === 'away' && awayScore > homeScore);
+      }
     } else if (isSpread) {
-      const lineMatch = bet.pick.match(/([+-]?\d+(\.\d+)?)/);
+      const lineMatch = bet.pick.match(/(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$/)
+        ?? bet.pick.match(/(?:over|under)\s+(\d+(?:\.\d+)?)/i);
       const line = lineMatch ? parseFloat(lineMatch[1]) : NaN;
       if (!Number.isFinite(line)) continue;
       const side = pickedSide(bet.pick, bet.home_team_abbr, bet.away_team_abbr, bet.home_team, bet.away_team);
@@ -978,8 +1007,9 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
       if (adjusted === 0) isPush = true;
       else won = adjusted > 0;
     } else if (isTotal) {
-      const lineMatch = bet.pick.match(/(\d+(\.\d+)?)/);
-      const line = lineMatch ? parseFloat(lineMatch[0]) : NaN;
+      const lineMatch = bet.pick.match(/(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$/)
+        ?? bet.pick.match(/(?:over|under)\s+(\d+(?:\.\d+)?)/i);
+      const line = lineMatch ? parseFloat(lineMatch[1]) : NaN;
       if (!Number.isFinite(line)) continue;
       const isOver = /\bover\b/i.test(bet.pick);
       const isUnder = /\bunder\b/i.test(bet.pick);
@@ -1043,8 +1073,11 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
             source = 'espn_close';
           }
         }
-        if (oddsAtClose == null) oddsAtClose = oddsAtBet;
-        clvValue = Number(((1 / oddsAtClose) - (1 / oddsAtBet)).toFixed(6));
+        if (oddsAtClose != null) {
+          clvValue = Number(((1 / oddsAtClose) - (1 / oddsAtBet)).toFixed(6));
+        } else {
+          console.warn('[CLV_COMPUTED] closing line unavailable; leaving NULL', { bet_id: bet.id });
+        }
         console.log('[CLV_COMPUTED]', {
           bet_id: bet.id,
           pick: bet.pick,
@@ -1056,8 +1089,6 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
         });
       } catch (e) {
         console.warn('[CLV_COMPUTED] fetch error', { bet_id: bet.id, err: (e as Error).message });
-        oddsAtClose = oddsAtBet;
-        clvValue = 0;
       }
     }
 
@@ -1066,7 +1097,7 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     // all inside the PL/pgSQL function. Idempotent: if PATCH /api/bets/:id
     // or check-results route already resolved this bet, the RPC returns
     // {skipped:true} and we skip without double-crediting bankroll.
-    const { error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('resolve_bet_atomic', {
       p_bet_id: bet.id,
       p_result: won ? 'win' : 'loss',
       p_payout: payout,
@@ -1080,6 +1111,24 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     if (rpcErr) {
       console.error('[cron resolve] rpc failed', { bet_id: bet.id, err: rpcErr.message });
       continue;
+    }
+    // Already resolved by the other route (check-results) → nothing else to
+    // apply here; ELO/learning were applied by whoever won the race.
+    if ((rpcData as { skipped?: boolean } | null)?.skipped) continue;
+
+    if (bet.home_team && bet.away_team) {
+      try {
+        await applyEloResult(
+          supabase,
+          bet.sport,
+          bet.home_team,
+          bet.away_team,
+          status.home_score,
+          status.away_score,
+        );
+      } catch (e) {
+        console.error('[cron resolve] ELO update failed', e);
+      }
     }
 
     // Learning: roll this bet's outcome into per-factor performance.
@@ -1103,11 +1152,12 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
   }
 
   // Also pick up resolved bets that weren't notified yet (e.g. resolved manually)
-  const { data: unnotifiedBets } = await supabase
+  const { data: unnotifiedBets, error: unnotifiedErr } = await supabase
     .from('bets')
     .select('*')
     .in('result', ['win', 'loss'])
     .is('result_notified_at', null);
+  if (unnotifiedErr) throw new Error(`unnotified_bets_fetch: ${unnotifiedErr.message}`);
 
   const allToNotify: ResolutionForTg[] = [...newlyResolved];
   for (const b of (unnotifiedBets as Bet[]) ?? []) {
@@ -1131,15 +1181,19 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
     return { resolved: newlyResolved.length, notified: 0 };
   }
 
-  const { data: settings } = await supabase
+  const { data: settings, error: resultsSettingsErr } = await supabase
     .from('settings')
     .select('bankroll_current')
     .eq('id', 1)
     .single();
-  const { data: allBets } = await supabase
+  if (resultsSettingsErr || !settings) {
+    throw new Error(`results_settings: ${resultsSettingsErr?.message ?? 'missing'}`);
+  }
+  const { data: allBets, error: allBetsErr } = await supabase
     .from('bets')
     .select('*')
     .order('created_at', { ascending: false });
+  if (allBetsErr) throw new Error(`results_all_bets: ${allBetsErr.message}`);
   const stats = computeStats((allBets as Bet[]) ?? []);
   const todayPl = allToNotify.reduce((s, r) => s + r.pl, 0);
 
@@ -1157,13 +1211,17 @@ async function runResultsCheck(): Promise<{ resolved: number; notified: number }
   const send = await sendTelegramMessage(text);
   if (send.ok) {
     const ids = allToNotify.map((r) => r.bet_id);
-    await supabase
+    const { error: notifyMarkErr } = await supabase
       .from('bets')
       .update({ result_notified_at: new Date().toISOString() })
       .in('id', ids);
+    if (notifyMarkErr) throw new Error(`result_notified_update: ${notifyMarkErr.message}`);
+    return { resolved: newlyResolved.length, notified: allToNotify.length };
   }
 
-  return { resolved: newlyResolved.length, notified: allToNotify.length };
+  const telegramError = `results: ${send.error ?? 'unknown'}`;
+  console.error('[cron results] Telegram failed', telegramError);
+  return { resolved: newlyResolved.length, notified: 0, telegram_error: telegramError };
 }
 
 /**
@@ -1176,21 +1234,23 @@ async function cleanupOrphanedPicks(): Promise<number> {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   // Find picks with status='bet', no espn_event_id, older than 24h
-  const { data: candidates } = await supabase
+  const { data: candidates, error: candidatesErr } = await supabase
     .from('picks')
     .select('id, pick, espn_event_id')
     .eq('status', 'bet')
     .is('espn_event_id', null)
     .lt('created_at', cutoff);
+  if (candidatesErr) throw new Error(`orphan_candidates_query: ${candidatesErr.message}`);
 
   if (!candidates || candidates.length === 0) return 0;
 
   // Double-check: ensure none of these have a matching bet in the bets table
   const pickTexts = candidates.map((c) => c.pick);
-  const { data: realBets } = await supabase
+  const { data: realBets, error: realBetsErr } = await supabase
     .from('bets')
     .select('pick')
     .in('pick', pickTexts);
+  if (realBetsErr) throw new Error(`orphan_real_bets_query: ${realBetsErr.message}`);
   const realBetPicks = new Set((realBets ?? []).map((b) => b.pick));
 
   const orphanIds = candidates
@@ -1291,6 +1351,7 @@ async function handle(req: Request) {
 
   try {
     results = await runResultsCheck();
+    if (results.telegram_error) errors.results_telegram = results.telegram_error;
   } catch (e) {
     errors.results = (e as Error).message;
     console.error('[cron/analyze] results failed', e);

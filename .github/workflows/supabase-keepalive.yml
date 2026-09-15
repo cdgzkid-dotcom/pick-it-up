@@ -1,0 +1,25 @@
+name: Supabase keepalive
+
+# La base compartida (lkfpcpmonisdxvenleyw) vive en una org Free desde
+# 2026-09-15. Supabase pausa proyectos Free tras 7 días sin actividad; este
+# ping semanal (cada 3 días por margen) cuenta como actividad y evita la pausa.
+# Costo: cero.
+
+on:
+  schedule:
+    - cron: "17 9 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Query settings table
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://lkfpcpmonisdxvenleyw.supabase.co/rest/v1/settings?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_KEEPALIVE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_KEEPALIVE_ANON_KEY }}")
+          echo "HTTP $code"
+          [ "$code" = "200" ] || [ "$code" = "401" ] || exit 1
